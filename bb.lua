@@ -21,7 +21,7 @@ local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
 
-local CONFIG_VER = 8
+local CONFIG_VER = 9
 
 --=============================================================
 -- CONFIG
@@ -36,8 +36,8 @@ local Config = {
 	Horizon       = 0.5,
 
 	SmartTap      = true,
-	ExtraPresses  = 1,
-	MinRepressGap = 0.09,
+	ExtraPresses  = 0,      -- 0 = строго один удар на подход
+	MinRepressGap = 0.10,
 
 	MoveAssist    = true,
 
@@ -67,11 +67,10 @@ local Config = {
 	RingThick     = 0.06,
 	RingOpacity   = 0.3,
 
-	-- korblox
 	Korblox        = false,
-	KorbloxMethod  = "Bundle",     -- Bundle (настоящая нога) | Mesh (шип)
+	KorbloxMethod  = "Bundle",
 	KorbloxSide    = "Right",
-	KorbloxLegId   = 139607718,    -- asset id ноги из bundle 192
+	KorbloxLegId   = 139607718,
 	KorbloxMesh    = "rbxassetid://169177037",
 	KorbloxTexture = "",
 	KorbloxThin    = 0.55,
@@ -197,7 +196,11 @@ local function loadConfig()
 			local d = deser(v); if d ~= nil then Config[k] = d end
 		end
 	end
-	if ver < CONFIG_VER then resetKorbloxConfig() end
+	if ver < CONFIG_VER then
+		resetKorbloxConfig()
+		Config.ExtraPresses = 0
+		Config.MinRepressGap = 0.10
+	end
 end
 local sq = false
 local function queueSave()
@@ -493,8 +496,7 @@ local E = {
 	targeted = false, hot = false, mode = "-",
 	prevSpeed = nil, prevSpeedT = 0, boostUntil = 0, boosted = false,
 	ability = "-", seenAbility = {}, seenCount = 0,
-	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
-	pressVel = nil, unstableResetAt = 0,
+	pressBall = nil, pressCount = 0, pressAt = 0, armed = true, pressVel = nil,
 	lastRootPos = nil, tpUntil = 0, unstable = false, moveState = "-",
 	korbloxMeshOk = nil, lastBundleApply = 0,
 }
@@ -544,75 +546,58 @@ local function actionCooldown()
 	return math.max(0.008, cd + (math.random(-1, 2) / 1000))
 end
 
-local function canPress(ball, now, threat)
+-- один удар на подход: пускаем только когда "взведено"
+local function canPress(ball, now)
 	if now - E.lastAction < actionCooldown() then return false end
 	if not Config.SmartTap then return true end
 
 	if ball ~= E.pressBall then
-		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false
+		E.pressBall = ball; E.pressCount = 0; E.armed = true; E.pressVel = nil
 	end
 
-	local gap = math.clamp(Config.MinRepressGap, 0.02, 0.5)
-	if E.unstable then gap = math.max(gap, 0.10) end
-	if now - (E.pressAt or 0) < gap then return false end
-
-	if not E.ballLeft and E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) and not E.emergency then
-		return false
-	end
+	if not E.armed then return false end
+	if E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) then return false end
+	if now - (E.pressAt or 0) < math.clamp(Config.MinRepressGap, 0.02, 0.5) then return false end
 	return true
 end
 
 local function sendAction(ball, threat)
 	local now = tick()
-	if not canPress(ball, now, threat) then return false end
+	if not canPress(ball, now) then return false end
 	if Config.SmartTap then
 		E.pressCount += 1
 		E.pressAt = now
-		if threat then E.pressVel = threat.velocity end
-		if E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) then E.ballLeft = false end
+		E.pressVel = threat and threat.velocity or nil
+		if E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) then
+			E.armed = false   -- ждём, пока мяч реально уйдёт
+		end
 	end
 	E.lastAction = now
 	E.actions += 1
 	E.lastBall = ball
-	E.released = false
 	E.mode = performParry()
 	return true
 end
 
--- мяч улетел? (разворот вектора / скачок скорости / дистанция / остановка)
+-- взводим обратно ТОЛЬКО когда мяч ушёл (или если удар не сработал — по таймауту)
 local function updateArm(ball, threat, radius)
 	local now = tick()
 	if ball ~= E.pressBall then
-		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false
+		E.pressBall = ball; E.pressCount = 0; E.armed = true; E.pressVel = nil
 		return
 	end
+	if E.armed then return end
 
-	local gone = false
-	if E.pressVel and (threat.velocity - E.pressVel).Magnitude > 22 then gone = true end  -- дефлект: мгновенный скачок
-	if threat.dot < -0.15 and threat.speed > 2 then gone = true end
-	if threat.distance > radius * 1.35 then gone = true end
-	if threat.speed < 3 then gone = true end
+	local left = false
+	if E.pressVel and (threat.velocity - E.pressVel).Magnitude > 20 then left = true end   -- дефлект: мяч рванул
+	if threat.dot < -0.20 and threat.speed > 3 then left = true end                        -- мяч уходит
+	if threat.distance > radius * 1.6 then left = true end                                 -- мяч далеко
+	if threat.speed < 3 then left = true end                                               -- мяч встал
 
-	if gone then
-		E.ballLeft = true
-		E.pressCount = 0
-		E.pressVel = nil
-	end
-
-	if E.unstable then
-		-- в рывке не сбрасываем каждый кадр, иначе получается очередь нажатий
-		if now - (E.unstableResetAt or 0) > 0.22 then
-			E.pressCount = 0
-			E.ballLeft = true
-			E.unstableResetAt = now
-		end
-		return
-	end
-
-	E.emergency = (threat.distance < radius * 0.55) and (now - (E.pressAt or 0) > 0.10)
-	if now - (E.pressAt or 0) > 0.30 then
-		E.pressCount = 0
-		E.ballLeft = true
+	if left then
+		E.armed = true; E.pressCount = 0; E.pressVel = nil
+	elseif now - (E.pressAt or 0) > 0.20 then
+		E.armed = true; E.pressCount = 0   -- удар не сработал -> одна страховочная попытка
 	end
 end
 
@@ -1104,6 +1089,7 @@ bind(LP.CharacterAdded, function()
 	task.wait(0.6); pcall(applyHeadless)
 	E.lastRootPos = nil
 	E.korbloxMeshOk = nil
+	E.armed = true
 end)
 
 --=============================================================
@@ -1228,7 +1214,6 @@ local function hidePart(part)
 	part.Transparency = 1
 end
 
--- ОСНОВНОЙ СПОСОБ: настоящая нога из bundle через HumanoidDescription
 local function applyBundleLeg()
 	local hum = curHum()
 	if not hum then return false end
@@ -1265,7 +1250,6 @@ local function bundleLegOk()
 	return checked == 0
 end
 
--- МЕШ-СПОСОБ (шип)
 local function applyMeshKorblox()
 	local char = LP.Character
 	if not char then return end
@@ -1580,7 +1564,7 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("in %s | acts %d | mv %s | R %d", E.mode, E.actions, E.moveState, math.floor(E.radius))
+		hudParry.Text = string.format("in %s | acts %d | %s | R %d", E.mode, E.actions, E.armed and "armed" or "wait", math.floor(E.radius))
 		hudParry.TextColor3 = E.boosted and RingBoost or (E.hot and T.Good or (hasKeypress and T.Dim or T.Bad))
 		hudAbility.Visible = Config.ShowAbility and E.boosted
 		if hudAbility.Visible then hudAbility.Text = "ABILITY >> " .. tostring(E.ability) end
@@ -1653,8 +1637,8 @@ ba(section(bp, "Input (BAC bypass)"))
 ba((button(bp, "MAX STEALTH", function()
 	Config.InputMode = "Keypress"; Config.ActionsPerSec = 45; Config.BatchMode = "Normal"
 	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.13
-	Config.SpeedAssist = true; Config.AbilityGuard = true; Config.SmartTap = true; Config.ExtraPresses = 1
-	Config.MoveAssist = true
+	Config.SpeedAssist = true; Config.AbilityGuard = true; Config.SmartTap = true
+	Config.ExtraPresses = 0; Config.MoveAssist = true
 	Config.Headless = false; Config.Particles = false; Config.BallRecolor = false
 	notify("stealth armed", T.Good)
 end)))
@@ -1662,7 +1646,7 @@ ba((button(bp, "MAX SPEED", function()
 	Config.InputMode = "Keypress"; Config.ActionsPerSec = 90; Config.BatchMode = "Extremely Fast"
 	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.11
 	Config.SpeedAssist = true; Config.FastBoost = 0.8; Config.AbilityGuard = true; Config.BoostMult = 2.0
-	Config.SmartTap = true; Config.ExtraPresses = 1; Config.MoveAssist = true
+	Config.SmartTap = true; Config.ExtraPresses = 0; Config.MoveAssist = true
 	notify("speed armed", T.Good)
 end)))
 ba((button(bp, "Show Input Backend", function()
@@ -1856,7 +1840,6 @@ task.spawn(function() while gui.Parent do pcall(updateExtras); task.wait(0.35) e
 task.spawn(function() while gui.Parent do pcall(applyParticles); pcall(applyBallSkin); task.wait(0.5) end end)
 task.spawn(function() while gui.Parent do findRemote(); task.wait(5) end end)
 
--- self-heal коробокса
 task.spawn(function()
 	while gui.Parent do
 		if Config.Korblox then
