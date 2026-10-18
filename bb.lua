@@ -32,7 +32,6 @@ local Config = {
 	Prediction    = 0.08,
 	Horizon       = 0.45,
 
-	-- радиус
 	AutoRadius    = true,
 	LeadTime      = 0.12,
 	MinRadius     = 8,
@@ -41,20 +40,17 @@ local Config = {
 	PingComp      = true,
 	BallPredCap   = 22,
 
-	-- анти-спам и анти-скорость
 	FastAssist    = true,
-	PressLimit    = 3,
+	PressLimit    = 4,
 	LookSteps     = 6,
 	RequireTarget = true,
 	Debug         = false,
 
-	-- круг
 	ParryRing     = true,
 	RingColor     = "Purple",
 	RingThick     = 0.06,
 	RingOpacity   = 0.3,
 
-	-- корблокс нога
 	KorbloxLeg    = false,
 	KorbloxSide   = "Right",
 	KorbloxMesh   = "rbxassetid://169177037",
@@ -428,6 +424,7 @@ local E = {
 	lastAction = 0, actions = 0, presses = 0,
 	dist = 0, speed = 0, radius = 16, lead = 0,
 	targeted = false, hot = false, mode = "-",
+	trackedBall = nil,
 	lastTime = 0, lastVel = Vector3.zero, accel = Vector3.zero,
 }
 
@@ -469,7 +466,6 @@ local function actionCooldown(speedBoost)
 	elseif Config.BatchMode == "Normal" then cd = math.max(0.040, cd)
 	elseif Config.BatchMode == "Fast" then cd = math.max(0.025, cd)
 	elseif Config.BatchMode == "Extremely Fast" then cd = math.max(0.015, cd) end
-	-- на быстром мяче жмём чаще
 	if Config.FastAssist then cd = cd * (1 - 0.55 * (speedBoost or 0)) end
 	return math.max(0.010, cd + (math.random(-2, 4) / 1000))
 end
@@ -584,7 +580,7 @@ local function computeThreat(ball, root)
 end
 
 --=============================================================
--- РАДИУС + ПОДКАДРОВЫЙ ПРОСМОТР
+-- RADIUS + LOOKAHEAD
 --=============================================================
 local function computeRadius(threat, pingSec, speedBoost)
 	local net = pingSec * 0.5 + (1 / 60)
@@ -597,8 +593,6 @@ local function computeRadius(threat, pingSec, speedBoost)
 	return r
 end
 
--- смотрим на несколько точек вперёд — ловим быстрый мяч, который
--- пролетает круг между кадрами
 local function willEnterSoon(ball, root, vel, accel, radius, window)
 	local rootVel = root.AssemblyLinearVelocity or Vector3.zero
 	local steps = math.max(3, Config.LookSteps)
@@ -634,8 +628,17 @@ local function step(dt)
 	E.radius = radius
 	E.hot = threat.distance <= radius
 
-	-- мяч ушёл — сбрасываем счётчик нажатий
-	if threat.distance > radius * 1.7 then E.presses = 0 end
+	-- ===== СБРОС ЛИМИТА НАЖАТИЙ (4 независимых условия) =====
+	if E.trackedBall ~= ball then
+		E.presses = 0
+		E.trackedBall = ball
+	end
+	local outside = threat.distance > radius
+	local idle = threat.speed < 8
+	if (outside or idle) and tick() - E.lastAction > 0.25 then
+		E.presses = 0
+	end
+	if tick() - E.lastAction > 1.2 then E.presses = 0 end
 
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
@@ -650,16 +653,22 @@ local function step(dt)
 
 	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
 	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60)
-
-	-- окно просмотра: сеть + кадр + запас на скорость
 	local window = transit + (Config.FastAssist and speedBoost * 0.07 or 0)
+
 	local inside = threat.distance <= radius
 	local soon, tHit = willEnterSoon(ball, root, threat.velocity, threat.accel, radius, window)
-	E.lead = inside and 0 or (tHit or 0)
+	E.lead = tHit or 0
 
-	-- ТОЛЬКО когда мяч в круге или вот-вот войдёт. Никакого слепого спама.
-	if not (inside or soon) then return end
-	if E.presses >= Config.PressLimit then return end
+	local veryClose = threat.distance <= radius * 0.45
+
+	-- только когда мяч в круге или вот-вот войдёт
+	if not (inside or soon or veryClose) then return end
+
+	-- лимит: исчерпали — но в упор или с паузой всё равно добьём
+	if E.presses >= Config.PressLimit and not veryClose
+		and tick() - E.lastAction < 0.15 then
+		return
+	end
 
 	sendAction(ball, speedBoost)
 end
@@ -696,18 +705,15 @@ local function applyKorblox()
 		if m then m:Destroy() end
 	end
 
-	local sides = Config.KorbloxSide == "Both" and {"Right", "Left"} or {Config.KorbloxSide}
-
-	-- сначала сброс всего
 	for _, names in pairs(KORBLOX_NAMES) do
 		for _, n in ipairs(names) do
 			local p = char:FindFirstChild(n)
 			if p and p:IsA("BasePart") then resetPart(p) end
 		end
 	end
-
 	if not Config.KorbloxLeg then return end
 
+	local sides = Config.KorbloxSide == "Both" and {"Right", "Left"} or {Config.KorbloxSide}
 	for _, side in ipairs(sides) do
 		for _, n in ipairs(KORBLOX_NAMES[side] or {}) do
 			local leg = char:FindFirstChild(n)
@@ -719,7 +725,6 @@ local function applyKorblox()
 				local orig = leg:GetAttribute("SS_OrigSize")
 				leg.Size = Vector3.new(orig.X * Config.KorbloxThin, orig.Y, orig.Z * Config.KorbloxThin)
 				leg.Color = Config.KorbloxColor
-
 				local m = Instance.new("SpecialMesh")
 				m.Name = "SS_KorbloxMesh"
 				m.MeshType = Enum.MeshType.FileMesh
@@ -973,7 +978,7 @@ local function applyFpsBoost(on)
 	else Lighting.GlobalShadows = true end
 end
 
-local hud = new("Frame", {Size=UDim2.new(0,270,0,74), Position=UDim2.new(0,12,0,12),
+local hud = new("Frame", {Size=UDim2.new(0,275,0,74), Position=UDim2.new(0,12,0,12),
 	BackgroundColor3=T.Bg, BackgroundTransparency=0.15, BorderSizePixel=0, Visible=Config.Hud, ZIndex=10}, gui)
 corner(hud,8); stroke(hud,T.Line)
 new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,5), BackgroundTransparency=1,
@@ -1014,7 +1019,7 @@ ca((dropdown(cp, "Parry Key", {"F", "E", "Q", "R", "V", "C", "Space"}, Config.Pa
 ca((toggle(cp, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
 
 ca(section(cp, "Anti-Spam"))
-ca((slider(cp, "Presses Per Approach", 1, 8, Config.PressLimit, 0, function(v) Config.PressLimit = v end)))
+ca((slider(cp, "Presses Per Approach", 1, 10, Config.PressLimit, 0, function(v) Config.PressLimit = v end)))
 ca((slider(cp, "Actions / sec", 10, 100, Config.ActionsPerSec, 0, function(v) Config.ActionsPerSec = v end)))
 ca((dropdown(cp, "Batch Mode", {"Extremely Fast", "Fast", "Normal", "Safe"}, Config.BatchMode, function(v) Config.BatchMode = v end)))
 
@@ -1071,7 +1076,7 @@ ba((button(bp, "MAX STEALTH", function()
 	Config.RequireTarget = true
 	Config.AutoRadius = true
 	Config.LeadTime = 0.14
-	Config.PressLimit = 3
+	Config.PressLimit = 4
 	Config.Headless = false
 	Config.Particles = false
 	Config.BallRecolor = false
@@ -1083,6 +1088,10 @@ end)))
 ba((button(bp, "Find Parry Remote", function()
 	findRemote()
 	notify(ParryRemote and ("found: " .. ParryRemote:GetFullName()) or "not found", ParryRemote and T.Good or T.Bad)
+end)))
+ba((button(bp, "Reset Engine", function()
+	E.presses, E.actions, E.trackedBall = 0, 0, nil
+	notify("engine reset", T.Good)
 end)))
 ba((toggle(bp, "Debug Readout", Config.Debug, function(v) Config.Debug = v end)))
 
