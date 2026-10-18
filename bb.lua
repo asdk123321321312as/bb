@@ -19,7 +19,7 @@ local HttpService      = cloneref(game:GetService("HttpService"))
 
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
+local TITLE  = "ScriptSleep"
 
 --=============================================================
 -- CONFIG
@@ -33,7 +33,6 @@ local Config = {
 	Prediction    = 0.07,
 	Horizon       = 0.5,
 
-	-- радиус
 	AutoRadius    = true,
 	LeadTime      = 0.11,
 	MinRadius     = 9,
@@ -43,22 +42,19 @@ local Config = {
 	PingComp      = true,
 	BallPredCap   = 22,
 
-	-- ускорение реакции
 	SpeedAssist   = true,
 	FastBoost     = 0.6,
 
-	-- способности
-	AbilityGuard  = true,    -- реакция на способности
-	BoostDetect   = true,    -- ловить рывок скорости мяча
-	BoostMult     = 1.7,     -- во сколько расширить круг
-	BoostHold     = 0.7,     -- сколько секунд держать буст
+	AbilityGuard  = true,
+	BoostDetect   = true,
+	BoostMult     = 1.7,
+	BoostHold     = 0.7,
 	ShowAbility   = true,
 
 	RequireTarget = true,
 	OnePerBall    = false,
 	Debug         = false,
 
-	-- круг
 	ParryRing     = true,
 	RingColor     = "Purple",
 	RingThick     = 0.06,
@@ -69,8 +65,10 @@ local Config = {
 	KorbloxSide    = "Right",
 	KorbloxMesh    = "rbxassetid://169177037",
 	KorbloxTexture = "",
-	KorbloxThin    = 0.45,
+	KorbloxThin    = 1.0,      -- 1.0 = не утоньшать
 	KorbloxScale   = 1.0,
+	KorbloxFullLeg = true,     -- бедро + голень
+	KorbloxBone    = true,     -- светлая кость
 	KorbloxHideFoot= true,
 
 	BoxEsp        = true,
@@ -118,6 +116,7 @@ local RingColors = {
 }
 local RingHot = Color3.fromRGB(120, 255, 160)
 local RingBoost = Color3.fromRGB(255, 170, 60)
+local BONE_WHITE = Color3.fromRGB(242, 242, 242)
 
 --=============================================================
 -- SAVE / LOAD
@@ -599,10 +598,6 @@ end
 --=============================================================
 -- ABILITY GUARD
 --=============================================================
--- 1) встроенный список известных способностей Blade Ball (что влияет на мяч)
--- 2) авто-скан игры: имена способностей из ReplicatedStorage
--- 3) детектор рывка скорости мяча (главный, работает без знания названий)
-
 local BALL_ABILITIES = {
 	"curve ball","curved ball","raging deflect","pull","pull in","push","time stop","time freeze",
 	"reaper","freeze","ice","ice spike","gravity","void","storm","tornado","black hole","lightning",
@@ -630,23 +625,16 @@ local function registerAbilityName(name)
 	if abilitySet[k] == nil then abilitySet[k] = true end
 end
 
--- вытащить актуальные названия способностей из клиента
 local function scanGameAbilities()
 	local names = {}
 	local function harvest(root)
 		if not root then return end
-		for _, c in ipairs(root:GetChildren()) do
-			names[c.Name] = true
-		end
+		for _, c in ipairs(root:GetChildren()) do names[c.Name] = true end
 	end
 	for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
 		local n = d.Name:lower()
-		if n:match("abilit") and (d:IsA("Folder") or d:IsA("Model") or d:IsA("Configuration")) then
-			harvest(d)
-		end
-		if n:match("abilit") and (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) then
-			names[d.Name] = true
-		end
+		if n:match("abilit") and (d:IsA("Folder") or d:IsA("Model") or d:IsA("Configuration")) then harvest(d) end
+		if n:match("abilit") and (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) then names[d.Name] = true end
 	end
 	local out = {}
 	for n in pairs(names) do
@@ -674,7 +662,6 @@ local function detectBoost(threat)
 
 	if not hit and Config.AbilityGuard then
 		local ball = threat.ball
-		-- атрибуты мяча
 		for _, a in ipairs({"ability","Ability","effect","Effect","boost","Boost","speed","Speed","power","Power","multiplier","Multiplier"}) do
 			local v = ball:GetAttribute(a)
 			if v ~= nil then
@@ -683,29 +670,22 @@ local function detectBoost(threat)
 				elseif typeof(v) == "number" and v > 1.4 and a:lower():match("speed") then hit = a end
 			end
 		end
-		-- дочерние VFX на мяче
 		if not hit then
 			for _, d in ipairs(ball:GetChildren()) do
 				local n = d.Name:lower()
 				if abilitySet[n] and not E.seenAbility[d] then
-					E.seenAbility[d] = true
-					E.seenCount += 1
-					hit = d.Name
+					E.seenAbility[d] = true; E.seenCount += 1; hit = d.Name
 				end
 			end
 		end
-		-- временные эффекты в Workspace
 		if not hit then
 			for _, d in ipairs(Workspace:GetChildren()) do
 				local n = d.Name:lower()
 				if abilitySet[n] and not E.seenAbility[d] then
-					E.seenAbility[d] = true
-					E.seenCount += 1
-					hit = d.Name
+					E.seenAbility[d] = true; E.seenCount += 1; hit = d.Name
 				end
 			end
 		end
-		-- эффект на персонажах
 		if not hit then
 			for _, p in ipairs(Players:GetPlayers()) do
 				local ch = p.Character
@@ -713,9 +693,7 @@ local function detectBoost(threat)
 					for _, d in ipairs(ch:GetChildren()) do
 						local n = d.Name:lower()
 						if abilitySet[n] and not E.seenAbility[d] then
-							E.seenAbility[d] = true
-							E.seenCount += 1
-							hit = d.Name
+							E.seenAbility[d] = true; E.seenCount += 1; hit = d.Name
 						end
 					end
 				end
@@ -764,7 +742,6 @@ local function step(dt)
 	local pingSec = getPing() / 1000
 	local radius = computeRadius(threat, pingSec)
 
-	-- способности: рывок скорости / активация
 	local boosted = false
 	if Config.AbilityGuard then boosted = detectBoost(threat) end
 	E.boosted = boosted
@@ -790,7 +767,7 @@ local function step(dt)
 	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
 
 	local dirOk = threat.dot > 0.05 or threat.approachSpeed > -5
-	if boosted then dirOk = true end   -- способность может закрутить мяч
+	if boosted then dirOk = true end
 
 	if Config.CrossTrigger then
 		local closing = math.max(threat.approachSpeed, threat.speed * 0.5, 1)
@@ -996,11 +973,11 @@ end
 bind(LP.CharacterAdded, function() task.wait(0.6); pcall(applyHeadless) end)
 
 --=============================================================
--- KORBLOX LEG  (поиск ноги по имени, без жёсткого списка)
+-- KORBLOX LEG
 --=============================================================
 local KORBLOX_TAG = "SSKorblox"
-local korbloxSaved = {}
-local korbloxFeet = {}
+local korbloxSaved = {}    -- part -> {mesh, tex, size, trans, color}
+local korbloxHidden = {}   -- part -> origTransparency
 
 local KORBLOX_PRESETS = {
 	{name = "Korblox A", mesh = "rbxassetid://169177037", tex = ""},
@@ -1013,7 +990,6 @@ local function korbloxWantMesh()
 	return (Config.KorbloxMesh ~= "" and Config.KorbloxMesh) or "rbxassetid://169177037"
 end
 
--- найти части ноги по имени (R6 "Right Leg", R15 "RightUpperLeg/LowerLeg/Foot", кастомные риги)
 local function findSideParts(side)
 	local char = LP.Character
 	if not char then return {} end
@@ -1039,9 +1015,11 @@ local function restoreKorblox()
 					if data.tex then part.TextureID = data.tex end
 					if data.size then part.Size = data.size end
 					if data.trans then part.Transparency = data.trans end
+					if data.color then part.Color = data.color end
 				else
 					if data.size then part.Size = data.size end
 					if data.trans then part.Transparency = data.trans end
+					if data.color then part.Color = data.color end
 					local m = part:FindFirstChild(KORBLOX_TAG)
 					if m then m:Destroy() end
 				end
@@ -1049,10 +1027,10 @@ local function restoreKorblox()
 		end
 	end
 	korbloxSaved = {}
-	for part, orig in pairs(korbloxFeet) do
+	for part, orig in pairs(korbloxHidden) do
 		if part.Parent then pcall(function() part.Transparency = orig end) end
 	end
-	korbloxFeet = {}
+	korbloxHidden = {}
 	local char = LP.Character
 	if char then
 		for _, d in ipairs(char:GetDescendants()) do
@@ -1061,13 +1039,19 @@ local function restoreKorblox()
 	end
 end
 
+local function hidePart(part)
+	if not part then return end
+	if korbloxHidden[part] == nil then korbloxHidden[part] = part.Transparency end
+	part.Transparency = 1
+end
+
 local function applyKorblox()
 	local char = LP.Character
 	if not char then return end
 	restoreKorblox()
 	if not Config.Korblox then return end
 
-	local th = math.clamp(Config.KorbloxThin, 0.05, 1)
+	local th = math.clamp(Config.KorbloxThin, 0.05, 1.6)
 	local sc = math.clamp(Config.KorbloxScale, 0.4, 2.5)
 	local meshId = korbloxWantMesh()
 
@@ -1076,18 +1060,27 @@ local function applyKorblox()
 	for _, d in ipairs(parts) do
 		if d.Name:lower():find("foot", 1, true) then table.insert(feet, d) else table.insert(legs, d) end
 	end
-	if #legs == 0 then notify("korblox: leg not found (rig=" .. tostring(char:FindFirstChildOfClass("Humanoid") and char:FindFirstChildOfClass("Humanoid").RigType) .. ")", T.Warn); return end
+	if #legs == 0 then
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		notify("korblox: leg not found (rig=" .. tostring(hum and hum.RigType) .. ")", T.Warn)
+		return
+	end
 
-	for _, leg in ipairs(legs) do
+	-- какие части получают меш
+	local useLegs = legs
+	if not Config.KorbloxFullLeg then useLegs = {legs[1]} end
+
+	for _, leg in ipairs(useLegs) do
 		if leg:IsA("MeshPart") then
-			-- ключевой момент: меняем MeshId самой MeshPart, без SpecialMesh
-			korbloxSaved[leg] = {mesh = leg.MeshId, tex = leg.TextureID, size = leg.Size, trans = leg.Transparency}
+			korbloxSaved[leg] = {mesh = leg.MeshId, tex = leg.TextureID, size = leg.Size,
+				trans = leg.Transparency, color = leg.Color}
 			leg.MeshId = meshId
 			if Config.KorbloxTexture ~= "" then leg.TextureID = Config.KorbloxTexture end
 			leg.Size = Vector3.new(leg.Size.X * th, leg.Size.Y * sc, leg.Size.Z * th)
 			leg.Transparency = 0
+			if Config.KorbloxBone then leg.Color = BONE_WHITE end
 		else
-			korbloxSaved[leg] = {size = leg.Size, trans = leg.Transparency}
+			korbloxSaved[leg] = {size = leg.Size, trans = leg.Transparency, color = leg.Color}
 			local m = leg:FindFirstChild(KORBLOX_TAG)
 			if not m then
 				m = Instance.new("SpecialMesh")
@@ -1099,14 +1092,16 @@ local function applyKorblox()
 			if Config.KorbloxTexture ~= "" then m.TextureId = Config.KorbloxTexture end
 			m.Scale = Vector3.new(th * sc, sc, th * sc)
 			leg.Transparency = 0
+			if Config.KorbloxBone then leg.Color = BONE_WHITE end
 		end
 	end
 
+	-- спрятать всё, что не получило меш
+	for _, leg in ipairs(legs) do
+		if not table.find(useLegs, leg) then hidePart(leg) end
+	end
 	if Config.KorbloxHideFoot then
-		for _, f in ipairs(feet) do
-			korbloxFeet[f] = f.Transparency
-			f.Transparency = 1
-		end
+		for _, f in ipairs(feet) do hidePart(f) end
 	end
 end
 
@@ -1115,15 +1110,20 @@ local function korbloxOk()
 	if not char then return true end
 	local parts = findSideParts(Config.KorbloxSide)
 	if #parts == 0 then return true end
-	local leg = parts[1]
+	local leg
 	for _, p in ipairs(parts) do
 		if not p.Name:lower():find("foot", 1, true) then leg = p; break end
 	end
+	if not leg then return true end
 	local applied = korbloxSaved[leg] ~= nil or leg:FindFirstChild(KORBLOX_TAG) ~= nil
 	if Config.Korblox ~= applied then return false end
 	if not Config.Korblox then return true end
 	local want = korbloxWantMesh()
-	if leg:IsA("MeshPart") then return leg.MeshId == want end
+	if leg:IsA("MeshPart") then
+		if leg.MeshId ~= want then return false end
+		if Config.KorbloxBone and leg.Color ~= BONE_WHITE then return false end
+		return true
+	end
 	local m = leg:FindFirstChild(KORBLOX_TAG)
 	return m ~= nil and m.MeshId == want
 end
@@ -1366,8 +1366,10 @@ va((dropdown(vp, "Mesh Preset", presetNames, "Korblox A", function(v)
 end)))
 va((textbox(vp, "Mesh ID", Config.KorbloxMesh, "rbxassetid://...", function(v) Config.KorbloxMesh = v; applyKorblox() end)))
 va((textbox(vp, "Texture ID", Config.KorbloxTexture, "rbxassetid://...", function(v) Config.KorbloxTexture = v; applyKorblox() end)))
-va((slider(vp, "Thinness", 0.05, 1.0, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
-va((slider(vp, "Scale", 0.4, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
+va((toggle(vp, "Bone White", Config.KorbloxBone, function(v) Config.KorbloxBone = v; applyKorblox() end)))
+va((toggle(vp, "Full Leg (бедро+голень)", Config.KorbloxFullLeg, function(v) Config.KorbloxFullLeg = v; applyKorblox() end)))
+va((slider(vp, "Thinness", 0.05, 1.6, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
+va((slider(vp, "Scale (длина)", 0.4, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
 va((toggle(vp, "Hide Foot", Config.KorbloxHideFoot, function(v) Config.KorbloxHideFoot = v; applyKorblox() end)))
 va((button(vp, "Korblox: Reapply", function() applyKorblox(); notify("korblox reapplied", T.Good) end)))
 va((button(vp, "Korblox: Remove", function() restoreKorblox(); notify("korblox removed", T.Good) end)))
