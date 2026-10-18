@@ -18,7 +18,7 @@ local HttpService      = cloneref(game:GetService("HttpService"))
 
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
+local TITLE  = "ScriptSleep"
 
 --=============================================================
 -- CONFIG
