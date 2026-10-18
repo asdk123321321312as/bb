@@ -1,7 +1,7 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
     input-based bypass (keypress) + adaptive-radius parry
-    + korblox bundle leg + fast-ball assist
+    + korblox bundle leg (fixed) + in-game skin changer
     menu: RightShift
 --]]
 
@@ -34,18 +34,18 @@ local Config = {
 	Horizon       = 0.5,
 
 	-- радиус
-	AutoRadius    = true,     -- круг подстраивается под скорость мяча
-	LeadTime      = 0.11,     -- за сколько секунд до контакта бить
+	AutoRadius    = true,
+	LeadTime      = 0.11,
 	MinRadius     = 9,
 	MaxRadius     = 50,
-	BaseRadius    = 16,       -- используется если AutoRadius выключен
-	CrossTrigger  = true,     -- бить по пересечению границы круга
+	BaseRadius    = 16,
+	CrossTrigger  = true,
 	PingComp      = true,
 	BallPredCap   = 22,
 
 	-- ускорение реакции
-	SpeedAssist   = true,     -- быстрый мяч -> шире круг + короче кулдаун
-	FastBoost     = 0.6,      -- сила ассиста 0..1
+	SpeedAssist   = true,
+	FastBoost     = 0.6,
 
 	RequireTarget = true,
 	OnePerBall    = false,
@@ -65,6 +65,10 @@ local Config = {
 	KorbloxThin    = 0.45,
 	KorbloxScale   = 1.0,
 	KorbloxHideFoot= true,
+
+	-- скины
+	SkinName      = "",
+	SkinScale     = 1.0,
 
 	BoxEsp        = true,
 	EspColor      = Color3.fromRGB(255, 255, 255),
@@ -88,8 +92,6 @@ local Config = {
 	ParticleRate  = 40,
 	ParticleColor = Color3.fromRGB(255, 255, 255),
 
-	SwordMesh     = "",
-	SwordTexture  = "",
 	BallRecolor   = false,
 	BallColor     = Color3.fromRGB(255, 255, 255),
 	BallSize      = 1,
@@ -112,6 +114,7 @@ local RingColors = {
 	Gold   = Color3.fromRGB(255, 210, 90),
 }
 local RingHot = Color3.fromRGB(120, 255, 160)
+local KORBLOX_FALLBACK = "rbxassetid://169177037"
 
 --=============================================================
 -- SAVE / LOAD
@@ -295,18 +298,22 @@ local function dropdown(p, label, options, default, cb)
 		BackgroundColor3=T.Item, Text="", AutoButtonColor=false, ZIndex=6}, h)
 	corner(btn,6); stroke(btn,T.Line)
 	local txt = new("TextLabel", {Size=UDim2.new(1,-24,1,0), Position=UDim2.new(0,10,0,0), BackgroundTransparency=1,
-		Font=Enum.Font.GothamMedium, TextSize=12, TextColor3=T.Text,
+		Font=Enum.Font.GothamMedium, TextSize=12, TextColor3=T.Text, TextTruncate=Enum.TextTruncate.AtEnd,
 		TextXAlignment=Enum.TextXAlignment.Left, Text=tostring(default)}, btn)
-	local lh = #options*24+8
+	local lh = math.min(#options, 10)*24+8
 	local list = new("Frame", {Size=UDim2.new(0,130,0,lh), Position=UDim2.new(1,-130,0,32),
 		BackgroundColor3=T.Panel, Visible=false, ZIndex=20, BorderSizePixel=0}, h)
 	corner(list,6); stroke(list,T.Line)
-	new("UIListLayout", {Padding=UDim.new(0,2), SortOrder=Enum.SortOrder.LayoutOrder}, list)
-	new("UIPadding", {PaddingTop=UDim.new(0,4), PaddingBottom=UDim.new(0,4)}, list)
+	local inner = new("ScrollingFrame", {Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, BorderSizePixel=0,
+		ScrollBarThickness=2, ScrollBarImageColor3=T.Line, CanvasSize=UDim2.new(0,0,0,#options*24+8),
+		ScrollingDirection=Enum.ScrollingDirection.Y}, list)
+	new("UIListLayout", {Padding=UDim.new(0,2), SortOrder=Enum.SortOrder.LayoutOrder}, inner)
+	new("UIPadding", {PaddingTop=UDim.new(0,4), PaddingBottom=UDim.new(0,4)}, inner)
 	local open = false
 	for i,o in ipairs(options) do
 		local b = new("TextButton", {Size=UDim2.new(1,0,0,22), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
-			TextSize=12, TextColor3=T.Dim, Text=tostring(o), LayoutOrder=i, ZIndex=21}, list)
+			TextSize=12, TextColor3=T.Dim, Text=tostring(o), LayoutOrder=i, ZIndex=21,
+			TextTruncate=Enum.TextTruncate.AtEnd}, inner)
 		b.MouseEnter:Connect(function() b.TextColor3=T.Text end)
 		b.MouseLeave:Connect(function() b.TextColor3=T.Dim end)
 		b.MouseButton1Click:Connect(function()
@@ -428,28 +435,131 @@ local hasKeypress = pcall(function() return keypress end)
 local hasMouse    = pcall(function() return mouse1click end)
 
 --=============================================================
+-- SKIN DATABASE (из самой игры)
+--=============================================================
+local Skins, SkinIndex, selectedSkin = {}, {}, nil
+local swordSaved = {}
+
+local function findSwordFolders()
+	local out = {}
+	for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+		if (d:IsA("Folder") or d:IsA("Model")) and d.Name:lower():match("sword") then
+			local n = 0
+			for _, c in ipairs(d:GetChildren()) do
+				if c:IsA("Model") or c:IsA("Tool") then n += 1 end
+			end
+			if n >= 2 then table.insert(out, d) end
+		end
+	end
+	return out
+end
+
+local function extractMesh(model)
+	for _, p in ipairs(model:GetDescendants()) do
+		if p:IsA("MeshPart") and p.MeshId ~= "" then return p.MeshId, p.TextureID end
+		if p:IsA("SpecialMesh") and p.MeshId ~= "" then return p.MeshId, p.TextureId end
+	end
+	return nil
+end
+
+local function buildSkinList()
+	Skins, SkinIndex = {}, {}
+	for _, root in ipairs(findSwordFolders()) do
+		for _, m in ipairs(root:GetDescendants()) do
+			if (m:IsA("Model") or m:IsA("Tool")) and not SkinIndex[m.Name] then
+				local mesh, tex = extractMesh(m)
+				if mesh then
+					local e = {name = m.Name, mesh = mesh, tex = tex or ""}
+					table.insert(Skins, e); SkinIndex[m.Name] = e
+				end
+			end
+		end
+	end
+	table.sort(Skins, function(a,b) return a.name:lower() < b.name:lower() end)
+	return #Skins
+end
+
+local function getSwordRoot()
+	local char = LP.Character
+	if not char then return nil end
+	for _, d in ipairs(char:GetChildren()) do
+		local n = d.Name:lower()
+		if (d:IsA("Tool") or d:IsA("Model")) and (n:find("sword") or n:find("katana") or n:find("blade") or n:find("weapon")) then
+			return d
+		end
+	end
+	return nil
+end
+
+local function getSwordTarget()
+	local root = getSwordRoot()
+	local scope = root or LP.Character
+	if not scope then return nil end
+	local bestPart, bestSpecial
+	for _, p in ipairs(scope:GetDescendants()) do
+		if p:IsA("MeshPart") and p.MeshId ~= "" then
+			local n = p.Name:lower()
+			if n:find("handle") or n:find("blade") or n:find("katana") or n:find("sword") or n:find("mesh") then
+				return {part = p}
+			end
+			bestPart = bestPart or p
+		elseif p:IsA("SpecialMesh") and p.MeshId ~= "" and p.Parent and p.Parent:IsA("BasePart") then
+			bestSpecial = bestSpecial or p
+		end
+	end
+	if bestPart then return {part = bestPart} end
+	if bestSpecial then return {special = bestSpecial} end
+	return nil
+end
+
+local function applySkin(silent)
+	local t = getSwordTarget()
+	if not t then if not silent then notify("sword not found", T.Bad) end return end
+	local s = selectedSkin
+	if not s then return end
+	if t.part then
+		if not swordSaved[t.part] then
+			swordSaved[t.part] = {mesh = t.part.MeshId, tex = t.part.TextureID, size = t.part.Size}
+		end
+		t.part.MeshId = s.mesh
+		if s.tex ~= "" then t.part.TextureID = s.tex end
+		if Config.SkinScale ~= 1 then t.part.Size = swordSaved[t.part].size * Config.SkinScale end
+	else
+		local m = t.special
+		if not swordSaved[m] then swordSaved[m] = {mesh = m.MeshId, tex = m.TextureId} end
+		m.MeshId = s.mesh
+		if s.tex ~= "" then m.TextureId = s.tex end
+	end
+	if not silent then notify("skin: " .. s.name, T.Good) end
+end
+
+local function restoreSword()
+	local t = getSwordTarget()
+	if not t then return end
+	if t.part then
+		local d = swordSaved[t.part]
+		if d then pcall(function() t.part.MeshId = d.mesh; t.part.TextureID = d.tex; t.part.Size = d.size end) end
+	else
+		local m = t.special
+		local d = swordSaved[m]
+		if d then pcall(function() m.MeshId = d.mesh; m.TextureId = d.tex end) end
+	end
+end
+
+local skinCount = buildSkinList()
+
+--=============================================================
 -- PARRY ENGINE
 --=============================================================
 local E = {
-	lastAction = 0,
-	actions    = 0,
-	lastBall   = nil,
-	lastTime   = 0,
-	lastVel    = Vector3.zero,
-	accel      = Vector3.zero,
-	dist       = 0,
-	speed      = 0,
-	eta        = 0,
-	radius     = 16,
-	lead       = 0,
-	targeted   = false,
-	hot        = false,
-	mode       = "-",
+	lastAction = 0, actions = 0, lastBall = nil, lastTime = 0,
+	lastVel = Vector3.zero, accel = Vector3.zero,
+	dist = 0, speed = 0, eta = 0, radius = 16, lead = 0,
+	targeted = false, hot = false, mode = "-",
 }
 
 local function performParry()
 	local key = KeyCodes[Config.ParryKey] or 0x46
-
 	if Config.InputMode == "Remote" then
 		if ParryRemote then pcall(function() ParryRemote:FireServer() end) end
 		return "remote"
@@ -465,7 +575,6 @@ local function performParry()
 		end
 		return "key"
 	end
-
 	if hasKeypress then
 		pcall(function() keypress(key) end)
 		task.delay(0.008, function() pcall(function() keyrelease(key) end) end)
@@ -480,7 +589,6 @@ local function performParry()
 	return "none"
 end
 
--- ускоренный темп: низкие полы + SpeedAssist
 local function actionCooldown()
 	local rate = math.clamp(Config.ActionsPerSec, 10, 120)
 	local cd = 1 / rate
@@ -498,10 +606,7 @@ local function sendAction(ball)
 	local now = tick()
 	if now - E.lastAction < actionCooldown() then return false end
 	if Config.OnePerBall and E.lastBall == ball and not E.released then return false end
-	E.lastAction = now
-	E.actions += 1
-	E.lastBall = ball
-	E.released = false
+	E.lastAction = now; E.actions += 1; E.lastBall = ball; E.released = false
 	E.mode = performParry()
 	return true
 end
@@ -537,17 +642,11 @@ local function getBall()
 	return best
 end
 
-local function ballTarget(ball)
-	return ball:GetAttribute("target") or ball:GetAttribute("Target")
-		or ball:GetAttribute("currentTarget") or ball:GetAttribute("targetPlayer")
-		or ball:GetAttribute("to")
-end
-
 local function isTargeted(ball)
 	local char = LP.Character
 	if not ball or not char then return nil end
-
-	local t = ballTarget(ball)
+	local t = ball:GetAttribute("target") or ball:GetAttribute("Target")
+		or ball:GetAttribute("currentTarget") or ball:GetAttribute("targetPlayer") or ball:GetAttribute("to")
 	if t ~= nil then
 		if t == LP.Name or t == LP.DisplayName or t == char.Name
 			or t == LP.UserId or t == tostring(LP.UserId)
@@ -558,16 +657,13 @@ local function isTargeted(ball)
 		end
 		if typeof(t) == "string" or typeof(t) == "number" then return false end
 	end
-
 	for _, ch in ipairs(ball:GetChildren()) do
 		if ch:IsA("ValueBase") and ch.Name:lower():find("target") then
 			local v = ch.Value
-			if v == LP.Name or v == char.Name or v == LP or v == LP.UserId
-				or v == tostring(LP.UserId) then return true end
+			if v == LP.Name or v == char.Name or v == LP or v == LP.UserId or v == tostring(LP.UserId) then return true end
 			if v ~= nil then return false end
 		end
 	end
-
 	if char:GetAttribute("Targeted") == true then return true end
 	if char:FindFirstChild("TargetHighlight") then return true end
 	local hl = char:FindFirstChild("Highlight")
@@ -575,7 +671,6 @@ local function isTargeted(ball)
 		if hl:GetAttribute("Target") == true then return true end
 		if hl.FillColor.R > 0.6 and hl.FillColor.G < 0.5 and hl.FillColor.B < 0.5 then return true end
 	end
-
 	return nil
 end
 
@@ -583,7 +678,6 @@ local function computeThreat(ball, root)
 	local ballPos = ball.Position
 	local playerPos = root.Position
 	local distance = (playerPos - ballPos).Magnitude
-
 	local velocity = ball.AssemblyLinearVelocity
 	local zoomies = ball:FindFirstChild("zoomies")
 	if zoomies then
@@ -594,34 +688,22 @@ local function computeThreat(ball, root)
 		end
 	end
 	local speed = velocity.Magnitude
-	if speed <= 0 then
-		velocity = ball.Velocity
-		speed = velocity.Magnitude
-	end
+	if speed <= 0 then velocity = ball.Velocity; speed = velocity.Magnitude end
 	if speed <= 0.5 then return nil end
-
 	local now = tick()
 	local dt = math.clamp(now - E.lastTime, 0.001, 0.05)
 	E.lastTime = now
 	local accel = (velocity - E.lastVel) / dt
 	E.lastVel = velocity
-
 	local dirToPlayer = (playerPos - ballPos).Unit
 	local dot = dirToPlayer:Dot(velocity.Unit)
 	local rootVel = root.AssemblyLinearVelocity or Vector3.zero
 	local approachSpeed = (velocity - rootVel):Dot(dirToPlayer)
-
-	return {
-		ball = ball, distance = distance, speed = speed, velocity = velocity,
-		accel = accel, dot = dot, approachSpeed = approachSpeed,
-		eta = distance / math.max(approachSpeed, speed * 0.7, 1),
-	}
+	return {ball=ball, distance=distance, speed=speed, velocity=velocity, accel=accel,
+		dot=dot, approachSpeed=approachSpeed,
+		eta = distance / math.max(approachSpeed, speed * 0.7, 1)}
 end
 
---=============================================================
--- RADIUS: подстраивается под мяч (+ SpeedAssist)
---=============================================================
--- радиус = скорость_сближения * (lead + сеть + кадр), плюс бонус на быстрый мяч
 local function computeRadius(threat, pingSec)
 	local net = pingSec * 0.5 + (1 / 60)
 	local boost = 0
@@ -633,18 +715,13 @@ local function computeRadius(threat, pingSec)
 		return math.clamp(threat.speed * lead, Config.MinRadius, Config.MaxRadius)
 	end
 	local r = Config.BaseRadius
-	if Config.PingComp then
-		r = r + math.clamp(threat.speed * net, 0, Config.BallPredCap)
-	end
+	if Config.PingComp then r = r + math.clamp(threat.speed * net, 0, Config.BallPredCap) end
 	if Config.SpeedAssist then
 		r = r + math.clamp((threat.speed - 120) * 0.06, 0, 16) * math.clamp(Config.FastBoost, 0, 1)
 	end
 	return r
 end
 
---=============================================================
--- MAIN LOGIC
---=============================================================
 local function step(dt)
 	if not Config.AutoParry or not inMatch() then return end
 	local char = LP.Character
@@ -652,57 +729,38 @@ local function step(dt)
 	if not root then return end
 	local ball = getBall()
 	if not ball then return end
-
 	local threat = computeThreat(ball, root)
 	if not threat then return end
-
 	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
-
 	local pingSec = getPing() / 1000
 	local radius = computeRadius(threat, pingSec)
 	E.radius = radius
 	E.hot = threat.distance <= radius
-
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
 	E.targeted = (tgt == true) or (tgt == nil and heur)
-
 	if Config.RequireTarget then
 		if tgt == false then return end
 		if tgt == nil and not heur then return end
 	end
-
 	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
-
 	local horizon = (Config.Horizon or 0.5) * (Config.Prediction or 0.07)
 	horizon = horizon + math.clamp((threat.speed - 150) * 0.00035, 0, 0.14)
 	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
-
 	local dirOk = threat.dot > 0.05 or threat.approachSpeed > -5
-
 	if Config.CrossTrigger then
 		local closing = math.max(threat.approachSpeed, threat.speed * 0.5, 1)
 		local tCross = (threat.distance - radius) / closing
 		E.lead = tCross
-		if tCross <= transit and dirOk then
-			sendAction(ball)
-			return
-		end
+		if tCross <= transit and dirOk then sendAction(ball); return end
 	else
-		if threat.distance <= radius and dirOk then
-			sendAction(ball)
-			return
-		end
+		if threat.distance <= radius and dirOk then sendAction(ball); return end
 	end
-
-	-- подстраховка: предсказанный контакт внутри круга
 	local futurePlayer = root.Position + root.AssemblyLinearVelocity * transit
 	local curveComp = 0.5 * threat.accel * (transit * transit)
 	if curveComp.Magnitude > 15 then curveComp = curveComp.Unit * 15 end
 	local futureBall = ball.Position + threat.velocity * transit + curveComp
-	if (futurePlayer - futureBall).Magnitude <= radius and dirOk then
-		sendAction(ball)
-	end
+	if (futurePlayer - futureBall).Magnitude <= radius and dirOk then sendAction(ball) end
 end
 
 bind(RunService.Heartbeat, function()
@@ -722,15 +780,11 @@ end)
 -- PARRY RING
 --=============================================================
 local ring = new("CylinderHandleAdornment", {
-	Height = 0.05,
-	Radius = Config.BaseRadius,
+	Height = 0.05, Radius = Config.BaseRadius,
 	InnerRadius = Config.BaseRadius * (1 - Config.RingThick),
 	Color3 = RingColors[Config.RingColor] or RingColors.Purple,
-	Transparency = Config.RingOpacity,
-	AlwaysOnTop = true,
-	ZIndex = 5,
-	CFrame = CFrame.Angles(math.rad(90), 0, 0),
-	Visible = false,
+	Transparency = Config.RingOpacity, AlwaysOnTop = true, ZIndex = 5,
+	CFrame = CFrame.Angles(math.rad(90), 0, 0), Visible = false,
 }, gui)
 
 --=============================================================
@@ -863,8 +917,7 @@ local function updateExtras()
 						h = Instance.new("Highlight")
 						h.Name = "ScriptSleepHL"
 						h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-						h.FillTransparency = 0.72
-						h.OutlineTransparency = 0
+						h.FillTransparency = 0.72; h.OutlineTransparency = 0
 						h.Parent = char
 					end
 					h.FillColor, h.OutlineColor = Config.EspColor, Config.EspColor
@@ -898,9 +951,10 @@ end
 bind(LP.CharacterAdded, function() task.wait(0.6); pcall(applyHeadless) end)
 
 --=============================================================
--- KORBLOX LEG
+-- KORBLOX LEG (fixed: MeshPart -> swap MeshId, R6 -> SpecialMesh)
 --=============================================================
 local KORBLOX_TAG = "SSKorblox"
+local korbloxSaved = {}
 local korbloxFeet = {}
 
 local function korbloxLegNames()
@@ -910,48 +964,72 @@ local function korbloxLegNames()
 	return {"RightUpperLeg", "RightLowerLeg", "Right Leg"}
 end
 
-local function clearKorblox()
+local function korbloxWantMesh()
+	return (Config.KorbloxMesh ~= "" and Config.KorbloxMesh) or KORBLOX_FALLBACK
+end
+
+local function restoreKorblox()
 	local char = LP.Character
-	if not char then return end
-	for _, d in ipairs(char:GetDescendants()) do
-		if d:IsA("SpecialMesh") and d.Name == KORBLOX_TAG then d:Destroy() end
+	for part, data in pairs(korbloxSaved) do
+		if part.Parent then
+			pcall(function()
+				if part:IsA("MeshPart") then
+					if data.mesh then part.MeshId = data.mesh end
+					if data.tex then part.TextureID = data.tex end
+				elseif data.size then
+					part.Size = data.size
+				end
+			end)
+		end
+	end
+	korbloxSaved = {}
+	for part, orig in pairs(korbloxFeet) do
+		if part.Parent then pcall(function() part.Transparency = orig end) end
+	end
+	korbloxFeet = {}
+	if char then
+		for _, d in ipairs(char:GetDescendants()) do
+			if d:IsA("SpecialMesh") and d.Name == KORBLOX_TAG then d:Destroy() end
+		end
 	end
 end
 
 local function applyKorblox()
 	local char = LP.Character
 	if not char then return end
-
-	-- вернуть ступни
-	for part, orig in pairs(korbloxFeet) do
-		if part.Parent then part.Transparency = orig end
-	end
-	korbloxFeet = {}
-
-	clearKorblox()
+	restoreKorblox()
 	if not Config.Korblox then return end
 
+	local th = math.clamp(Config.KorbloxThin, 0.05, 1)
+	local sc = math.clamp(Config.KorbloxScale, 0.4, 2.5)
+	local meshId = korbloxWantMesh()
 	local found = false
+
 	for _, n in ipairs(korbloxLegNames()) do
 		local leg = char:FindFirstChild(n)
 		if leg and leg:IsA("BasePart") then
 			found = true
-			local m = Instance.new("SpecialMesh")
-			m.Name = KORBLOX_TAG
-			m.MeshType = Enum.MeshType.FileMesh
-			m.MeshId = Config.KorbloxMesh
-			if Config.KorbloxTexture and Config.KorbloxTexture ~= "" then m.TextureId = Config.KorbloxTexture end
-			local th = math.clamp(Config.KorbloxThin, 0.05, 1)
-			local sc = math.clamp(Config.KorbloxScale, 0.4, 2.5)
-			m.Scale = Vector3.new(th * sc, sc, th * sc)
-			m.Parent = leg
+			if leg:IsA("MeshPart") then
+				-- MeshPart: меняем сам меш, без SpecialMesh (иначе часть становится невидимой)
+				korbloxSaved[leg] = {mesh = leg.MeshId, tex = leg.TextureID, size = leg.Size}
+				leg.MeshId = meshId
+				if Config.KorbloxTexture ~= "" then leg.TextureID = Config.KorbloxTexture end
+				leg.Size = Vector3.new(leg.Size.X * th, leg.Size.Y * sc, leg.Size.Z * th)
+			else
+				-- R6 Part: SpecialMesh
+				korbloxSaved[leg] = {size = leg.Size}
+				local m = Instance.new("SpecialMesh")
+				m.Name = KORBLOX_TAG
+				m.MeshType = Enum.MeshType.FileMesh
+				m.MeshId = meshId
+				if Config.KorbloxTexture ~= "" then m.TextureId = Config.KorbloxTexture end
+				m.Scale = Vector3.new(th * sc, sc, th * sc)
+				m.Parent = leg
+			end
 		end
 	end
 
-	if not found then
-		notify("korblox: leg not found", T.Warn)
-		return
-	end
+	if not found then notify("korblox: leg not found", T.Warn); return end
 
 	if Config.KorbloxHideFoot then
 		local footName = (Config.KorbloxSide == "Left") and "LeftFoot" or "RightFoot"
@@ -966,25 +1044,32 @@ end
 local function korbloxOk()
 	local char = LP.Character
 	if not char then return true end
-	local has = false
-	for _, d in ipairs(char:GetDescendants()) do
-		if d:IsA("SpecialMesh") and d.Name == KORBLOX_TAG then has = true; break end
+	local leg
+	for _, n in ipairs(korbloxLegNames()) do
+		local l = char:FindFirstChild(n)
+		if l then leg = l; break end
 	end
-	if not Config.Korblox then return not has end
-	if not has then return false end
-	local leg = char:FindFirstChild(korbloxLegNames()[1])
-	if not leg then return false end
+	if not leg then return true end
+
+	local applied = korbloxSaved[leg] ~= nil or leg:FindFirstChild(KORBLOX_TAG) ~= nil
+	if Config.Korblox ~= applied then return false end
+	if not Config.Korblox then return true end
+
+	local want = korbloxWantMesh()
+	if leg:IsA("MeshPart") then
+		return leg.MeshId == want
+	end
 	local m = leg:FindFirstChild(KORBLOX_TAG)
-	if not m or m.MeshId ~= Config.KorbloxMesh then return false end
-	local th = math.clamp(Config.KorbloxThin, 0.05, 1) * math.clamp(Config.KorbloxScale, 0.4, 2.5)
-	if math.abs(m.Scale.X - th) > 0.01 then return false end
-	return true
+	return m ~= nil and m.MeshId == want
 end
 
-bind(LP.CharacterAdded, function() task.wait(0.9); pcall(applyKorblox) end)
+bind(LP.CharacterAdded, function()
+	task.wait(0.9); pcall(applyKorblox)
+	if selectedSkin then task.wait(0.6); pcall(applySkin, true) end
+end)
 
 --=============================================================
--- SKY / PARTICLES / SKIN
+-- SKY / PARTICLES / BALL SKIN
 --=============================================================
 local SkyPresets = {
 	Default = {ClockTime=14, Brightness=2, Ambient=Color3.fromRGB(70,70,70), Outdoor=Color3.fromRGB(128,128,128), Sky=true},
@@ -1106,9 +1191,7 @@ ca((slider(cp, "Fixed Radius (manual)", 4, 60, Config.BaseRadius, 0, function(v)
 
 ca(section(cp, "Parry Circle"))
 ca((toggle(cp, "Show Circle", Config.ParryRing, function(v) Config.ParryRing = v end)))
-ca((dropdown(cp, "Circle Color", {"Purple","White","Red","Cyan","Green","Gold"}, Config.RingColor, function(v)
-	Config.RingColor = v
-end)))
+ca((dropdown(cp, "Circle Color", {"Purple","White","Red","Cyan","Green","Gold"}, Config.RingColor, function(v) Config.RingColor = v end)))
 ca((slider(cp, "Circle Thickness", 0.01, 0.30, Config.RingThick, 2, function(v) Config.RingThick = v end)))
 ca((slider(cp, "Circle Opacity", 0, 0.9, Config.RingOpacity, 2, function(v) Config.RingOpacity = v end)))
 
@@ -1130,27 +1213,15 @@ end)))
 local bp, ba = newTab("Bypass")
 ba(section(bp, "Input (BAC bypass)"))
 ba((button(bp, "MAX STEALTH", function()
-	Config.InputMode = "Keypress"
-	Config.ActionsPerSec = 45
-	Config.BatchMode = "Normal"
-	Config.RequireTarget = true
-	Config.AutoRadius = true
-	Config.LeadTime = 0.13
-	Config.SpeedAssist = true
-	Config.Headless = false
-	Config.Particles = false
-	Config.BallRecolor = false
+	Config.InputMode = "Keypress"; Config.ActionsPerSec = 45; Config.BatchMode = "Normal"
+	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.13
+	Config.SpeedAssist = true; Config.Headless = false; Config.Particles = false; Config.BallRecolor = false
 	notify("stealth armed", T.Good)
 end)))
 ba((button(bp, "MAX SPEED", function()
-	Config.InputMode = "Keypress"
-	Config.ActionsPerSec = 90
-	Config.BatchMode = "Extremely Fast"
-	Config.RequireTarget = true
-	Config.AutoRadius = true
-	Config.LeadTime = 0.11
-	Config.SpeedAssist = true
-	Config.FastBoost = 0.8
+	Config.InputMode = "Keypress"; Config.ActionsPerSec = 90; Config.BatchMode = "Extremely Fast"
+	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.11
+	Config.SpeedAssist = true; Config.FastBoost = 0.8
 	notify("speed armed", T.Good)
 end)))
 ba((button(bp, "Show Input Backend", function()
@@ -1162,7 +1233,11 @@ ba((button(bp, "Find Parry Remote", function()
 end)))
 ba((toggle(bp, "Debug Readout", Config.Debug, function(v) Config.Debug = v end)))
 
+--=============================================================
+-- VISUALS (+ Korblox)
+--=============================================================
 local vp, va = newTab("Visuals")
+va(section(vp, "ESP"))
 va((toggle(vp, "Box ESP", Config.BoxEsp, function(v) Config.BoxEsp = v end)))
 va((toggle(vp, "Box Fill", Config.EspFill, function(v) Config.EspFill = v end)))
 va((toggle(vp, "Name ESP", Config.NameEsp, function(v) Config.NameEsp = v end)))
@@ -1182,6 +1257,8 @@ va((dropdown(vp, "Ball ESP Color", {"Red","White","Cyan","Gold","Magenta"}, "Red
 		Gold=Color3.fromRGB(255,210,90),Magenta=Color3.fromRGB(255,110,240)}
 	Config.BallEspColor = m[v] or Color3.fromRGB(255,90,90)
 end)))
+
+va(section(vp, "Character"))
 va((toggle(vp, "Headless", Config.Headless, function(v) Config.Headless = v; applyHeadless() end)))
 va((toggle(vp, "Fullbright", Config.Fullbright, function(v)
 	Config.Fullbright = v
@@ -1190,6 +1267,16 @@ va((toggle(vp, "Fullbright", Config.Fullbright, function(v)
 		Lighting.Brightness = 2; Lighting.GlobalShadows = false
 	else applySky(Config.SkyPreset) end
 end)))
+
+va(section(vp, "Korblox Bundle Leg"))
+va((toggle(vp, "Wear Korblox Leg", Config.Korblox, function(v) Config.Korblox = v; applyKorblox() end)))
+va((dropdown(vp, "Korblox Side", {"Right", "Left"}, Config.KorbloxSide, function(v) Config.KorbloxSide = v; applyKorblox() end)))
+va((textbox(vp, "Korblox Mesh ID", Config.KorbloxMesh, "rbxassetid://...", function(v) Config.KorbloxMesh = v; applyKorblox() end)))
+va((textbox(vp, "Korblox Texture ID", Config.KorbloxTexture, "rbxassetid://...", function(v) Config.KorbloxTexture = v; applyKorblox() end)))
+va((slider(vp, "Korblox Thinness", 0.05, 1.0, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
+va((slider(vp, "Korblox Scale", 0.4, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
+va((toggle(vp, "Hide Foot", Config.KorbloxHideFoot, function(v) Config.KorbloxHideFoot = v; applyKorblox() end)))
+va((button(vp, "Korblox: Reapply", function() applyKorblox(); notify("korblox reapplied", T.Good) end)))
 
 local wp, wa = newTab("World")
 wa((dropdown(wp, "Sky Preset", {"Default","Night","Blood","Black","Neon","Vapor"}, Config.SkyPreset, function(v)
@@ -1200,50 +1287,63 @@ wa((slider(wp, "Brightness", 0, 5, Config.Brightness, 1, function(v) Config.Brig
 wa((toggle(wp, "Particles", Config.Particles, function(v) Config.Particles = v; applyParticles() end)))
 wa((slider(wp, "Particle Rate", 5, 200, Config.ParticleRate, 0, function(v) Config.ParticleRate = v; applyParticles() end)))
 
+--=============================================================
+-- SKINS TAB
+--=============================================================
 local kp, ka = newTab("Skins")
-ka((textbox(kp, "Sword Mesh ID", Config.SwordMesh, "rbxassetid://...", function(v) Config.SwordMesh = v end)))
-ka((textbox(kp, "Sword Texture ID", Config.SwordTexture, "rbxassetid://...", function(v) Config.SwordTexture = v end)))
-ka((button(kp, "Apply Sword Skin", function()
-	local char = LP.Character
-	if not char then return end
-	local found = false
-	for _, d in ipairs(char:GetDescendants()) do
-		local n = d.Name:lower()
-		if (n:find("sword") or n:find("blade") or n:find("weapon")) and (d:IsA("MeshPart") or d:IsA("SpecialMesh")) then
-			found = true
-			pcall(function()
-				if Config.SwordMesh ~= "" then d.MeshId = Config.SwordMesh end
-				if Config.SwordTexture ~= "" then
-					if d:IsA("MeshPart") then d.TextureID = Config.SwordTexture else d.TextureId = Config.SwordTexture end
-				end
-			end)
-		end
-	end
-	notify(found and "applied" or "sword not found", found and T.Good or T.Bad)
+ka(section(kp, "In-Game Skins"))
+local skinDropdown
+local function rebuildSkinDropdown()
+	if skinDropdown then skinDropdown:Destroy() end
+	local names = {}
+	for _, s in ipairs(Skins) do table.insert(names, s.name) end
+	if #names == 0 then names = {"(none found)"} end
+	local cur = Config.SkinName ~= "" and Config.SkinName or names[1]
+	skinDropdown = dropdown(kp, "Skin", names, cur, function(v)
+		selectedSkin = SkinIndex[v]
+		Config.SkinName = v
+		if selectedSkin then applySkin() else notify("no skin data for " .. tostring(v), T.Warn) end
+	end)
+	ka(skinDropdown)
+end
+ka((button(kp, "Rescan Skins", function()
+	local n = buildSkinList()
+	rebuildSkinDropdown()
+	notify("found " .. n .. " skins", n > 0 and T.Good or T.Warn)
 end)))
+ka((button(kp, "Apply Selected Skin", function()
+	if selectedSkin then applySkin() else notify("pick a skin first", T.Warn) end
+end)))
+ka((button(kp, "Clear Skin (restore)", function()
+	restoreSword()
+	selectedSkin = nil
+	Config.SkinName = ""
+	notify("skin cleared", T.Good)
+end)))
+ka((slider(kp, "Skin Scale", 0.4, 2.5, Config.SkinScale, 2, function(v)
+	Config.SkinScale = v
+	if selectedSkin then applySkin(true) end
+end)))
+
+ka(section(kp, "Custom Mesh (manual)"))
+ka((textbox(kp, "Mesh ID", "", "rbxassetid://...", function(v) end)))
+local customMeshBox
+ka((textbox(kp, "Texture ID", "", "rbxassetid://...", function(v) end)))
+ka((button(kp, "Apply Custom Mesh", function()
+	local t = getSwordTarget()
+	if not t or not t.part then notify("sword not found", T.Bad); return end
+	local meshBox = nil
+	-- берём значения из текстбоксов через их Text
+	local vals = {}
+	for _, c in ipairs(kp:GetChildren()) do end
+	notify("use Apply Custom below", T.Dim)
+end)))
+
+ka(section(kp, "Ball"))
 ka((toggle(kp, "Recolor Ball", Config.BallRecolor, function(v) Config.BallRecolor = v end)))
 ka((slider(kp, "Ball Size", 0.5, 3, Config.BallSize, 2, function(v) Config.BallSize = v end)))
 
---=============================================================
--- KORBLOX TAB
---=============================================================
-local xp, xa = newTab("Korblox")
-xa(section(xp, "Korblox Bundle Leg"))
-xa((toggle(xp, "Wear Korblox Leg", Config.Korblox, function(v) Config.Korblox = v; applyKorblox() end)))
-xa((dropdown(xp, "Side", {"Right", "Left"}, Config.KorbloxSide, function(v) Config.KorbloxSide = v; applyKorblox() end)))
-xa((textbox(xp, "Mesh ID", Config.KorbloxMesh, "rbxassetid://...", function(v) Config.KorbloxMesh = v; applyKorblox() end)))
-xa((textbox(xp, "Texture ID", Config.KorbloxTexture, "rbxassetid://...", function(v) Config.KorbloxTexture = v; applyKorblox() end)))
-xa((slider(xp, "Thinness", 0.05, 1.0, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
-xa((slider(xp, "Scale", 0.4, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
-xa((toggle(xp, "Hide Foot", Config.KorbloxHideFoot, function(v) Config.KorbloxHideFoot = v; applyKorblox() end)))
-xa((button(xp, "Reapply", function() applyKorblox(); notify("korblox reapplied", T.Good) end)))
-xa((button(xp, "Reset Default Mesh", function()
-	Config.KorbloxMesh = "rbxassetid://169177037"
-	Config.KorbloxTexture = ""
-	Config.KorbloxThin = 0.45
-	Config.KorbloxScale = 1.0
-	applyKorblox(); notify("defaults restored", T.Good)
-end)))
+rebuildSkinDropdown()
 
 local mp, ma = newTab("Misc")
 ma((slider(mp, "Field of View", 40, 120, Config.Fov, 0, function(v) Config.Fov = v end)))
@@ -1265,7 +1365,8 @@ end)))
 ma((button(mp, "Save Config", function() saveConfig(); notify("saved", T.Good) end)))
 ma((button(mp, "Unload Script", function()
 	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-	pcall(clearKorblox)
+	pcall(restoreKorblox)
+	pcall(restoreSword)
 	pcall(function() gui:Destroy() end)
 	pcall(function()
 		Lighting.ClockTime = 14; Lighting.Brightness = 2
@@ -1302,10 +1403,23 @@ end
 task.spawn(function() while gui.Parent do pcall(updateExtras); task.wait(0.35) end end)
 task.spawn(function() while gui.Parent do pcall(applyParticles); pcall(applyBallSkin); task.wait(0.5) end end)
 task.spawn(function() while gui.Parent do findRemote(); task.wait(5) end end)
+
+-- korblox self-heal
 task.spawn(function()
 	while gui.Parent do
 		pcall(function() if not korbloxOk() then applyKorblox() end end)
 		task.wait(1)
+	end
+end)
+
+-- skin self-heal (меч пересоздаётся между раундами)
+task.spawn(function()
+	while gui.Parent do
+		if selectedSkin then
+			local t = getSwordTarget()
+			if t and t.part and t.part.MeshId ~= selectedSkin.mesh then pcall(applySkin, true) end
+		end
+		task.wait(1.5)
 	end
 end)
 
@@ -1346,7 +1460,11 @@ task.spawn(function()
 	pcall(applySky, Config.SkyPreset)
 	pcall(applyHeadless)
 	pcall(applyKorblox)
+	if Config.SkinName ~= "" and SkinIndex[Config.SkinName] then
+		selectedSkin = SkinIndex[Config.SkinName]
+		pcall(applySkin, true)
+	end
 	if Config.FpsBoost then pcall(applyFpsBoost, true) end
-	notify(TITLE .. " loaded | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
-	print("[" .. TITLE .. "] keypress=" .. tostring(hasKeypress) .. " mouse=" .. tostring(hasMouse))
+	notify(TITLE .. " loaded | skins: " .. skinCount .. " | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
+	print("[" .. TITLE .. "] skins=" .. skinCount .. " keypress=" .. tostring(hasKeypress))
 end)
