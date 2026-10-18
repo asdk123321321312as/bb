@@ -1,1470 +1,666 @@
---[[
-    𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    input-based bypass (keypress) + adaptive-radius parry
-    + korblox bundle leg (fixed) + in-game skin changer
-    menu: RightShift
---]]
+--==================================================================
+--  BLOX STRIKE — ENEMY WH v11
+--  Без оверрайдов внешности (Korblox/скины не ломаются)
+--  + поиск способностей + авто-отбив мяча
+--  E — WH | F — инфа | :Diag() | :Abilities() | :Watch() | :BallDebug()
+--==================================================================
 
-local cloneref = cloneref or function(o) return o end
+if _G.BloxStrikeESP then pcall(function() _G.BloxStrikeESP:Destroy() end) end
 
-local Players          = cloneref(game:GetService("Players"))
-local RunService       = cloneref(game:GetService("RunService"))
-local Workspace        = cloneref(game:GetService("Workspace"))
-local UserInputService = cloneref(game:GetService("UserInputService"))
-local TweenService     = cloneref(game:GetService("TweenService"))
-local Lighting         = cloneref(game:GetService("Lighting"))
-local ReplicatedStorage= cloneref(game:GetService("ReplicatedStorage"))
-local Stats            = cloneref(game:GetService("Stats"))
-local HttpService      = cloneref(game:GetService("HttpService"))
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService      = game:GetService("HttpService")
+local VIM              = game:GetService("VirtualInputManager")
+local RS               = game:GetService("ReplicatedStorage")
+local LP               = Players.LocalPlayer
+local Camera           = workspace.CurrentCamera
 
-local LP     = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
-local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
+local CFG = {
+    Enabled            = true,
+    ShowAllies         = false,
+    OnlyAlive          = true,
+    MaxDistance        = 0,
+    ThroughWalls       = true,
+    Pulse              = true,
+    PulseSpeed         = 4,
+    PulseMin           = 0.28,
+    PulseMax           = 0.58,
+    OutlineTransparency= 0,
+    EnemyFill          = Color3.fromRGB(255, 45, 45),
+    EnemyOutline       = Color3.fromRGB(255, 255, 255),
+    AllyFill           = Color3.fromRGB(60, 220, 120),
+    AllyOutline        = Color3.fromRGB(255, 255, 255),
 
---=============================================================
--- CONFIG
---=============================================================
-local Config = {
-	AutoParry     = true,
-	InputMode     = "Auto",
-	ParryKey      = "F",
-	ActionsPerSec = 60,
-	BatchMode     = "Extremely Fast",
-	Prediction    = 0.07,
-	Horizon       = 0.5,
+    Box                = true,
+    TryReparentRig     = true,
+    PoseOverride       = true,
+    ForceLoadRigs      = true,
+    KillGameHighlight  = true,
+    RestoreOnUnload    = true,
 
-	-- радиус
-	AutoRadius    = true,
-	LeadTime      = 0.11,
-	MinRadius     = 9,
-	MaxRadius     = 50,
-	BaseRadius    = 16,
-	CrossTrigger  = true,
-	PingComp      = true,
-	BallPredCap   = 22,
+    ShowInfo           = true,
+    InfoMaxDistance    = 100000,
+    InfoOffset         = 3.4,
+    ShowHealthArmor    = true,
+    ShowWeapon         = true,
+    ShowKit            = true,
 
-	-- ускорение реакции
-	SpeedAssist   = true,
-	FastBoost     = 0.6,
+    -- мяч / способности
+    Ball               = true,
+    BallRange          = 26,      -- с какой дистанции бить
+    BallCooldown       = 0.12,
+    BallApproachOnly   = true,    -- только если мяч летит на нас
+    BallAim            = false,   -- доворачивать прицел на мяч
+    BallAimGain        = 0.6,
+    BallAimDeadzone    = 3,
+    BallKey            = nil,     -- например Enum.KeyCode.F, иначе мышь
+    BallWords          = {"ball","orb","sphere","projectile","disc","puck","core","energy","blast"},
 
-	RequireTarget = true,
-	OnePerBall    = false,
-	Debug         = false,
-
-	-- круг
-	ParryRing     = true,
-	RingColor     = "Purple",
-	RingThick     = 0.06,
-	RingOpacity   = 0.3,
-
-	-- korblox
-	Korblox        = false,
-	KorbloxSide    = "Right",
-	KorbloxMesh    = "rbxassetid://169177037",
-	KorbloxTexture = "",
-	KorbloxThin    = 0.45,
-	KorbloxScale   = 1.0,
-	KorbloxHideFoot= true,
-
-	-- скины
-	SkinName      = "",
-	SkinScale     = 1.0,
-
-	BoxEsp        = true,
-	EspColor      = Color3.fromRGB(255, 255, 255),
-	EspFill       = false,
-	EspFillAlpha  = 0.85,
-	NameEsp       = true,
-	DistEsp       = true,
-	HealthEsp     = true,
-	Tracers       = false,
-	BallEsp       = true,
-	BallEspColor  = Color3.fromRGB(255, 90, 90),
-	Highlights    = true,
-	Hitboxes      = false,
-	Headless      = false,
-	Fullbright    = false,
-
-	SkyPreset     = "Default",
-	ClockTime     = 14,
-	Brightness    = 2,
-	Particles     = false,
-	ParticleRate  = 40,
-	ParticleColor = Color3.fromRGB(255, 255, 255),
-
-	BallRecolor   = false,
-	BallColor     = Color3.fromRGB(255, 255, 255),
-	BallSize      = 1,
-
-	Fov           = 70,
-	FpsBoost      = false,
-	Hud           = true,
-	AntiAfk       = true,
-	MenuOpen      = true,
-	MenuKey       = Enum.KeyCode.RightShift,
+    ToggleKey          = Enum.KeyCode.E,
+    InfoKey            = Enum.KeyCode.F,
+    UpdateRate         = 0.1,
+    TeamRefresh        = 2,
+    ForceSource        = nil,
 }
 
-local KeyCodes = {F = 0x46, E = 0x45, Q = 0x51, R = 0x52, V = 0x56, Space = 0x20, C = 0x43}
-local RingColors = {
-	Purple = Color3.fromRGB(190, 140, 255),
-	White  = Color3.fromRGB(255, 255, 255),
-	Red    = Color3.fromRGB(255, 90, 90),
-	Cyan   = Color3.fromRGB(90, 230, 255),
-	Green  = Color3.fromRGB(120, 255, 160),
-	Gold   = Color3.fromRGB(255, 210, 90),
-}
-local RingHot = Color3.fromRGB(120, 255, 160)
-local KORBLOX_FALLBACK = "rbxassetid://169177037"
+local TEAM_ATTR  = "Team"
+local OWNER_ATTR = "PresentationOwnerUserId"
+local VIS_ATTR   = "ClientCharacterPresentationVisible"
+local POSE_ATTR  = "PresentationSpawnPosition"
+local YAW_ATTR   = "PresentationSpawnYaw"
 
---=============================================================
--- SAVE / LOAD
---=============================================================
-local FILE  = "ScriptSleep_BladeBall.json"
-local hasFS = pcall(function() return writefile end)
+local boxes, billboards, rigHL, fallbackRigs, tracked, poseState = {}, {}, {}, {}, {}, {}
+local balls, ballWatch = {}, {}
+local origParent, conns = {}, {}
+local running = true
+local resolver, resolverName = nil, "none"
 
-local function ser(v)
-	if typeof(v) == "Color3" then return {__t="c", r=v.R, g=v.G, b=v.B} end
-	if typeof(v) == "EnumItem" then return {__t="e", a=tostring(v.EnumType), b=v.Name} end
-	return v
-end
-local function deser(v)
-	if type(v) == "table" and v.__t then
-		if v.__t == "c" then return Color3.new(v.r, v.g, v.b) end
-		if v.__t == "e" then local ok,e = pcall(function() return Enum[v.a][v.b] end); if ok then return e end end
-	end
-	return v
-end
-local function saveConfig()
-	if not hasFS then return end
-	local out = {}
-	for k,v in pairs(Config) do out[k] = ser(v) end
-	pcall(function() writefile(FILE, HttpService:JSONEncode(out)) end)
-end
-local function loadConfig()
-	if not hasFS then return end
-	local ok, data = pcall(readfile, FILE)
-	if not ok or not data then return end
-	local ok2, dec = pcall(function() return HttpService:JSONDecode(data) end)
-	if not ok2 or type(dec) ~= "table" then return end
-	for k,v in pairs(dec) do
-		if Config[k] ~= nil then local d = deser(v); if d ~= nil then Config[k] = d end end
-	end
-end
-local sq = false
-local function queueSave()
-	if sq then return end
-	sq = true
-	task.delay(1, function() sq = false; saveConfig() end)
-end
-loadConfig()
-
---=============================================================
--- THEME
---=============================================================
-local T = {
-	Bg=Color3.fromRGB(9,9,11), Panel=Color3.fromRGB(15,15,18), Item=Color3.fromRGB(21,21,25),
-	ItemHi=Color3.fromRGB(31,31,37), Line=Color3.fromRGB(40,40,47), Text=Color3.fromRGB(238,238,243),
-	Dim=Color3.fromRGB(140,140,150), Accent=Color3.fromRGB(255,255,255),
-	Bad=Color3.fromRGB(255,105,105), Good=Color3.fromRGB(120,255,165), Warn=Color3.fromRGB(255,205,90),
-	Purple=Color3.fromRGB(190,140,255),
-}
-
-local gui
-
---=============================================================
--- HELPERS
---=============================================================
-local function new(c, p, parent)
-	local i = Instance.new(c)
-	for k,v in next,p do i[k] = v end
-	if parent then i.Parent = parent end
-	return i
-end
-local function corner(i, r) new("UICorner", {CornerRadius = UDim.new(0, r or 8)}, i) end
-local function stroke(i, c, t) new("UIStroke", {Color=c or T.Line, Thickness=t or 1, ApplyStrokeMode=Enum.ApplyStrokeMode.Border}, i) end
-local function getPing()
-	local ok, v = pcall(function()
-		if LP.GetNetworkPing then
-			local np = LP:GetNetworkPing()
-			if np and np > 0 then return np * 1000 end
-		end
-		return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-	end)
-	return math.clamp(ok and v or 60, 5, 500)
-end
-local conns = {}
-local function bind(s, f) table.insert(conns, s:Connect(f)) end
-local function notify(text, col)
-	if not gui then return end
-	local b = new("Frame", {Size=UDim2.new(0,280,0,32), Position=UDim2.new(1,-300,0,12),
-		BackgroundColor3=T.Bg, BackgroundTransparency=0.1, BorderSizePixel=0, ZIndex=60}, gui)
-	corner(b,8); stroke(b, col or T.Line)
-	new("TextLabel", {Size=UDim2.new(1,-20,1,0), Position=UDim2.new(0,10,0,0), BackgroundTransparency=1,
-		Font=Enum.Font.GothamMedium, TextSize=12, TextColor3=col or T.Text,
-		TextXAlignment=Enum.TextXAlignment.Left, Text=text}, b)
-	task.delay(3.5, function()
-		TweenService:Create(b, TweenInfo.new(0.4), {BackgroundTransparency=1}):Play()
-		task.wait(0.45); pcall(function() b:Destroy() end)
-	end)
+local rootFolder = workspace:FindFirstChild("VeniceESP")
+if not rootFolder then
+    rootFolder = Instance.new("Folder")
+    rootFolder.Name = "VeniceESP"
+    rootFolder.Parent = workspace
 end
 
-local function safeParent()
-	if gethui then local h = gethui(); if h then return h end end
-	return LP:WaitForChild("PlayerGui")
+local function new(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props or {}) do o[k] = v end
+    if parent then o.Parent = parent end
+    return o
 end
 
-gui = new("ScreenGui", {Name="ScriptSleep", ResetOnSpawn=false,
-	ZIndexBehavior=Enum.ZIndexBehavior.Sibling, IgnoreGuiInset=true, DisplayOrder=999})
-if syn and syn.protect_gui then pcall(syn.protect_gui, gui) end
-gui.Parent = safeParent()
-
-local espFolder = new("Frame", {Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, ZIndex=1}, gui)
-
---=============================================================
--- WIDGETS
---=============================================================
-local function section(p, t)
-	return new("TextLabel", {Size=UDim2.new(1,0,0,24), BackgroundTransparency=1, Font=Enum.Font.GothamBold,
-		TextSize=11, TextColor3=T.Accent, TextXAlignment=Enum.TextXAlignment.Left, Text=string.upper(t)}, p)
+local function jdecode(s)
+    if typeof(s) ~= "string" or s == "" then return nil end
+    local ok, t = pcall(HttpService.JSONDecode, HttpService, s)
+    if ok and typeof(t) == "table" then return t end
+    return nil
 end
 
-local function toggle(p, label, state, cb)
-	local row = new("Frame", {Size=UDim2.new(1,0,0,28), BackgroundTransparency=1}, p)
-	new("TextLabel", {Size=UDim2.new(1,-50,1,0), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
-		TextSize=13, TextColor3=T.Text, TextXAlignment=Enum.TextXAlignment.Left, Text=label}, row)
-	local btn = new("TextButton", {Size=UDim2.new(0,36,0,18), Position=UDim2.new(1,-36,0.5,-9),
-		BackgroundColor3=T.Item, Text="", AutoButtonColor=false}, row)
-	corner(btn,9); stroke(btn,T.Line)
-	local knob = new("Frame", {Size=UDim2.new(0,14,0,14), Position=UDim2.new(0,2,0.5,-7),
-		BackgroundColor3=T.Dim, BorderSizePixel=0}, btn)
-	corner(knob,7)
-	local on = state
-	local function render()
-		TweenService:Create(knob, TweenInfo.new(0.15), {
-			Position = on and UDim2.new(1,-16,0.5,-7) or UDim2.new(0,2,0.5,-7),
-			BackgroundColor3 = on and T.Accent or T.Dim}):Play()
-		TweenService:Create(btn, TweenInfo.new(0.15), {
-			BackgroundColor3 = on and Color3.fromRGB(45,45,52) or T.Item}):Play()
-	end
-	render()
-	btn.MouseButton1Click:Connect(function()
-		on = not on; render(); if cb then cb(on) end; queueSave()
-	end)
-	return row, function(v) on = v; render() end
+local function charFolder() return workspace:FindFirstChild("Characters") or workspace end
+local function culledFolder() return RS:FindFirstChild("_PVS_CulledCharacters") end
+
+--=========================== КОМАНДА ==============================
+local function getTeam(p)
+    local v = p:GetAttribute(TEAM_ATTR)
+    if typeof(v) == "string" and v ~= "" then return v end
+    return nil
 end
 
-local function slider(p, label, minV, maxV, default, dec, cb)
-	local h = new("Frame", {Size=UDim2.new(1,0,0,40), BackgroundTransparency=1}, p)
-	new("TextLabel", {Size=UDim2.new(1,-70,0,18), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
-		TextSize=13, TextColor3=T.Text, TextXAlignment=Enum.TextXAlignment.Left, Text=label}, h)
-	local vl = new("TextLabel", {Size=UDim2.new(0,70,0,18), Position=UDim2.new(1,-70,0,0), BackgroundTransparency=1,
-		Font=Enum.Font.GothamBold, TextSize=13, TextColor3=T.Dim, TextXAlignment=Enum.TextXAlignment.Right, Text=""}, h)
-	local bar = new("Frame", {Size=UDim2.new(1,0,0,6), Position=UDim2.new(0,0,0,26), BackgroundColor3=T.Item, BorderSizePixel=0}, h)
-	corner(bar,3)
-	local fill = new("Frame", {Size=UDim2.new(0,0,1,0), BackgroundColor3=T.Accent, BorderSizePixel=0}, bar)
-	corner(fill,3)
-	local knob = new("Frame", {Size=UDim2.new(0,10,0,10), AnchorPoint=Vector2.new(0.5,0.5),
-		Position=UDim2.new(0,0,0.5,0), BackgroundColor3=T.Accent, BorderSizePixel=0}, bar)
-	corner(knob,5)
-	local function set(v, fire)
-		v = math.clamp(v, minV, maxV)
-		local a = (v-minV)/(maxV-minV)
-		fill.Size = UDim2.new(a,0,1,0); knob.Position = UDim2.new(a,0,0.5,0)
-		vl.Text = dec > 0 and string.format("%."..dec.."f", v) or tostring(math.floor(v))
-		if fire and cb then cb(v) end
-	end
-	set(default, false)
-	local drag = false
-	local function upd(i)
-		set(minV + (maxV-minV) * ((i.Position.X - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X,1)), true)
-	end
-	bar.InputBegan:Connect(function(i)
-		if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then drag=true; upd(i) end
-	end)
-	bind(UserInputService.InputChanged, function(i)
-		if drag and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then upd(i) end
-	end)
-	bind(UserInputService.InputEnded, function(i)
-		if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then drag=false; queueSave() end
-	end)
-	return h, set
+local function isEnemy(plr)
+    if not resolver then return true end
+    local a, b = resolver(plr), resolver(LP)
+    if a == nil or b == nil then return true end
+    return a ~= b
 end
 
-local function dropdown(p, label, options, default, cb)
-	local h = new("Frame", {Size=UDim2.new(1,0,0,30), BackgroundTransparency=1, ZIndex=5, ClipsDescendants=false}, p)
-	new("TextLabel", {Size=UDim2.new(1,-140,0,30), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
-		TextSize=13, TextColor3=T.Text, TextXAlignment=Enum.TextXAlignment.Left, Text=label}, h)
-	local btn = new("TextButton", {Size=UDim2.new(0,130,0,24), Position=UDim2.new(1,-130,0,3),
-		BackgroundColor3=T.Item, Text="", AutoButtonColor=false, ZIndex=6}, h)
-	corner(btn,6); stroke(btn,T.Line)
-	local txt = new("TextLabel", {Size=UDim2.new(1,-24,1,0), Position=UDim2.new(0,10,0,0), BackgroundTransparency=1,
-		Font=Enum.Font.GothamMedium, TextSize=12, TextColor3=T.Text, TextTruncate=Enum.TextTruncate.AtEnd,
-		TextXAlignment=Enum.TextXAlignment.Left, Text=tostring(default)}, btn)
-	local lh = math.min(#options, 10)*24+8
-	local list = new("Frame", {Size=UDim2.new(0,130,0,lh), Position=UDim2.new(1,-130,0,32),
-		BackgroundColor3=T.Panel, Visible=false, ZIndex=20, BorderSizePixel=0}, h)
-	corner(list,6); stroke(list,T.Line)
-	local inner = new("ScrollingFrame", {Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, BorderSizePixel=0,
-		ScrollBarThickness=2, ScrollBarImageColor3=T.Line, CanvasSize=UDim2.new(0,0,0,#options*24+8),
-		ScrollingDirection=Enum.ScrollingDirection.Y}, list)
-	new("UIListLayout", {Padding=UDim.new(0,2), SortOrder=Enum.SortOrder.LayoutOrder}, inner)
-	new("UIPadding", {PaddingTop=UDim.new(0,4), PaddingBottom=UDim.new(0,4)}, inner)
-	local open = false
-	for i,o in ipairs(options) do
-		local b = new("TextButton", {Size=UDim2.new(1,0,0,22), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
-			TextSize=12, TextColor3=T.Dim, Text=tostring(o), LayoutOrder=i, ZIndex=21,
-			TextTruncate=Enum.TextTruncate.AtEnd}, inner)
-		b.MouseEnter:Connect(function() b.TextColor3=T.Text end)
-		b.MouseLeave:Connect(function() b.TextColor3=T.Dim end)
-		b.MouseButton1Click:Connect(function()
-			txt.Text=tostring(o); list.Visible=false; open=false; h.Size=UDim2.new(1,0,0,30)
-			if cb then cb(o) end; queueSave()
-		end)
-	end
-	btn.MouseButton1Click:Connect(function()
-		open = not open; list.Visible = open
-		h.Size = open and UDim2.new(1,0,0,30+lh+6) or UDim2.new(1,0,0,30)
-	end)
-	return h, function(v) txt.Text = tostring(v) end
+local function validate(fn)
+    if fn(LP) == nil then return false end
+    local seen, n = {}, 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        local v = fn(p)
+        if v ~= nil and not seen[v] then seen[v] = true; n += 1 end
+    end
+    return n >= 2
 end
 
-local function textbox(p, label, default, ph, cb)
-	local h = new("Frame", {Size=UDim2.new(1,0,0,30), BackgroundTransparency=1}, p)
-	new("TextLabel", {Size=UDim2.new(1,-160,1,0), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
-		TextSize=13, TextColor3=T.Text, TextXAlignment=Enum.TextXAlignment.Left, Text=label}, h)
-	local box = new("TextBox", {Size=UDim2.new(0,150,0,24), Position=UDim2.new(1,-150,0,3),
-		BackgroundColor3=T.Item, Text=default or "", PlaceholderText=ph or "", Font=Enum.Font.Gotham,
-		TextSize=12, TextColor3=T.Text, PlaceholderColor3=T.Dim, ClearTextOnFocus=false, BorderSizePixel=0}, h)
-	corner(box,6); stroke(box,T.Line)
-	box.FocusLost:Connect(function() if cb then cb(box.Text) end; queueSave() end)
-	return h, box
+local function refreshResolver()
+    local fn = getTeam
+    if validate(fn) then resolver, resolverName = fn, "playerAttr:Team" return end
+    fn = function(p)
+        local c = p.Character
+        return (c and c:GetAttribute("CharacterName")) or p:GetAttribute("PresentationCharacterName")
+    end
+    if validate(fn) then resolver, resolverName = fn, "CharacterName" else
+        resolver, resolverName = nil, "none"
+    end
 end
 
-local function button(p, label, cb)
-	local b = new("TextButton", {Size=UDim2.new(1,0,0,28), BackgroundColor3=T.Item, Font=Enum.Font.GothamBold,
-		TextSize=12, TextColor3=T.Text, Text=label, AutoButtonColor=false, BorderSizePixel=0}, p)
-	corner(b,6); stroke(b,T.Line)
-	b.MouseEnter:Connect(function() TweenService:Create(b,TweenInfo.new(0.15),{BackgroundColor3=T.ItemHi}):Play() end)
-	b.MouseLeave:Connect(function() TweenService:Create(b,TweenInfo.new(0.15),{BackgroundColor3=T.Item}):Play() end)
-	b.MouseButton1Click:Connect(function() if cb then cb() end end)
-	return b
+--=========================== РИГ ==================================
+local function findGameRig(plr)
+    local c = plr.Character
+    if c and c:IsA("Model") and c:FindFirstChild("HumanoidRootPart") then return c end
+    local cf = culledFolder()
+    if cf then
+        local m = cf:FindFirstChild(plr.Name)
+        if m and m:IsA("Model") then return m end
+        for _, ch in ipairs(cf:GetChildren()) do
+            if ch:IsA("Model") and ch:GetAttribute(OWNER_ATTR) == plr.UserId then return ch end
+        end
+    end
+    local wc = workspace:FindFirstChild("Characters")
+    if wc then
+        for _, ch in ipairs(wc:GetChildren()) do
+            if ch:IsA("Model") and ch:GetAttribute(OWNER_ATTR) == plr.UserId then return ch end
+        end
+    end
+    return nil
 end
 
---=============================================================
--- WINDOW
---=============================================================
-local window = new("Frame", {Size=UDim2.new(0,660,0,450), Position=UDim2.new(0.5,-330,0.5,-225),
-	BackgroundColor3=T.Bg, BorderSizePixel=0, Visible=Config.MenuOpen}, gui)
-corner(window,12); stroke(window,T.Line,1)
-local topbar = new("Frame", {Size=UDim2.new(1,0,0,38), BackgroundColor3=T.Panel, BorderSizePixel=0}, window)
-corner(topbar,12)
-new("Frame", {Size=UDim2.new(1,0,0,12), Position=UDim2.new(0,0,1,-12), BackgroundColor3=T.Panel, BorderSizePixel=0}, topbar)
-new("TextLabel", {Size=UDim2.new(0,420,1,0), Position=UDim2.new(0,16,0,0), BackgroundTransparency=1,
-	Font=Enum.Font.GothamBold, TextSize=16, TextColor3=T.Text, TextXAlignment=Enum.TextXAlignment.Left, Text=TITLE}, topbar)
-local closeBtn = new("TextButton", {Size=UDim2.new(0,22,0,22), Position=UDim2.new(1,-32,0,8), BackgroundColor3=T.Item,
-	Text="x", Font=Enum.Font.GothamBold, TextSize=13, TextColor3=T.Dim, AutoButtonColor=false, BorderSizePixel=0}, topbar)
-corner(closeBtn,6)
-local minBtn = new("TextButton", {Size=UDim2.new(0,22,0,22), Position=UDim2.new(1,-60,0,8), BackgroundColor3=T.Item,
-	Text="-", Font=Enum.Font.GothamBold, TextSize=14, TextColor3=T.Dim, AutoButtonColor=false, BorderSizePixel=0}, topbar)
-corner(minBtn,6)
-
-local sidebar = new("Frame", {Size=UDim2.new(0,148,1,-38), Position=UDim2.new(0,0,0,38), BackgroundColor3=T.Panel, BorderSizePixel=0}, window)
-new("UIListLayout", {Padding=UDim.new(0,3), SortOrder=Enum.SortOrder.LayoutOrder}, sidebar)
-new("UIPadding", {PaddingTop=UDim.new(0,10), PaddingLeft=UDim.new(0,12), PaddingRight=UDim.new(0,12)}, sidebar)
-
-local scroll = new("ScrollingFrame", {Size=UDim2.new(1,-180,1,-60), Position=UDim2.new(0,160,0,50),
-	BackgroundTransparency=1, BorderSizePixel=0, ScrollBarThickness=3, ScrollBarImageColor3=T.Line,
-	CanvasSize=UDim2.new(0,0,0,0), AutomaticCanvasSize=Enum.AutomaticSize.Y, ScrollingDirection=Enum.ScrollingDirection.Y}, window)
-
-local tabs = {}
-local function newTab(name)
-	local btn = new("TextButton", {Size=UDim2.new(1,0,0,28), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
-		TextSize=13, TextColor3=T.Dim, TextXAlignment=Enum.TextXAlignment.Left, Text="   "..name, AutoButtonColor=false}, sidebar)
-	local ind = new("Frame", {Size=UDim2.new(0,2,0,0), Position=UDim2.new(0,0,0.5,0), AnchorPoint=Vector2.new(0,0.5),
-		BackgroundColor3=T.Accent, BorderSizePixel=0}, btn)
-	local page = new("Frame", {Size=UDim2.new(1,-6,0,0), BackgroundTransparency=1, Visible=false,
-		AutomaticSize=Enum.AutomaticSize.Y}, scroll)
-	new("UIListLayout", {Padding=UDim.new(0,6), SortOrder=Enum.SortOrder.LayoutOrder}, page)
-	local n = 0
-	local function add(o) n = n+1; o.LayoutOrder = n; o.Parent = page; return o end
-	tabs[name] = {btn=btn, page=page, ind=ind}
-	btn.MouseButton1Click:Connect(function()
-		for k,t in pairs(tabs) do
-			local on = (k==name)
-			t.page.Visible = on
-			TweenService:Create(t.btn,TweenInfo.new(0.15),{TextColor3 = on and T.Text or T.Dim}):Play()
-			TweenService:Create(t.ind,TweenInfo.new(0.15),{Size = on and UDim2.new(0,2,0,16) or UDim2.new(0,2,0,0)}):Play()
-		end
-		scroll.CanvasPosition = Vector2.new(0,0)
-	end)
-	return page, add
+local function buildFallbackRig(plr)
+    if not CFG.ForceLoadRigs then return nil end
+    local assets = RS:FindFirstChild("Assets")
+    local templates = assets and assets:FindFirstChild("Characters")
+    if not templates then return nil end
+    local name = plr:GetAttribute("PresentationCharacterName")
+    if typeof(name) ~= "string" then return nil end
+    local tmpl = templates:FindFirstChild(name)
+    if not tmpl or not tmpl:IsA("Model") then return nil end
+    local rig = tmpl:Clone()
+    rig.Name = "F_"..plr.Name
+    for _, d in ipairs(rig:GetDescendants()) do
+        if d:IsA("Humanoid") then d:Destroy()
+        elseif d:IsA("BasePart") then
+            d.CanCollide = false
+            d.CanQuery = false
+            d.CanTouch = false
+        elseif d:IsA("Highlight") or d:IsA("BillboardGui") then d:Destroy() end
+    end
+    local root = rig:FindFirstChild("HumanoidRootPart") or rig.PrimaryPart
+    if root then rig.PrimaryPart = root root.Anchored = true end
+    rig:SetAttribute(OWNER_ATTR, plr.UserId)
+    rig.Parent = rootFolder
+    return rig
 end
 
-local drag, ds, sp = false, nil, nil
-topbar.InputBegan:Connect(function(i)
-	if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
-		drag=true; ds=i.Position; sp=window.Position
-	end
-end)
-bind(UserInputService.InputChanged, function(i)
-	if drag and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
-		local d = i.Position - ds
-		window.Position = UDim2.new(sp.X.Scale, sp.X.Offset+d.X, sp.Y.Scale, sp.Y.Offset+d.Y)
-	end
-end)
-bind(UserInputService.InputEnded, function(i)
-	if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then drag=false end
-end)
-
---=============================================================
--- PARRY REMOTE (фолбэк)
---=============================================================
-local ParryRemote
-local function findRemote()
-	ParryRemote = nil
-	for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-		if d:IsA("RemoteEvent") and d.Name:lower() == "parry" then ParryRemote = d; return end
-	end
-	for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-		if d:IsA("RemoteEvent") and d.Name:lower():find("parry") then ParryRemote = d; return end
-	end
+local function getRoot(rig)
+    return rig and (rig:FindFirstChild("HumanoidRootPart") or rig.PrimaryPart)
 end
-findRemote()
-
-local hasKeypress = pcall(function() return keypress end)
-local hasMouse    = pcall(function() return mouse1click end)
-
---=============================================================
--- SKIN DATABASE (из самой игры)
---=============================================================
-local Skins, SkinIndex, selectedSkin = {}, {}, nil
-local swordSaved = {}
-
-local function findSwordFolders()
-	local out = {}
-	for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-		if (d:IsA("Folder") or d:IsA("Model")) and d.Name:lower():match("sword") then
-			local n = 0
-			for _, c in ipairs(d:GetChildren()) do
-				if c:IsA("Model") or c:IsA("Tool") then n += 1 end
-			end
-			if n >= 2 then table.insert(out, d) end
-		end
-	end
-	return out
+local function getOrigin()
+    local root = getRoot(LP.Character)
+    return root and root.Position or Camera.CFrame.Position
+end
+local function isAlive(rig, plr)
+    if plr and plr:GetAttribute("Dead") == true then return false end
+    if rig and rig:GetAttribute("Dead") == true then return false end
+    local h = (rig and rig:GetAttribute("Health")) or (plr and plr:GetAttribute("Health"))
+    if typeof(h) == "number" and h <= 0 then return false end
+    return true
 end
 
-local function extractMesh(model)
-	for _, p in ipairs(model:GetDescendants()) do
-		if p:IsA("MeshPart") and p.MeshId ~= "" then return p.MeshId, p.TextureID end
-		if p:IsA("SpecialMesh") and p.MeshId ~= "" then return p.MeshId, p.TextureId end
-	end
-	return nil
+--=========================== ПОЗА =================================
+local function resolvePose(plr, rig)
+    local st = poseState[plr]
+    if not st then st = {ok = 0, bad = 0, live = nil} poseState[plr] = st end
+    local attrPos = plr:GetAttribute(POSE_ATTR)
+    local attrYaw = plr:GetAttribute(YAW_ATTR)
+    local root = rig and getRoot(rig)
+    local rigPos = root and root.Position
+
+    if rigPos and typeof(attrPos) == "Vector3" and rig:GetAttribute(VIS_ATTR) == true then
+        local d = (rigPos - attrPos).Magnitude
+        if d < 2 then st.ok += 1 elseif d > 4 then st.bad += 1 end
+        if st.ok + st.bad >= 6 then st.live = st.ok >= st.bad end
+    end
+
+    if typeof(attrPos) == "Vector3" and (st.live == true or rigPos == nil) then
+        return CFrame.new(attrPos) * CFrame.Angles(0, typeof(attrYaw) == "number" and attrYaw or 0, 0)
+    end
+    if root then return root.CFrame end
+    return nil
 end
 
-local function buildSkinList()
-	Skins, SkinIndex = {}, {}
-	for _, root in ipairs(findSwordFolders()) do
-		for _, m in ipairs(root:GetDescendants()) do
-			if (m:IsA("Model") or m:IsA("Tool")) and not SkinIndex[m.Name] then
-				local mesh, tex = extractMesh(m)
-				if mesh then
-					local e = {name = m.Name, mesh = mesh, tex = tex or ""}
-					table.insert(Skins, e); SkinIndex[m.Name] = e
-				end
-			end
-		end
-	end
-	table.sort(Skins, function(a,b) return a.name:lower() < b.name:lower() end)
-	return #Skins
+--=========================== ВИЗУАЛ ===============================
+local function ensureBox(plr)
+    local rec = boxes[plr]
+    if rec and rec.part.Parent then return rec end
+    if rec then pcall(function() rec.part:Destroy() end) end
+    local part = new("Part", {
+        Name = "V_"..plr.Name, Size = Vector3.new(2.4, 5.6, 2.4),
+        Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+        CastShadow = false, Material = Enum.Material.SmoothPlastic,
+        Color = Color3.new(1, 1, 1), Transparency = 1,
+    }, rootFolder)
+    local hl = new("Highlight", {
+        Name = "VeniceESP", Adornee = part,
+        DepthMode = CFG.ThroughWalls and Enum.HighlightDepthMode.AlwaysOnTop
+                                        or Enum.HighlightDepthMode.Occluded,
+        OutlineTransparency = CFG.OutlineTransparency,
+    }, rootFolder)
+    rec = { part = part, hl = hl }
+    boxes[plr] = rec
+    return rec
 end
 
-local function getSwordRoot()
-	local char = LP.Character
-	if not char then return nil end
-	for _, d in ipairs(char:GetChildren()) do
-		local n = d.Name:lower()
-		if (d:IsA("Tool") or d:IsA("Model")) and (n:find("sword") or n:find("katana") or n:find("blade") or n:find("weapon")) then
-			return d
-		end
-	end
-	return nil
+local function getInfoGui(plr, adornee)
+    local bb = billboards[plr]
+    if bb and bb.Adornee == adornee then return bb end
+    if bb then bb:Destroy() end
+    bb = new("BillboardGui", {
+        Name = "VeniceESP_Info", Size = UDim2.new(0, 320, 0, 84),
+        StudsOffset = Vector3.new(0, CFG.InfoOffset, 0), AlwaysOnTop = true,
+        MaxDistance = CFG.InfoMaxDistance, ClipsDescendants = false, Adornee = adornee,
+    }, workspace)
+    new("TextLabel", {
+        Name = "Text", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold, TextSize = 13, TextStrokeTransparency = 0.25,
+        TextStrokeColor3 = Color3.new(0, 0, 0), TextColor3 = Color3.new(1, 1, 1),
+    }, bb)
+    billboards[plr] = bb
+    return bb
 end
 
-local function getSwordTarget()
-	local root = getSwordRoot()
-	local scope = root or LP.Character
-	if not scope then return nil end
-	local bestPart, bestSpecial
-	for _, p in ipairs(scope:GetDescendants()) do
-		if p:IsA("MeshPart") and p.MeshId ~= "" then
-			local n = p.Name:lower()
-			if n:find("handle") or n:find("blade") or n:find("katana") or n:find("sword") or n:find("mesh") then
-				return {part = p}
-			end
-			bestPart = bestPart or p
-		elseif p:IsA("SpecialMesh") and p.MeshId ~= "" and p.Parent and p.Parent:IsA("BasePart") then
-			bestSpecial = bestSpecial or p
-		end
-	end
-	if bestPart then return {part = bestPart} end
-	if bestSpecial then return {special = bestSpecial} end
-	return nil
+local function buildInfo(plr, rig, dist)
+    local lines = { plr.Name }
+    lines[2] = string.format("[%s]  %dm", tostring(resolver and resolver(plr) or "?"), math.floor(dist))
+    local extra = {}
+    if CFG.ShowHealthArmor then
+        local hp = (rig and rig:GetAttribute("Health")) or plr:GetAttribute("Health") or "?"
+        local arm = jdecode(plr:GetAttribute("Armor"))
+        local ar = "нет"
+        if arm and arm.Type and (tonumber(arm.Health) or 0) > 0 then ar = tostring(arm.Type) end
+        table.insert(extra, string.format("HP %s | AR %s", tostring(hp), ar))
+    end
+    if CFG.ShowWeapon then
+        local eq = jdecode(plr:GetAttribute("CurrentEquipped"))
+        local w = eq and eq.Name
+        if not w then
+            for i = 1, 5 do
+                local s = jdecode(plr:GetAttribute("Slot"..i))
+                if s and s.Weapon and s.Weapon ~= "" then w = s.Weapon break end
+            end
+        end
+        if w then table.insert(extra, tostring(w)) end
+    end
+    if CFG.ShowKit then
+        local kit = {}
+        if plr:GetAttribute("HasDefuseKit") == true then table.insert(kit, "Defuse Kit") end
+        if plr:GetAttribute("HasRescueKit") == true then table.insert(kit, "Rescue Kit") end
+        local s5 = jdecode(plr:GetAttribute("Slot5"))
+        if s5 and s5.Weapon == "C4" then table.insert(kit, "C4") end
+        if #kit > 0 then table.insert(extra, table.concat(kit, " + ")) end
+    end
+    if #extra > 0 then lines[#lines+1] = table.concat(extra, "  |  ") end
+    return table.concat(lines, "\n")
 end
 
-local function applySkin(silent)
-	local t = getSwordTarget()
-	if not t then if not silent then notify("sword not found", T.Bad) end return end
-	local s = selectedSkin
-	if not s then return end
-	if t.part then
-		if not swordSaved[t.part] then
-			swordSaved[t.part] = {mesh = t.part.MeshId, tex = t.part.TextureID, size = t.part.Size}
-		end
-		t.part.MeshId = s.mesh
-		if s.tex ~= "" then t.part.TextureID = s.tex end
-		if Config.SkinScale ~= 1 then t.part.Size = swordSaved[t.part].size * Config.SkinScale end
-	else
-		local m = t.special
-		if not swordSaved[m] then swordSaved[m] = {mesh = m.MeshId, tex = m.TextureId} end
-		m.MeshId = s.mesh
-		if s.tex ~= "" then m.TextureId = s.tex end
-	end
-	if not silent then notify("skin: " .. s.name, T.Good) end
+--=========================== CORE =================================
+local function cleanup(plr)
+    for _, t in ipairs({boxes, billboards, rigHL, fallbackRigs}) do
+        local v = t[plr]
+        if v then pcall(function() (v.part or v.hl or v):Destroy() end) end
+        t[plr] = nil
+    end
+    tracked[plr] = nil
 end
 
-local function restoreSword()
-	local t = getSwordTarget()
-	if not t then return end
-	if t.part then
-		local d = swordSaved[t.part]
-		if d then pcall(function() t.part.MeshId = d.mesh; t.part.TextureID = d.tex; t.part.Size = d.size end) end
-	else
-		local m = t.special
-		local d = swordSaved[m]
-		if d then pcall(function() m.MeshId = d.mesh; m.TextureId = d.tex end) end
-	end
+local function processPlayer(plr)
+    local rig = findGameRig(plr)
+    if not rig then
+        rig = fallbackRigs[plr]
+        if not (rig and rig.Parent) then
+            if rig then pcall(function() rig:Destroy() end) end
+            rig = buildFallbackRig(plr)
+            fallbackRigs[plr] = rig
+        end
+    elseif fallbackRigs[plr] then
+        pcall(function() fallbackRigs[plr]:Destroy() end)
+        fallbackRigs[plr] = nil
+    end
+
+    local pose = resolvePose(plr, rig)
+    if not pose then cleanup(plr) return end
+
+    if plr ~= LP and rig and CFG.KillGameHighlight then
+        for _, inst in ipairs(rig:GetChildren()) do
+            if inst:IsA("Highlight") and inst.Name ~= "VeniceESP" then
+                pcall(function() inst:Destroy() end)
+            end
+        end
+    end
+
+    local enemy = isEnemy(plr)
+    local visible = CFG.Enabled and (enemy or CFG.ShowAllies)
+        and (not CFG.OnlyAlive or isAlive(rig, plr))
+    if plr == LP and not CFG.ShowAllies then visible = false end
+
+    local dist = (pose.Position - getOrigin()).Magnitude
+    if visible and CFG.MaxDistance > 0 and dist > CFG.MaxDistance then visible = false end
+
+    local color   = enemy and CFG.EnemyFill   or CFG.AllyFill
+    local outline = enemy and CFG.EnemyOutline or CFG.AllyOutline
+
+    local rec = boxes[plr]
+    if CFG.Box and visible then
+        rec = ensureBox(plr)
+        if rig then
+            local ok, size = pcall(function() return rig:GetExtentsSize() end)
+            if ok and size then
+                rec.part.Size = Vector3.new(math.max(size.X, 1.5), math.max(size.Y, 4), math.max(size.Z, 1.5))
+            end
+        end
+        rec.part.CFrame = pose
+        rec.hl.Enabled = true
+        rec.hl.FillColor, rec.hl.OutlineColor = color, outline
+    elseif rec then
+        rec.hl.Enabled = false
+    end
+
+    local hl = rigHL[plr]
+    if hl and hl.Adornee ~= rig then hl:Destroy() hl = nil rigHL[plr] = nil end
+    if visible and rig and not fallbackRigs[plr] then
+        if not hl then
+            hl = new("Highlight", {
+                Name = "VeniceESP_Rig", Adornee = rig,
+                DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+                OutlineTransparency = CFG.OutlineTransparency,
+            }, rootFolder)
+            rigHL[plr] = hl
+        end
+        hl.Enabled = true
+        hl.FillColor, hl.OutlineColor = color, outline
+    elseif hl then
+        hl.Enabled = false
+    end
+
+    tracked[plr] = visible and pose or nil
+
+    if CFG.ShowInfo then
+        if visible then
+            local adornee = (rec and rec.part) or (rig and (rig:FindFirstChild("Head") or rig.PrimaryPart))
+            if adornee then
+                local bb = getInfoGui(plr, adornee)
+                bb.Enabled = true
+                bb.Text.Text = buildInfo(plr, rig, dist)
+                bb.Text.TextColor3 = outline
+            end
+        else
+            local bb = billboards[plr]
+            if bb then bb.Enabled = false end
+        end
+    end
 end
 
-local skinCount = buildSkinList()
-
---=============================================================
--- PARRY ENGINE
---=============================================================
-local E = {
-	lastAction = 0, actions = 0, lastBall = nil, lastTime = 0,
-	lastVel = Vector3.zero, accel = Vector3.zero,
-	dist = 0, speed = 0, eta = 0, radius = 16, lead = 0,
-	targeted = false, hot = false, mode = "-",
-}
-
-local function performParry()
-	local key = KeyCodes[Config.ParryKey] or 0x46
-	if Config.InputMode == "Remote" then
-		if ParryRemote then pcall(function() ParryRemote:FireServer() end) end
-		return "remote"
-	end
-	if Config.InputMode == "Mouse" then
-		if hasMouse then pcall(mouse1click) end
-		return "mouse"
-	end
-	if Config.InputMode == "Keypress" then
-		if hasKeypress then
-			pcall(function() keypress(key) end)
-			task.delay(0.008, function() pcall(function() keyrelease(key) end) end)
-		end
-		return "key"
-	end
-	if hasKeypress then
-		pcall(function() keypress(key) end)
-		task.delay(0.008, function() pcall(function() keyrelease(key) end) end)
-		return "key"
-	elseif hasMouse then
-		pcall(mouse1click)
-		return "mouse"
-	elseif ParryRemote then
-		pcall(function() ParryRemote:FireServer() end)
-		return "remote"
-	end
-	return "none"
+--=========================== МЯЧ ==================================
+local function isBallPart(d)
+    if not d:IsA("BasePart") then return false end
+    if d:IsDescendantOf(rootFolder) then return false end
+    local n = d.Name:lower()
+    for _, w in ipairs(CFG.BallWords) do
+        if n:find(w, 1, true) then return true end
+    end
+    if d.Anchored then return false end
+    local s = d.Size
+    return s.X <= 5 and s.Y <= 5 and s.Z <= 5
 end
 
-local function actionCooldown()
-	local rate = math.clamp(Config.ActionsPerSec, 10, 120)
-	local cd = 1 / rate
-	if Config.BatchMode == "Safe" then cd = math.max(0.060, cd)
-	elseif Config.BatchMode == "Normal" then cd = math.max(0.032, cd)
-	elseif Config.BatchMode == "Fast" then cd = math.max(0.018, cd)
-	elseif Config.BatchMode == "Extremely Fast" then cd = math.max(0.010, cd) end
-	if Config.SpeedAssist and E.speed > 120 then
-		cd = cd * (1 - 0.6 * math.clamp(Config.FastBoost, 0, 1))
-	end
-	return math.max(0.008, cd + (math.random(-1, 2) / 1000))
+local function scanBalls()
+    if not CFG.Ball then balls = {} return end
+    local found = {}
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if isBallPart(d) then found[d] = true end
+    end
+    for d in pairs(balls) do
+        if not found[d] then balls[d] = nil end
+    end
+    for d in pairs(found) do
+        if not balls[d] then balls[d] = {part = d} end
+    end
 end
 
-local function sendAction(ball)
-	local now = tick()
-	if now - E.lastAction < actionCooldown() then return false end
-	if Config.OnePerBall and E.lastBall == ball and not E.released then return false end
-	E.lastAction = now; E.actions += 1; E.lastBall = ball; E.released = false
-	E.mode = performParry()
-	return true
+local lastFire = 0
+local function mouse1()
+    local vp = Camera.ViewportSize
+    VIM:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, true, game, 1)
+    VIM:SendMouseButtonEvent(vp.X / 2, vp.Y / 2, 0, false, game, 1)
 end
 
---=============================================================
--- MATCH / BALL
---=============================================================
-local function inMatch()
-	local char = LP.Character
-	if not char then return false end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum or hum.Health <= 0 then return false end
-	local alive = Workspace:FindFirstChild("Alive")
-	if alive then return char:IsDescendantOf(alive) end
-	local dead = Workspace:FindFirstChild("Dead")
-	if dead and char:IsDescendantOf(dead) then return false end
-	return true
+local function fireDeflect()
+    if CFG.BallKey then
+        VIM:SendKeyEvent(true, CFG.BallKey, false, game)
+        VIM:SendKeyEvent(false, CFG.BallKey, false, game)
+    else
+        mouse1()
+    end
 end
 
-local function getBall()
-	local folder = Workspace:FindFirstChild("Balls")
-	if not folder then return nil end
-	local char = LP.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return nil end
-	local best, bd
-	for _, v in ipairs(folder:GetChildren()) do
-		if v:IsA("BasePart") then
-			local d = (v.Position - root.Position).Magnitude
-			if d < (bd or math.huge) then best, bd = v, d end
-		end
-	end
-	return best
+local function aimAt(pos)
+    local sp, onScreen = Camera:WorldToViewportPoint(pos)
+    if not onScreen then return end
+    local vp = Camera.ViewportSize
+    local dx = (sp.X - vp.X / 2) * CFG.BallAimGain
+    local dy = (sp.Y - vp.Y / 2) * CFG.BallAimGain
+    if math.abs(dx) < CFG.BallAimDeadzone and math.abs(dy) < CFG.BallAimDeadzone then return end
+    if mousemoverel then
+        pcall(mousemoverel, dx, dy)
+    else
+        VIM:SendMouseMoveEvent(vp.X / 2 + dx, vp.Y / 2 + dy, game)
+    end
 end
 
-local function isTargeted(ball)
-	local char = LP.Character
-	if not ball or not char then return nil end
-	local t = ball:GetAttribute("target") or ball:GetAttribute("Target")
-		or ball:GetAttribute("currentTarget") or ball:GetAttribute("targetPlayer") or ball:GetAttribute("to")
-	if t ~= nil then
-		if t == LP.Name or t == LP.DisplayName or t == char.Name
-			or t == LP.UserId or t == tostring(LP.UserId)
-			or t == LP or t == char or t == true or t == "Training" then return true end
-		if typeof(t) == "Instance" then
-			if t:IsA("Player") then return t == LP end
-			if t:IsA("Model") then return t == char end
-		end
-		if typeof(t) == "string" or typeof(t) == "number" then return false end
-	end
-	for _, ch in ipairs(ball:GetChildren()) do
-		if ch:IsA("ValueBase") and ch.Name:lower():find("target") then
-			local v = ch.Value
-			if v == LP.Name or v == char.Name or v == LP or v == LP.UserId or v == tostring(LP.UserId) then return true end
-			if v ~= nil then return false end
-		end
-	end
-	if char:GetAttribute("Targeted") == true then return true end
-	if char:FindFirstChild("TargetHighlight") then return true end
-	local hl = char:FindFirstChild("Highlight")
-	if hl and hl:IsA("Highlight") then
-		if hl:GetAttribute("Target") == true then return true end
-		if hl.FillColor.R > 0.6 and hl.FillColor.G < 0.5 and hl.FillColor.B < 0.5 then return true end
-	end
-	return nil
+local function ballTick()
+    if not CFG.Ball or not CFG.Enabled then return end
+    local myPos = getOrigin()
+    local now = os.clock()
+    local best, bestDist = nil, CFG.BallRange
+    for _, rec in pairs(balls) do
+        local p = rec.part
+        if p.Parent then
+            local d = (p.Position - myPos).Magnitude
+            if d < bestDist then
+                if CFG.BallApproachOnly then
+                    local vel = p.AssemblyLinearVelocity
+                    if vel.Magnitude > 0.5 then
+                        local toMe = (myPos - p.Position).Unit
+                        if vel.Unit:Dot(toMe) > 0.15 then best, bestDist = p, d end
+                    end
+                else
+                    best, bestDist = p, d
+                end
+            end
+        end
+    end
+    if not best then return end
+    if CFG.BallAim then aimAt(best.Position) end
+    if now - lastFire >= CFG.BallCooldown then
+        lastFire = now
+        pcall(fireDeflect)
+    end
 end
 
-local function computeThreat(ball, root)
-	local ballPos = ball.Position
-	local playerPos = root.Position
-	local distance = (playerPos - ballPos).Magnitude
-	local velocity = ball.AssemblyLinearVelocity
-	local zoomies = ball:FindFirstChild("zoomies")
-	if zoomies then
-		if zoomies:IsA("LinearVelocity") or zoomies:IsA("VectorForce") then
-			velocity = zoomies.VectorVelocity
-		elseif zoomies:IsA("BodyVelocity") then
-			velocity = zoomies.Velocity
-		end
-	end
-	local speed = velocity.Magnitude
-	if speed <= 0 then velocity = ball.Velocity; speed = velocity.Magnitude end
-	if speed <= 0.5 then return nil end
-	local now = tick()
-	local dt = math.clamp(now - E.lastTime, 0.001, 0.05)
-	E.lastTime = now
-	local accel = (velocity - E.lastVel) / dt
-	E.lastVel = velocity
-	local dirToPlayer = (playerPos - ballPos).Unit
-	local dot = dirToPlayer:Dot(velocity.Unit)
-	local rootVel = root.AssemblyLinearVelocity or Vector3.zero
-	local approachSpeed = (velocity - rootVel):Dot(dirToPlayer)
-	return {ball=ball, distance=distance, speed=speed, velocity=velocity, accel=accel,
-		dot=dot, approachSpeed=approachSpeed,
-		eta = distance / math.max(approachSpeed, speed * 0.7, 1)}
-end
+--=========================== RUN ==================================
+refreshResolver()
 
-local function computeRadius(threat, pingSec)
-	local net = pingSec * 0.5 + (1 / 60)
-	local boost = 0
-	if Config.SpeedAssist then
-		boost = math.clamp((threat.speed - 120) / 800, 0, 0.20) * math.clamp(Config.FastBoost, 0, 1)
-	end
-	if Config.AutoRadius then
-		local lead = Config.LeadTime + boost + (Config.PingComp and net or 0)
-		return math.clamp(threat.speed * lead, Config.MinRadius, Config.MaxRadius)
-	end
-	local r = Config.BaseRadius
-	if Config.PingComp then r = r + math.clamp(threat.speed * net, 0, Config.BallPredCap) end
-	if Config.SpeedAssist then
-		r = r + math.clamp((threat.speed - 120) * 0.06, 0, 16) * math.clamp(Config.FastBoost, 0, 1)
-	end
-	return r
-end
-
-local function step(dt)
-	if not Config.AutoParry or not inMatch() then return end
-	local char = LP.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return end
-	local ball = getBall()
-	if not ball then return end
-	local threat = computeThreat(ball, root)
-	if not threat then return end
-	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
-	local pingSec = getPing() / 1000
-	local radius = computeRadius(threat, pingSec)
-	E.radius = radius
-	E.hot = threat.distance <= radius
-	local tgt = isTargeted(ball)
-	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
-	E.targeted = (tgt == true) or (tgt == nil and heur)
-	if Config.RequireTarget then
-		if tgt == false then return end
-		if tgt == nil and not heur then return end
-	end
-	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
-	local horizon = (Config.Horizon or 0.5) * (Config.Prediction or 0.07)
-	horizon = horizon + math.clamp((threat.speed - 150) * 0.00035, 0, 0.14)
-	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
-	local dirOk = threat.dot > 0.05 or threat.approachSpeed > -5
-	if Config.CrossTrigger then
-		local closing = math.max(threat.approachSpeed, threat.speed * 0.5, 1)
-		local tCross = (threat.distance - radius) / closing
-		E.lead = tCross
-		if tCross <= transit and dirOk then sendAction(ball); return end
-	else
-		if threat.distance <= radius and dirOk then sendAction(ball); return end
-	end
-	local futurePlayer = root.Position + root.AssemblyLinearVelocity * transit
-	local curveComp = 0.5 * threat.accel * (transit * transit)
-	if curveComp.Magnitude > 15 then curveComp = curveComp.Unit * 15 end
-	local futureBall = ball.Position + threat.velocity * transit + curveComp
-	if (futurePlayer - futureBall).Magnitude <= radius and dirOk then sendAction(ball) end
-end
-
-bind(RunService.Heartbeat, function()
-	if E.lastBall and E.lastBall.Parent then
-		local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-		if root then
-			local d = (E.lastBall.Position - root.Position).Magnitude
-			local v = E.lastBall.AssemblyLinearVelocity
-			if d > 32 and v.Magnitude > 1 and v.Unit:Dot((root.Position - E.lastBall.Position).Unit) < -0.2 then
-				E.released = true
-			end
-		end
-	end
+local lastRefresh, lastBall = 0, 0
+local thread = task.spawn(function()
+    while running do
+        local now = os.clock()
+        if now - lastRefresh >= CFG.TeamRefresh then lastRefresh = now; pcall(refreshResolver) end
+        pcall(function()
+            for _, plr in ipairs(Players:GetPlayers()) do processPlayer(plr) end
+        end)
+        if now - lastBall >= 0.25 then lastBall = now; pcall(scanBalls) end
+        task.wait(CFG.UpdateRate)
+    end
 end)
 
---=============================================================
--- PARRY RING
---=============================================================
-local ring = new("CylinderHandleAdornment", {
-	Height = 0.05, Radius = Config.BaseRadius,
-	InnerRadius = Config.BaseRadius * (1 - Config.RingThick),
-	Color3 = RingColors[Config.RingColor] or RingColors.Purple,
-	Transparency = Config.RingOpacity, AlwaysOnTop = true, ZIndex = 5,
-	CFrame = CFrame.Angles(math.rad(90), 0, 0), Visible = false,
-}, gui)
+local function fastTick()
+    if CFG.TryReparentRig then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LP then
+                local rig = plr.Character
+                if rig and rig:IsA("Model") and rig.Parent and not rig:IsDescendantOf(workspace) then
+                    if not origParent[rig] then origParent[rig] = rig.Parent end
+                    pcall(function() rig.Parent = charFolder() end)
+                end
+            end
+        end
+    end
 
---=============================================================
--- ESP
---=============================================================
-local espObjs = {}
-local function project(v)
-	local sp = Camera:WorldToViewportPoint(v)
-	if sp.Z <= 0 then return nil end
-	return Vector2.new(sp.X, sp.Y)
-end
-local function makeEsp(label)
-	local o = {}
-	o.box = new("Frame", {BackgroundTransparency=1, BorderSizePixel=0, Visible=false, ZIndex=2}, espFolder)
-	o.stroke = new("UIStroke", {Color=T.Accent, Thickness=1, ApplyStrokeMode=Enum.ApplyStrokeMode.Border}, o.box)
-	o.fill = new("Frame", {Size=UDim2.new(1,0,1,0), BackgroundColor3=T.Accent, BackgroundTransparency=1, BorderSizePixel=0, ZIndex=1}, o.box)
-	o.name = new("TextLabel", {Size=UDim2.new(0,220,0,13), AnchorPoint=Vector2.new(0.5,1), BackgroundTransparency=1,
-		Font=Enum.Font.GothamBold, TextSize=11, TextColor3=T.Text, TextStrokeTransparency=0,
-		TextStrokeColor3=Color3.new(0,0,0), Text=label, Visible=false, ZIndex=3}, espFolder)
-	o.dist = new("TextLabel", {Size=UDim2.new(0,220,0,13), AnchorPoint=Vector2.new(0.5,0), BackgroundTransparency=1,
-		Font=Enum.Font.Gotham, TextSize=10, TextColor3=T.Dim, TextStrokeTransparency=0,
-		TextStrokeColor3=Color3.new(0,0,0), Text="", Visible=false, ZIndex=3}, espFolder)
-	o.hpBg = new("Frame", {Size=UDim2.new(0,3,1,0), BackgroundColor3=Color3.new(0,0,0), BorderSizePixel=0, Visible=false, ZIndex=3}, espFolder)
-	o.hp = new("Frame", {Size=UDim2.new(1,0,1,0), AnchorPoint=Vector2.new(0,1), Position=UDim2.new(0,0,1,0),
-		BackgroundColor3=T.Good, BorderSizePixel=0, ZIndex=4}, o.hpBg)
-	o.tracer = new("Frame", {Size=UDim2.new(0,0,0,1), AnchorPoint=Vector2.new(0,0.5), BackgroundColor3=T.Accent,
-		BackgroundTransparency=0.4, BorderSizePixel=0, Visible=false, ZIndex=1}, espFolder)
-	return o
-end
-local ballEsp = makeEsp("BALL")
-local function hideEsp(o)
-	o.box.Visible=false; o.name.Visible=false; o.dist.Visible=false; o.hpBg.Visible=false; o.tracer.Visible=false
-end
+    if CFG.PoseOverride then
+        for plr, fb in pairs(fallbackRigs) do
+            if fb and fb.Parent then
+                local pose = resolvePose(plr, findGameRig(plr))
+                if pose then fb:PivotTo(pose) end
+            end
+        end
+    end
 
-local function updateEsp()
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= LP then
-			local o = espObjs[p]
-			if not o then o = makeEsp(p.DisplayName); espObjs[p] = o end
-			local char = p.Character
-			local hrp = char and char:FindFirstChild("HumanoidRootPart")
-			local hum = char and char:FindFirstChildOfClass("Humanoid")
-			if Config.BoxEsp and char and hrp and hum and hum.Health > 0 then
-				local cf, size = char:GetBoundingBox()
-				local minX, minY, maxX, maxY
-				for xi=-1,1,2 do for yi=-1,1,2 do for zi=-1,1,2 do
-					local s = project(cf * Vector3.new(size.X/2*xi, size.Y/2*yi, size.Z/2*zi))
-					if s then
-						minX = minX and math.min(minX,s.X) or s.X
-						minY = minY and math.min(minY,s.Y) or s.Y
-						maxX = maxX and math.max(maxX,s.X) or s.X
-						maxY = maxY and math.max(maxY,s.Y) or s.Y
-					end
-				end end end
-				if minX then
-					local w, h = maxX-minX, maxY-minY
-					o.box.Visible = true
-					o.box.Position = UDim2.fromOffset(minX, minY)
-					o.box.Size = UDim2.fromOffset(w, h)
-					o.stroke.Color = Config.EspColor
-					o.fill.BackgroundColor3 = Config.EspColor
-					o.fill.BackgroundTransparency = Config.EspFill and Config.EspFillAlpha or 1
-					o.name.Visible = Config.NameEsp
-					if Config.NameEsp then
-						o.name.Text = p.DisplayName
-						o.name.Position = UDim2.fromOffset(minX+w/2, minY-2)
-					end
-					o.dist.Visible = Config.DistEsp
-					if Config.DistEsp then
-						o.dist.Text = string.format("%d studs", math.floor((hrp.Position - Camera.CFrame.Position).Magnitude))
-						o.dist.Position = UDim2.fromOffset(minX+w/2, maxY+2)
-					end
-					o.hpBg.Visible = Config.HealthEsp
-					if Config.HealthEsp then
-						o.hpBg.Position = UDim2.fromOffset(minX-6, minY)
-						o.hpBg.Size = UDim2.fromOffset(3, h)
-						local r = math.clamp(hum.Health/math.max(hum.MaxHealth,1),0,1)
-						o.hp.Size = UDim2.new(1,0,r,0)
-						o.hp.BackgroundColor3 = Color3.fromRGB(255,105,105):Lerp(Color3.fromRGB(120,255,165), r)
-					end
-					o.tracer.Visible = Config.Tracers
-					if Config.Tracers then
-						local from = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
-						local to = Vector2.new(minX+w/2, maxY)
-						local d = to - from
-						local len = d.Magnitude
-						o.tracer.Position = UDim2.fromOffset((from.X+to.X)/2-len/2, (from.Y+to.Y)/2)
-						o.tracer.Size = UDim2.fromOffset(len, 1)
-						o.tracer.Rotation = math.deg(math.atan2(d.Y, d.X))
-						o.tracer.BackgroundColor3 = Config.EspColor
-					end
-				else hideEsp(o) end
-			else hideEsp(o) end
-		end
-	end
-	local ball = getBall()
-	if Config.BallEsp and ball then
-		local s = project(ball.Position)
-		if s then
-			local r = 22
-			ballEsp.box.Visible = true
-			ballEsp.box.Position = UDim2.fromOffset(s.X-r, s.Y-r)
-			ballEsp.box.Size = UDim2.fromOffset(r*2, r*2)
-			ballEsp.stroke.Color = Config.BallEspColor
-			ballEsp.name.Visible = true
-			ballEsp.name.Text = "BALL"
-			ballEsp.name.TextColor3 = Config.BallEspColor
-			ballEsp.name.Position = UDim2.fromOffset(s.X, s.Y-r-2)
-		else hideEsp(ballEsp) end
-	else hideEsp(ballEsp) end
+    if CFG.Pulse then
+        local a = (math.sin(os.clock() * CFG.PulseSpeed) + 1) / 2
+        local tr = CFG.PulseMin + (CFG.PulseMax - CFG.PulseMin) * a
+        for _, rec in pairs(boxes) do if rec.hl.Enabled then rec.hl.FillTransparency = tr end end
+        for _, hl in pairs(rigHL) do if hl.Enabled then hl.FillTransparency = tr end end
+    end
+
+    pcall(ballTick)
 end
-bind(RunService.RenderStepped, function() pcall(updateEsp) end)
-bind(Players.PlayerRemoving, function(p)
-	local o = espObjs[p]
-	if o then for _, v in pairs(o) do if typeof(v)=="Instance" then pcall(function() v:Destroy() end) end end; espObjs[p]=nil end
+RunService:BindToRenderStep("VeniceESP_FastTick", 3001, fastTick)
+
+conns[#conns+1] = UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == CFG.ToggleKey then
+        CFG.Enabled = not CFG.Enabled
+        if not CFG.Enabled then
+            for _, rec in pairs(boxes) do rec.hl.Enabled = false end
+            for _, hl in pairs(rigHL) do hl.Enabled = false end
+            for _, bb in pairs(billboards) do bb.Enabled = false end
+        end
+    elseif input.KeyCode == CFG.InfoKey then
+        CFG.ShowInfo = not CFG.ShowInfo
+        if not CFG.ShowInfo then for _, bb in pairs(billboards) do bb.Enabled = false end end
+    end
 end)
 
---=============================================================
--- EXTRAS
---=============================================================
-local function updateExtras()
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= LP then
-			local char = p.Character
-			local hrp = char and char:FindFirstChild("HumanoidRootPart")
-			if char then
-				local h = char:FindFirstChild("ScriptSleepHL")
-				if Config.Highlights then
-					if not h then
-						h = Instance.new("Highlight")
-						h.Name = "ScriptSleepHL"
-						h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-						h.FillTransparency = 0.72; h.OutlineTransparency = 0
-						h.Parent = char
-					end
-					h.FillColor, h.OutlineColor = Config.EspColor, Config.EspColor
-				elseif h then h:Destroy() end
-			end
-			if hrp then
-				local ad = hrp:FindFirstChild("ScriptSleepHitbox")
-				if Config.Hitboxes then
-					if not ad then
-						ad = Instance.new("BoxHandleAdornment")
-						ad.Name = "ScriptSleepHitbox"; ad.Adornee = hrp
-						ad.Size = Vector3.new(4,6,2.5); ad.AlwaysOnTop = true
-						ad.ZIndex = 5; ad.Transparency = 0.65; ad.Parent = hrp
-					end
-					ad.Color3 = Config.EspColor
-				elseif ad then ad:Destroy() end
-			end
-		end
-	end
+conns[#conns+1] = Players.PlayerRemoving:Connect(function(plr) task.defer(cleanup, plr) end)
+
+--=========================== API ==================================
+local api = { CFG = CFG }
+
+function api:Diag()
+    print("=== Venice ESP v11 diag ===")
+    print("команда: "..resolverName)
+    local cf = culledFolder()
+    print("culled: "..(cf and #cf:GetChildren() or "нет").." | workspace.Characters: "
+        ..tostring(workspace:FindFirstChild("Characters") and #workspace.Characters:GetChildren() or "нет"))
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local rig = findGameRig(p)
+            local st = poseState[p] or {}
+            print(string.format("  %s | enemy=%s | rig=%s | parent=%s | attrLive=%s",
+                p.Name, tostring(isEnemy(p)), rig and "yes" or "NIL",
+                rig and (rig.Parent and rig.Parent:GetFullName() or "NIL") or "-",
+                tostring(st.live)))
+        end
+    end
 end
 
-local function applyHeadless()
-	local head = LP.Character and LP.Character:FindFirstChild("Head")
-	if not head then return end
-	local a = Config.Headless and 1 or 0
-	if head:IsA("BasePart") then head.Transparency = a end
-	for _, d in ipairs(head:GetDescendants()) do
-		if d:IsA("BasePart") or d:IsA("Decal") then d.Transparency = a end
-	end
-end
-bind(LP.CharacterAdded, function() task.wait(0.6); pcall(applyHeadless) end)
-
---=============================================================
--- KORBLOX LEG (fixed: MeshPart -> swap MeshId, R6 -> SpecialMesh)
---=============================================================
-local KORBLOX_TAG = "SSKorblox"
-local korbloxSaved = {}
-local korbloxFeet = {}
-
-local function korbloxLegNames()
-	if Config.KorbloxSide == "Left" then
-		return {"LeftUpperLeg", "LeftLowerLeg", "Left Leg"}
-	end
-	return {"RightUpperLeg", "RightLowerLeg", "Right Leg"}
+function api:BallDebug()
+    print("=== мячи/снаряды в workspace ===")
+    local n = 0
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if isBallPart(d) then
+            n += 1
+            print(string.format("  %s | class=%s | size=%.1f,%.1f,%.1f | anchored=%s | speed=%.1f | parent=%s",
+                d:GetFullName(), d.ClassName, d.Size.X, d.Size.Y, d.Size.Z,
+                tostring(d.Anchored), d.AssemblyLinearVelocity.Magnitude,
+                d.Parent and d.Parent.Name or "-"))
+        end
+    end
+    print("итого: "..n)
 end
 
-local function korbloxWantMesh()
-	return (Config.KorbloxMesh ~= "" and Config.KorbloxMesh) or KORBLOX_FALLBACK
+function api:Abilities()
+    print("=== инвентарь способностей ===")
+    local KEY = {"ability","skill","ult","charge","cooldown","spell","power","dash","boost","ball","orb","kick"}
+    local function match(s)
+        local l = s:lower()
+        for _, w in ipairs(KEY) do if l:find(w, 1, true) then return true end end
+        return false
+    end
+    print("-- атрибуты игроков --")
+    for _, p in ipairs(Players:GetPlayers()) do
+        for name, v in pairs(p:GetAttributes()) do
+            if match(name) then print("  "..p.Name.."."..name.." = "..tostring(v)) end
+        end
+        local c = p.Character
+        if c then
+            for name, v in pairs(c:GetAttributes()) do
+                if match(name) then print("  [char]"..p.Name.."."..name.." = "..tostring(v)) end
+            end
+        end
+    end
+    print("-- модули/ремоуты --")
+    for _, d in ipairs(RS:GetDescendants()) do
+        if (d:IsA("ModuleScript") or d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) and match(d.Name) then
+            print("  "..d:GetFullName())
+        end
+    end
+    print("-- объекты в workspace --")
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if match(d.Name) and not d:IsDescendantOf(rootFolder) then print("  "..d:GetFullName()) end
+    end
 end
 
-local function restoreKorblox()
-	local char = LP.Character
-	for part, data in pairs(korbloxSaved) do
-		if part.Parent then
-			pcall(function()
-				if part:IsA("MeshPart") then
-					if data.mesh then part.MeshId = data.mesh end
-					if data.tex then part.TextureID = data.tex end
-				elseif data.size then
-					part.Size = data.size
-				end
-			end)
-		end
-	end
-	korbloxSaved = {}
-	for part, orig in pairs(korbloxFeet) do
-		if part.Parent then pcall(function() part.Transparency = orig end) end
-	end
-	korbloxFeet = {}
-	if char then
-		for _, d in ipairs(char:GetDescendants()) do
-			if d:IsA("SpecialMesh") and d.Name == KORBLOX_TAG then d:Destroy() end
-		end
-	end
+function api:Watch()
+    print("=== живой лог: изменения атрибутов игроков и новые объекты ===")
+    local hooked = {}
+    local function hook(p)
+        for name in pairs(p:GetAttributes()) do
+            local key = p.Name.."."..name
+            if not hooked[key] then
+                hooked[key] = true
+                p:GetAttributeChangedSignal(name):Connect(function()
+                    print(string.format("[attr] %s.%s = %s", p.Name, name, tostring(p:GetAttribute(name))))
+                end)
+            end
+        end
+    end
+    conns[#conns+1] = workspace.DescendantAdded:Connect(function(d)
+        local l = d.Name:lower()
+        if l:find("ball", 1, true) or l:find("orb", 1, true)
+            or l:find("projectile", 1, true) or l:find("ability", 1, true) then
+            print("[new] "..d:GetFullName().." ("..d.ClassName..")")
+        end
+    end)
+    conns[#conns+1] = task.spawn(function()
+        while running do
+            for _, p in ipairs(Players:GetPlayers()) do pcall(hook, p) end
+            task.wait(1)
+        end
+    end)
+    for _, p in ipairs(Players:GetPlayers()) do pcall(hook, p) end
 end
 
-local function applyKorblox()
-	local char = LP.Character
-	if not char then return end
-	restoreKorblox()
-	if not Config.Korblox then return end
-
-	local th = math.clamp(Config.KorbloxThin, 0.05, 1)
-	local sc = math.clamp(Config.KorbloxScale, 0.4, 2.5)
-	local meshId = korbloxWantMesh()
-	local found = false
-
-	for _, n in ipairs(korbloxLegNames()) do
-		local leg = char:FindFirstChild(n)
-		if leg and leg:IsA("BasePart") then
-			found = true
-			if leg:IsA("MeshPart") then
-				-- MeshPart: меняем сам меш, без SpecialMesh (иначе часть становится невидимой)
-				korbloxSaved[leg] = {mesh = leg.MeshId, tex = leg.TextureID, size = leg.Size}
-				leg.MeshId = meshId
-				if Config.KorbloxTexture ~= "" then leg.TextureID = Config.KorbloxTexture end
-				leg.Size = Vector3.new(leg.Size.X * th, leg.Size.Y * sc, leg.Size.Z * th)
-			else
-				-- R6 Part: SpecialMesh
-				korbloxSaved[leg] = {size = leg.Size}
-				local m = Instance.new("SpecialMesh")
-				m.Name = KORBLOX_TAG
-				m.MeshType = Enum.MeshType.FileMesh
-				m.MeshId = meshId
-				if Config.KorbloxTexture ~= "" then m.TextureId = Config.KorbloxTexture end
-				m.Scale = Vector3.new(th * sc, sc, th * sc)
-				m.Parent = leg
-			end
-		end
-	end
-
-	if not found then notify("korblox: leg not found", T.Warn); return end
-
-	if Config.KorbloxHideFoot then
-		local footName = (Config.KorbloxSide == "Left") and "LeftFoot" or "RightFoot"
-		local foot = char:FindFirstChild(footName)
-		if foot and foot:IsA("BasePart") then
-			korbloxFeet[foot] = foot.Transparency
-			foot.Transparency = 1
-		end
-	end
+function api:Destroy()
+    running = false
+    pcall(function() RunService:UnbindFromRenderStep("VeniceESP_FastTick") end)
+    for _, c in pairs(conns) do pcall(function() c:Disconnect() end) end
+    conns = {}
+    for _, rec in pairs(boxes) do pcall(function() rec.part:Destroy() rec.hl:Destroy() end) end
+    for _, bb in pairs(billboards) do pcall(function() bb:Destroy() end) end
+    for _, hl in pairs(rigHL) do pcall(function() hl:Destroy() end) end
+    for _, fb in pairs(fallbackRigs) do pcall(function() fb:Destroy() end) end
+    if CFG.RestoreOnUnload then
+        for rig, parent in pairs(origParent) do
+            if rig.Parent and parent then pcall(function() rig.Parent = parent end) end
+        end
+    end
+    boxes, billboards, rigHL, fallbackRigs, tracked, origParent, balls = {}, {}, {}, {}, {}, {}, {}
+    if rootFolder then pcall(function() rootFolder:Destroy() end) end
+    if thread then pcall(task.cancel, thread) end
+    if _G.BloxStrikeESP == api then _G.BloxStrikeESP = nil end
 end
 
-local function korbloxOk()
-	local char = LP.Character
-	if not char then return true end
-	local leg
-	for _, n in ipairs(korbloxLegNames()) do
-		local l = char:FindFirstChild(n)
-		if l then leg = l; break end
-	end
-	if not leg then return true end
-
-	local applied = korbloxSaved[leg] ~= nil or leg:FindFirstChild(KORBLOX_TAG) ~= nil
-	if Config.Korblox ~= applied then return false end
-	if not Config.Korblox then return true end
-
-	local want = korbloxWantMesh()
-	if leg:IsA("MeshPart") then
-		return leg.MeshId == want
-	end
-	local m = leg:FindFirstChild(KORBLOX_TAG)
-	return m ~= nil and m.MeshId == want
-end
-
-bind(LP.CharacterAdded, function()
-	task.wait(0.9); pcall(applyKorblox)
-	if selectedSkin then task.wait(0.6); pcall(applySkin, true) end
-end)
-
---=============================================================
--- SKY / PARTICLES / BALL SKIN
---=============================================================
-local SkyPresets = {
-	Default = {ClockTime=14, Brightness=2, Ambient=Color3.fromRGB(70,70,70), Outdoor=Color3.fromRGB(128,128,128), Sky=true},
-	Night   = {ClockTime=0, Brightness=1, Ambient=Color3.fromRGB(28,28,45), Outdoor=Color3.fromRGB(40,40,70), Sky=true},
-	Blood   = {ClockTime=17, Brightness=1.5, Ambient=Color3.fromRGB(80,20,20), Outdoor=Color3.fromRGB(120,40,40), Sky=true},
-	Black   = {ClockTime=12, Brightness=0.25, Ambient=Color3.new(0,0,0), Outdoor=Color3.new(0,0,0), Sky=false},
-	Neon    = {ClockTime=2, Brightness=1, Ambient=Color3.fromRGB(40,20,90), Outdoor=Color3.fromRGB(70,35,140), Sky=true},
-	Vapor   = {ClockTime=6, Brightness=2, Ambient=Color3.fromRGB(95,55,115), Outdoor=Color3.fromRGB(160,95,180), Sky=true},
-}
-local function applySky(name)
-	local pr = SkyPresets[name] or SkyPresets.Default
-	Lighting.ClockTime = pr.ClockTime; Lighting.Brightness = pr.Brightness
-	Lighting.Ambient = pr.Ambient; Lighting.OutdoorAmbient = pr.Outdoor
-	local sky = Lighting:FindFirstChildOfClass("Sky")
-	if pr.Sky then
-		if not sky then
-			sky = Instance.new("Sky")
-			sky.SkyboxUp="rbxassetid://159454299"; sky.SkyboxDn="rbxassetid://159454296"
-			sky.SkyboxLf="rbxassetid://159454293"; sky.SkyboxRt="rbxassetid://159454286"
-			sky.SkyboxFt="rbxassetid://159454300"; sky.SkyboxBk="rbxassetid://159454288"
-			sky.Parent = Lighting
-		end
-	elseif sky then sky:Destroy() end
-end
-local function applyParticles()
-	local targets = {}
-	local ball = getBall(); if ball then table.insert(targets, ball) end
-	local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-	if hrp then table.insert(targets, hrp) end
-	for _, part in ipairs(targets) do
-		local p = part:FindFirstChild("ScriptSleepParticles")
-		if Config.Particles then
-			if not p then
-				p = Instance.new("ParticleEmitter")
-				p.Name = "ScriptSleepParticles"; p.Texture = "rbxassetid://243660364"
-				p.Lifetime = NumberRange.new(0.6); p.Speed = NumberRange.new(1.5)
-				p.SpreadAngle = Vector2.new(180,180); p.LightEmission = 1
-				p.Size = NumberSequence.new(0.6,0); p.Parent = part
-			end
-			p.Rate = Config.ParticleRate; p.Color = ColorSequence.new(Config.ParticleColor)
-		elseif p then p:Destroy() end
-	end
-end
-local function applyBallSkin()
-	local ball = getBall()
-	if not ball or not ball:IsA("BasePart") or not Config.BallRecolor then return end
-	ball.Color = Config.BallColor
-	local base = ball:GetAttribute("ScriptSleepBaseSize")
-	if not base then base = ball.Size; ball:SetAttribute("ScriptSleepBaseSize", base) end
-	ball.Size = base * Config.BallSize
-end
-
---=============================================================
--- HUD
---=============================================================
-local fps, frames, timer = 0, 0, tick()
-bind(RunService.RenderStepped, function()
-	frames += 1
-	if tick() - timer >= 1 then fps, frames, timer = frames, 0, tick() end
-end)
-
-local function applyFpsBoost(on)
-	if on then
-		pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
-		Lighting.GlobalShadows = false
-		Lighting.ShadowSoftness = 0
-		pcall(function() setfpscap(240) end)
-	else Lighting.GlobalShadows = true end
-end
-
-local hud = new("Frame", {Size=UDim2.new(0,265,0,74), Position=UDim2.new(0,12,0,12),
-	BackgroundColor3=T.Bg, BackgroundTransparency=0.15, BorderSizePixel=0, Visible=Config.Hud, ZIndex=10}, gui)
-corner(hud,8); stroke(hud,T.Line)
-new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,5), BackgroundTransparency=1,
-	Font=Enum.Font.GothamBold, TextSize=11, TextColor3=T.Text, TextXAlignment=Enum.TextXAlignment.Left, Text=TITLE}, hud)
-local hudStats = new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,21), BackgroundTransparency=1,
-	Font=Enum.Font.Gotham, TextSize=11, TextColor3=T.Dim, TextXAlignment=Enum.TextXAlignment.Left, Text="FPS: --  |  PING: -- ms"}, hud)
-local hudParry = new("TextLabel", {Size=UDim2.new(1,-16,0,14), Position=UDim2.new(0,10,0,38), BackgroundTransparency=1,
-	Font=Enum.Font.Gotham, TextSize=10, TextColor3=T.Dim, TextXAlignment=Enum.TextXAlignment.Left, Text=""}, hud)
-local hudDebug = new("TextLabel", {Size=UDim2.new(1,-16,0,14), Position=UDim2.new(0,10,0,53), BackgroundTransparency=1,
-	Font=Enum.Font.Gotham, TextSize=10, TextColor3=T.Warn, TextXAlignment=Enum.TextXAlignment.Left, Text="", Visible=false}, hud)
-
-task.spawn(function()
-	while gui.Parent do
-		hud.Visible = Config.Hud
-		local ping = math.floor(getPing())
-		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
-		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("in %s | acts %d | spd %d | R %d", E.mode, E.actions, math.floor(E.speed), math.floor(E.radius))
-		hudParry.TextColor3 = E.hot and T.Good or (hasKeypress and T.Dim or T.Bad)
-		hudDebug.Visible = Config.Debug and Config.Hud
-		if Config.Debug then
-			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | %s",
-				math.floor(E.dist), E.lead, tostring(E.targeted), Config.InputMode)
-		end
-		task.wait(0.3)
-	end
-end)
-
---=============================================================
--- TABS
---=============================================================
-local cp, ca = newTab("Combat")
-ca(section(cp, "Auto Parry"))
-ca((toggle(cp, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)))
-ca((dropdown(cp, "Input Mode", {"Auto", "Keypress", "Mouse", "Remote"}, Config.InputMode, function(v) Config.InputMode = v end)))
-ca((dropdown(cp, "Parry Key", {"F", "E", "Q", "R", "V", "C", "Space"}, Config.ParryKey, function(v) Config.ParryKey = v end)))
-ca((toggle(cp, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
-ca((toggle(cp, "One Parry Per Ball", Config.OnePerBall, function(v) Config.OnePerBall = v end)))
-
-ca(section(cp, "Adaptive Radius"))
-ca((toggle(cp, "Auto Radius (follow ball speed)", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
-ca((slider(cp, "Lead Time (s)", 0.03, 0.35, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
-ca((slider(cp, "Min Radius", 4, 30, Config.MinRadius, 0, function(v) Config.MinRadius = v end)))
-ca((slider(cp, "Max Radius", 10, 90, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
-ca((toggle(cp, "Cross Trigger (exact edge)", Config.CrossTrigger, function(v) Config.CrossTrigger = v end)))
-ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
-ca((slider(cp, "Fixed Radius (manual)", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
-
-ca(section(cp, "Parry Circle"))
-ca((toggle(cp, "Show Circle", Config.ParryRing, function(v) Config.ParryRing = v end)))
-ca((dropdown(cp, "Circle Color", {"Purple","White","Red","Cyan","Green","Gold"}, Config.RingColor, function(v) Config.RingColor = v end)))
-ca((slider(cp, "Circle Thickness", 0.01, 0.30, Config.RingThick, 2, function(v) Config.RingThick = v end)))
-ca((slider(cp, "Circle Opacity", 0, 0.9, Config.RingOpacity, 2, function(v) Config.RingOpacity = v end)))
-
-ca(section(cp, "Prediction"))
-ca((slider(cp, "Prediction", 0.02, 0.2, Config.Prediction, 2, function(v) Config.Prediction = v end)))
-ca((slider(cp, "Horizon", 0.1, 1.0, Config.Horizon, 2, function(v) Config.Horizon = v end)))
-
-ca(section(cp, "Reaction Speed"))
-ca((toggle(cp, "Speed Assist (fast ball)", Config.SpeedAssist, function(v) Config.SpeedAssist = v end)))
-ca((slider(cp, "Fast Boost", 0, 1, Config.FastBoost, 2, function(v) Config.FastBoost = v end)))
-ca((slider(cp, "Actions / sec", 10, 120, Config.ActionsPerSec, 0, function(v) Config.ActionsPerSec = v end)))
-ca((dropdown(cp, "Batch Mode", {"Extremely Fast", "Fast", "Normal", "Safe"}, Config.BatchMode, function(v) Config.BatchMode = v end)))
-ca((button(cp, "Test Parry", function()
-	E.lastAction = 0
-	local m = performParry()
-	notify("input -> " .. tostring(m), T.Good)
-end)))
-
-local bp, ba = newTab("Bypass")
-ba(section(bp, "Input (BAC bypass)"))
-ba((button(bp, "MAX STEALTH", function()
-	Config.InputMode = "Keypress"; Config.ActionsPerSec = 45; Config.BatchMode = "Normal"
-	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.13
-	Config.SpeedAssist = true; Config.Headless = false; Config.Particles = false; Config.BallRecolor = false
-	notify("stealth armed", T.Good)
-end)))
-ba((button(bp, "MAX SPEED", function()
-	Config.InputMode = "Keypress"; Config.ActionsPerSec = 90; Config.BatchMode = "Extremely Fast"
-	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.11
-	Config.SpeedAssist = true; Config.FastBoost = 0.8
-	notify("speed armed", T.Good)
-end)))
-ba((button(bp, "Show Input Backend", function()
-	notify("keypress: " .. tostring(hasKeypress) .. " | mouse: " .. tostring(hasMouse), T.Warn)
-end)))
-ba((button(bp, "Find Parry Remote", function()
-	findRemote()
-	notify(ParryRemote and ("found: " .. ParryRemote:GetFullName()) or "not found", ParryRemote and T.Good or T.Bad)
-end)))
-ba((toggle(bp, "Debug Readout", Config.Debug, function(v) Config.Debug = v end)))
-
---=============================================================
--- VISUALS (+ Korblox)
---=============================================================
-local vp, va = newTab("Visuals")
-va(section(vp, "ESP"))
-va((toggle(vp, "Box ESP", Config.BoxEsp, function(v) Config.BoxEsp = v end)))
-va((toggle(vp, "Box Fill", Config.EspFill, function(v) Config.EspFill = v end)))
-va((toggle(vp, "Name ESP", Config.NameEsp, function(v) Config.NameEsp = v end)))
-va((toggle(vp, "Distance ESP", Config.DistEsp, function(v) Config.DistEsp = v end)))
-va((toggle(vp, "Health Bar", Config.HealthEsp, function(v) Config.HealthEsp = v end)))
-va((toggle(vp, "Tracers", Config.Tracers, function(v) Config.Tracers = v end)))
-va((toggle(vp, "Highlights", Config.Highlights, function(v) Config.Highlights = v end)))
-va((toggle(vp, "Hitboxes 3D", Config.Hitboxes, function(v) Config.Hitboxes = v end)))
-va((dropdown(vp, "ESP Color", {"White","Red","Cyan","Lime","Purple","Gold"}, "White", function(v)
-	local m = {White=Color3.fromRGB(255,255,255),Red=Color3.fromRGB(255,80,80),Cyan=Color3.fromRGB(80,230,255),
-		Lime=Color3.fromRGB(140,255,140),Purple=Color3.fromRGB(190,130,255),Gold=Color3.fromRGB(255,210,90)}
-	Config.EspColor = m[v] or Color3.new(1,1,1)
-end)))
-va((toggle(vp, "Ball ESP", Config.BallEsp, function(v) Config.BallEsp = v end)))
-va((dropdown(vp, "Ball ESP Color", {"Red","White","Cyan","Gold","Magenta"}, "Red", function(v)
-	local m = {Red=Color3.fromRGB(255,90,90),White=Color3.fromRGB(255,255,255),Cyan=Color3.fromRGB(90,230,255),
-		Gold=Color3.fromRGB(255,210,90),Magenta=Color3.fromRGB(255,110,240)}
-	Config.BallEspColor = m[v] or Color3.fromRGB(255,90,90)
-end)))
-
-va(section(vp, "Character"))
-va((toggle(vp, "Headless", Config.Headless, function(v) Config.Headless = v; applyHeadless() end)))
-va((toggle(vp, "Fullbright", Config.Fullbright, function(v)
-	Config.Fullbright = v
-	if v then
-		Lighting.Ambient = Color3.fromRGB(200,200,200); Lighting.OutdoorAmbient = Color3.fromRGB(200,200,200)
-		Lighting.Brightness = 2; Lighting.GlobalShadows = false
-	else applySky(Config.SkyPreset) end
-end)))
-
-va(section(vp, "Korblox Bundle Leg"))
-va((toggle(vp, "Wear Korblox Leg", Config.Korblox, function(v) Config.Korblox = v; applyKorblox() end)))
-va((dropdown(vp, "Korblox Side", {"Right", "Left"}, Config.KorbloxSide, function(v) Config.KorbloxSide = v; applyKorblox() end)))
-va((textbox(vp, "Korblox Mesh ID", Config.KorbloxMesh, "rbxassetid://...", function(v) Config.KorbloxMesh = v; applyKorblox() end)))
-va((textbox(vp, "Korblox Texture ID", Config.KorbloxTexture, "rbxassetid://...", function(v) Config.KorbloxTexture = v; applyKorblox() end)))
-va((slider(vp, "Korblox Thinness", 0.05, 1.0, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
-va((slider(vp, "Korblox Scale", 0.4, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
-va((toggle(vp, "Hide Foot", Config.KorbloxHideFoot, function(v) Config.KorbloxHideFoot = v; applyKorblox() end)))
-va((button(vp, "Korblox: Reapply", function() applyKorblox(); notify("korblox reapplied", T.Good) end)))
-
-local wp, wa = newTab("World")
-wa((dropdown(wp, "Sky Preset", {"Default","Night","Blood","Black","Neon","Vapor"}, Config.SkyPreset, function(v)
-	Config.SkyPreset = v; applySky(v)
-end)))
-wa((slider(wp, "Clock Time", 0, 24, Config.ClockTime, 0, function(v) Config.ClockTime = v; Lighting.ClockTime = v end)))
-wa((slider(wp, "Brightness", 0, 5, Config.Brightness, 1, function(v) Config.Brightness = v; Lighting.Brightness = v end)))
-wa((toggle(wp, "Particles", Config.Particles, function(v) Config.Particles = v; applyParticles() end)))
-wa((slider(wp, "Particle Rate", 5, 200, Config.ParticleRate, 0, function(v) Config.ParticleRate = v; applyParticles() end)))
-
---=============================================================
--- SKINS TAB
---=============================================================
-local kp, ka = newTab("Skins")
-ka(section(kp, "In-Game Skins"))
-local skinDropdown
-local function rebuildSkinDropdown()
-	if skinDropdown then skinDropdown:Destroy() end
-	local names = {}
-	for _, s in ipairs(Skins) do table.insert(names, s.name) end
-	if #names == 0 then names = {"(none found)"} end
-	local cur = Config.SkinName ~= "" and Config.SkinName or names[1]
-	skinDropdown = dropdown(kp, "Skin", names, cur, function(v)
-		selectedSkin = SkinIndex[v]
-		Config.SkinName = v
-		if selectedSkin then applySkin() else notify("no skin data for " .. tostring(v), T.Warn) end
-	end)
-	ka(skinDropdown)
-end
-ka((button(kp, "Rescan Skins", function()
-	local n = buildSkinList()
-	rebuildSkinDropdown()
-	notify("found " .. n .. " skins", n > 0 and T.Good or T.Warn)
-end)))
-ka((button(kp, "Apply Selected Skin", function()
-	if selectedSkin then applySkin() else notify("pick a skin first", T.Warn) end
-end)))
-ka((button(kp, "Clear Skin (restore)", function()
-	restoreSword()
-	selectedSkin = nil
-	Config.SkinName = ""
-	notify("skin cleared", T.Good)
-end)))
-ka((slider(kp, "Skin Scale", 0.4, 2.5, Config.SkinScale, 2, function(v)
-	Config.SkinScale = v
-	if selectedSkin then applySkin(true) end
-end)))
-
-ka(section(kp, "Custom Mesh (manual)"))
-ka((textbox(kp, "Mesh ID", "", "rbxassetid://...", function(v) end)))
-local customMeshBox
-ka((textbox(kp, "Texture ID", "", "rbxassetid://...", function(v) end)))
-ka((button(kp, "Apply Custom Mesh", function()
-	local t = getSwordTarget()
-	if not t or not t.part then notify("sword not found", T.Bad); return end
-	local meshBox = nil
-	-- берём значения из текстбоксов через их Text
-	local vals = {}
-	for _, c in ipairs(kp:GetChildren()) do end
-	notify("use Apply Custom below", T.Dim)
-end)))
-
-ka(section(kp, "Ball"))
-ka((toggle(kp, "Recolor Ball", Config.BallRecolor, function(v) Config.BallRecolor = v end)))
-ka((slider(kp, "Ball Size", 0.5, 3, Config.BallSize, 2, function(v) Config.BallSize = v end)))
-
-rebuildSkinDropdown()
-
-local mp, ma = newTab("Misc")
-ma((slider(mp, "Field of View", 40, 120, Config.Fov, 0, function(v) Config.Fov = v end)))
-ma((toggle(mp, "FPS Booster", Config.FpsBoost, function(v) Config.FpsBoost = v; applyFpsBoost(v) end)))
-ma((toggle(mp, "FPS / Ping HUD", Config.Hud, function(v) Config.Hud = v end)))
-ma((toggle(mp, "Anti AFK", Config.AntiAfk, function(v) Config.AntiAfk = v end)))
-local keyBtn
-keyBtn = ma((button(mp, "Menu Key: "..Config.MenuKey.Name, function()
-	local c
-	c = UserInputService.InputBegan:Connect(function(i, gp)
-		if gp then return end
-		if i.UserInputType == Enum.UserInputType.Keyboard then
-			Config.MenuKey = i.KeyCode
-			keyBtn.Text = "Menu Key: "..i.KeyCode.Name
-			c:Disconnect(); queueSave()
-		end
-	end)
-end)))
-ma((button(mp, "Save Config", function() saveConfig(); notify("saved", T.Good) end)))
-ma((button(mp, "Unload Script", function()
-	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-	pcall(restoreKorblox)
-	pcall(restoreSword)
-	pcall(function() gui:Destroy() end)
-	pcall(function()
-		Lighting.ClockTime = 14; Lighting.Brightness = 2
-		Lighting.Ambient = Color3.fromRGB(70,70,70); Lighting.OutdoorAmbient = Color3.fromRGB(128,128,128)
-		Lighting.GlobalShadows = true
-		if Workspace.CurrentCamera then Workspace.CurrentCamera.FieldOfView = 70 end
-	end)
-end)))
-
---=============================================================
--- OPEN / CLOSE + LOOPS
---=============================================================
-local function setMenu(o) Config.MenuOpen = o; window.Visible = o; queueSave() end
-closeBtn.MouseButton1Click:Connect(function() setMenu(false) end)
-minBtn.MouseButton1Click:Connect(function() setMenu(false) end)
-bind(UserInputService.InputBegan, function(i, gp)
-	if gp then return end
-	if i.KeyCode == Config.MenuKey then setMenu(not window.Visible) end
-end)
-
-local fb = new("TextButton", {Size=UDim2.new(0,36,0,36), Position=UDim2.new(0,12,0,96),
-	BackgroundColor3=T.Bg, Text="𝒮", Font=Enum.Font.GothamBold, TextSize=17,
-	TextColor3=T.Text, AutoButtonColor=false, BorderSizePixel=0, ZIndex=11}, gui)
-corner(fb,18); stroke(fb,T.Line)
-fb.MouseButton1Click:Connect(function() setMenu(not window.Visible) end)
-
-for n, t in pairs(tabs) do
-	local on = (n == "Combat")
-	t.page.Visible = on
-	t.btn.TextColor3 = on and T.Text or T.Dim
-	t.ind.Size = on and UDim2.new(0,2,0,16) or UDim2.new(0,2,0,0)
-end
-
-task.spawn(function() while gui.Parent do pcall(updateExtras); task.wait(0.35) end end)
-task.spawn(function() while gui.Parent do pcall(applyParticles); pcall(applyBallSkin); task.wait(0.5) end end)
-task.spawn(function() while gui.Parent do findRemote(); task.wait(5) end end)
-
--- korblox self-heal
-task.spawn(function()
-	while gui.Parent do
-		pcall(function() if not korbloxOk() then applyKorblox() end end)
-		task.wait(1)
-	end
-end)
-
--- skin self-heal (меч пересоздаётся между раундами)
-task.spawn(function()
-	while gui.Parent do
-		if selectedSkin then
-			local t = getSwordTarget()
-			if t and t.part and t.part.MeshId ~= selectedSkin.mesh then pcall(applySkin, true) end
-		end
-		task.wait(1.5)
-	end
-end)
-
-bind(RunService.RenderStepped, function()
-	local cam = Workspace.CurrentCamera
-	if cam and math.abs(cam.FieldOfView - Config.Fov) > 0.1 then cam.FieldOfView = Config.Fov end
-	local char = LP.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if Config.ParryRing and root and inMatch() then
-		local r = E.radius or Config.BaseRadius
-		ring.Adornee = root
-		ring.Radius = r
-		ring.InnerRadius = math.max(0.05, r * (1 - Config.RingThick))
-		ring.Color3 = E.hot and RingHot or (RingColors[Config.RingColor] or RingColors.Purple)
-		ring.Transparency = E.hot and math.max(0.05, Config.RingOpacity - 0.15) or Config.RingOpacity
-		ring.Visible = true
-	else
-		ring.Visible = false
-	end
-end)
-
-bind(LP.Idled, function()
-	if Config.AntiAfk then
-		pcall(function()
-			game:GetService("VirtualUser"):CaptureController()
-			game:GetService("VirtualUser"):ClickButton2(Vector2.new())
-		end)
-	end
-end)
-
-local function cycle(dt) pcall(step, dt) end
-if RunService.PreSimulation then bind(RunService.PreSimulation, cycle) end
-bind(RunService.RenderStepped, cycle)
-bind(RunService.Heartbeat, cycle)
-
-task.spawn(function()
-	task.wait(0.5)
-	pcall(applySky, Config.SkyPreset)
-	pcall(applyHeadless)
-	pcall(applyKorblox)
-	if Config.SkinName ~= "" and SkinIndex[Config.SkinName] then
-		selectedSkin = SkinIndex[Config.SkinName]
-		pcall(applySkin, true)
-	end
-	if Config.FpsBoost then pcall(applyFpsBoost, true) end
-	notify(TITLE .. " loaded | skins: " .. skinCount .. " | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
-	print("[" .. TITLE .. "] skins=" .. skinCount .. " keypress=" .. tostring(hasKeypress))
-end)
+_G.BloxStrikeESP = api
+print("[Venice] Blox Strike v11 загружен. E — WH, F — инфа.")
