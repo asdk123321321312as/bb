@@ -1,7 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    input-based bypass (keypress) + adaptive-radius parry
-    + korblox leg + ability guard
+    keypress bypass + adaptive parry + korblox + ability guard + speed + sky fx
     menu: RightShift
 --]]
 
@@ -19,7 +18,7 @@ local HttpService      = cloneref(game:GetService("HttpService"))
 
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local TITLE  = "ScriptSleep"
+local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
 
 --=============================================================
 -- CONFIG
@@ -62,14 +61,27 @@ local Config = {
 
 	-- korblox
 	Korblox        = false,
-	KorbloxSide    = "Right",
+	KorbloxSide    = "Right",       -- Right / Left / Both
 	KorbloxMesh    = "rbxassetid://169177037",
 	KorbloxTexture = "",
-	KorbloxThin    = 1.0,      -- 1.0 = не утоньшать
+	KorbloxThin    = 1.0,
 	KorbloxScale   = 1.0,
-	KorbloxFullLeg = true,     -- бедро + голень
-	KorbloxBone    = true,     -- светлая кость
+	KorbloxFullLeg = true,
+	KorbloxBone    = true,
 	KorbloxHideFoot= true,
+
+	-- движение
+	SpeedBoost    = false,
+	WalkSpeed     = 45,
+	JumpBoost     = false,
+	JumpPower     = 60,
+
+	-- небо
+	SkyParticles  = false,
+	SkyParticleRate = 90,
+	SkyParticleSize = 1.6,
+	SkyParticleHeight = 45,
+	SkyParticleColor = Color3.fromRGB(255, 255, 255),
 
 	BoxEsp        = true,
 	EspColor      = Color3.fromRGB(255, 255, 255),
@@ -419,7 +431,7 @@ bind(UserInputService.InputEnded, function(i)
 end)
 
 --=============================================================
--- PARRY REMOTE (фолбэк)
+-- PARRY REMOTE
 --=============================================================
 local ParryRemote
 local function findRemote()
@@ -973,17 +985,59 @@ end
 bind(LP.CharacterAdded, function() task.wait(0.6); pcall(applyHeadless) end)
 
 --=============================================================
--- KORBLOX LEG
+-- SPEED BOOST
+--=============================================================
+local speedOrig = {}
+
+local function curHum()
+	local char = LP.Character
+	return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function applySpeed()
+	local hum = curHum()
+	if not hum then return end
+	local o = speedOrig[hum]
+	if not o then
+		o = {walk = hum.WalkSpeed, jump = hum.JumpPower}
+		speedOrig[hum] = o
+	end
+	if Config.SpeedBoost then
+		hum.WalkSpeed = math.clamp(Config.WalkSpeed, 1, 500)
+		if Config.JumpBoost then
+			hum.UseJumpPower = true
+			hum.JumpPower = math.clamp(Config.JumpPower, 1, 500)
+		end
+	else
+		hum.WalkSpeed = o.walk
+		if Config.JumpBoost then hum.JumpPower = o.jump end
+	end
+end
+
+local function restoreSpeed()
+	local hum = curHum()
+	if not hum then return end
+	local o = speedOrig[hum]
+	if o then
+		hum.WalkSpeed = o.walk
+		if Config.JumpBoost then hum.JumpPower = o.jump end
+	end
+end
+
+--=============================================================
+-- KORBLOX LEG (bundle 192 Korblox Deathspeaker)
 --=============================================================
 local KORBLOX_TAG = "SSKorblox"
-local korbloxSaved = {}    -- part -> {mesh, tex, size, trans, color}
-local korbloxHidden = {}   -- part -> origTransparency
+local korbloxSaved = {}
+local korbloxHidden = {}
 
 local KORBLOX_PRESETS = {
 	{name = "Korblox A", mesh = "rbxassetid://169177037", tex = ""},
 	{name = "Korblox B", mesh = "rbxassetid://139607718", tex = ""},
-	{name = "Korblox C", mesh = "rbxassetid://169177045", tex = ""},
-	{name = "Korblox D", mesh = "rbxassetid://135080259", tex = ""},
+	{name = "Korblox C", mesh = "rbxassetid://12318225123", tex = ""},
+	{name = "Korblox D", mesh = "rbxassetid://12199981077", tex = ""},
+	{name = "Korblox E", mesh = "rbxassetid://169177045", tex = ""},
+	{name = "Korblox F", mesh = "rbxassetid://135080259", tex = ""},
 }
 
 local function korbloxWantMesh()
@@ -993,14 +1047,15 @@ end
 local function findSideParts(side)
 	local char = LP.Character
 	if not char then return {} end
-	local want = side:lower()
+	local want = (side ~= "Both") and side:lower() or nil
 	local out = {}
 	for _, d in ipairs(char:GetDescendants()) do
 		if d:IsA("BasePart") then
 			local n = d.Name:lower()
-			if n:find(want, 1, true) and (n:find("leg", 1, true) or n:find("foot", 1, true) or n:find("thigh", 1, true) or n:find("shin", 1, true)) then
-				table.insert(out, d)
-			end
+			local sideOk = (not want) or n:find(want, 1, true)
+			local isLeg = n:find("leg", 1, true) or n:find("foot", 1, true)
+				or n:find("thigh", 1, true) or n:find("shin", 1, true)
+			if sideOk and isLeg then table.insert(out, d) end
 		end
 	end
 	return out
@@ -1066,7 +1121,6 @@ local function applyKorblox()
 		return
 	end
 
-	-- какие части получают меш
 	local useLegs = legs
 	if not Config.KorbloxFullLeg then useLegs = {legs[1]} end
 
@@ -1096,7 +1150,6 @@ local function applyKorblox()
 		end
 	end
 
-	-- спрятать всё, что не получило меш
 	for _, leg in ipairs(legs) do
 		if not table.find(useLegs, leg) then hidePart(leg) end
 	end
@@ -1128,7 +1181,90 @@ local function korbloxOk()
 	return m ~= nil and m.MeshId == want
 end
 
+-- попытка надеть реальную ногу из bundle через HumanoidDescription
+local function applyRealBundleLeg()
+	local char = LP.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum then notify("no humanoid", T.Bad); return end
+	local ok, err = pcall(function()
+		local desc = hum:GetAppliedDescription()
+		if Config.KorbloxSide == "Right" or Config.KorbloxSide == "Both" then desc.RightLeg = 139607718 end
+		if Config.KorbloxSide == "Left"  or Config.KorbloxSide == "Both" then desc.LeftLeg  = 139607718 end
+		hum:ApplyDescription(desc)
+	end)
+	notify(ok and "bundle leg applied" or ("failed: " .. tostring(err)), ok and T.Good or T.Bad)
+end
+
 bind(LP.CharacterAdded, function() task.wait(0.9); pcall(applyKorblox) end)
+
+--=============================================================
+-- SKY PARTICLES
+--=============================================================
+local skyFx
+local function skySizeSequence()
+	local s = math.clamp(Config.SkyParticleSize, 0.1, 8)
+	return NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0),
+		NumberSequenceKeypoint.new(0.15, s),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+end
+
+local function ensureSkyFx()
+	if skyFx and skyFx.Parent then return skyFx end
+	skyFx = Instance.new("Part")
+	skyFx.Name = "ScriptSleepSkyFX"
+	skyFx.Anchored = true
+	skyFx.CanCollide = false
+	skyFx.CanQuery = false
+	skyFx.CanTouch = false
+	skyFx.Transparency = 1
+	skyFx.Size = Vector3.new(1,1,1)
+	skyFx.CastShadow = false
+	skyFx.Parent = Workspace
+
+	local e = Instance.new("ParticleEmitter")
+	e.Name = "SSSky"
+	e.Texture = "rbxassetid://243660364"
+	e.LightEmission = 1
+	e.LightInfluence = 0
+	e.Lifetime = NumberRange.new(8, 15)
+	e.Speed = NumberRange.new(1, 4)
+	e.SpreadAngle = Vector2.new(180, 180)
+	e.Drag = 1
+	e.Rate = Config.SkyParticleRate
+	e.Size = skySizeSequence()
+	e.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.25),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	e.Rotation = NumberRange.new(0, 360)
+	e.RotSpeed = NumberRange.new(-25, 25)
+	e.Color = ColorSequence.new(Config.SkyParticleColor)
+	e.Parent = skyFx
+	return skyFx
+end
+
+local function updateSkyFx()
+	if not Config.SkyParticles then
+		if skyFx then
+			local e = skyFx:FindFirstChild("SSSky")
+			if e then e.Enabled = false end
+		end
+		return
+	end
+	local fx = ensureSkyFx()
+	local cam = Workspace.CurrentCamera
+	local base = cam and cam.CFrame.Position or Vector3.zero
+	fx.CFrame = CFrame.new(base + Vector3.new(0, math.clamp(Config.SkyParticleHeight, 5, 400), 0))
+	local e = fx:FindFirstChild("SSSky")
+	if e then
+		e.Enabled = true
+		e.Rate = math.clamp(Config.SkyParticleRate, 1, 500)
+		e.Size = skySizeSequence()
+		e.Color = ColorSequence.new(Config.SkyParticleColor)
+	end
+end
 
 --=============================================================
 -- SKY / PARTICLES / BALL
@@ -1257,13 +1393,6 @@ ca((button(cp, "Scan Game Abilities", function()
 	notify("abilities found: " .. #out, #out > 0 and T.Good or T.Warn)
 	if #out > 0 then print("[" .. TITLE .. "] abilities: " .. table.concat(out, ", ")) end
 end)))
-ca((button(cp, "Show Known Abilities", function()
-	local out = {}
-	for n in pairs(abilityKnown) do table.insert(out, n) end
-	table.sort(out)
-	print("[" .. TITLE .. "] known abilities (" .. #out .. "): " .. table.concat(out, ", "))
-	notify("known abilities: " .. #out .. " (см. консоль)", T.Dim)
-end)))
 
 ca(section(cp, "Adaptive Radius"))
 ca((toggle(cp, "Auto Radius (follow ball speed)", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
@@ -1347,9 +1476,9 @@ va((toggle(vp, "Fullbright", Config.Fullbright, function(v)
 	else applySky(Config.SkyPreset) end
 end)))
 
-va(section(vp, "Korblox Leg"))
+va(section(vp, "Korblox Deathspeaker Leg"))
 va((toggle(vp, "Wear Korblox Leg", Config.Korblox, function(v) Config.Korblox = v; applyKorblox() end)))
-va((dropdown(vp, "Side", {"Right", "Left"}, Config.KorbloxSide, function(v) Config.KorbloxSide = v; applyKorblox() end)))
+va((dropdown(vp, "Side", {"Right", "Left", "Both"}, Config.KorbloxSide, function(v) Config.KorbloxSide = v; applyKorblox() end)))
 local presetNames = {}
 for _, p in ipairs(KORBLOX_PRESETS) do table.insert(presetNames, p.name) end
 table.insert(presetNames, "Custom")
@@ -1371,6 +1500,7 @@ va((toggle(vp, "Full Leg (бедро+голень)", Config.KorbloxFullLeg, func
 va((slider(vp, "Thinness", 0.05, 1.6, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
 va((slider(vp, "Scale (длина)", 0.4, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
 va((toggle(vp, "Hide Foot", Config.KorbloxHideFoot, function(v) Config.KorbloxHideFoot = v; applyKorblox() end)))
+va((button(vp, "Try Real Bundle Leg", function() applyRealBundleLeg() end)))
 va((button(vp, "Korblox: Reapply", function() applyKorblox(); notify("korblox reapplied", T.Good) end)))
 va((button(vp, "Korblox: Remove", function() restoreKorblox(); notify("korblox removed", T.Good) end)))
 
@@ -1379,15 +1509,42 @@ va((toggle(vp, "Recolor Ball", Config.BallRecolor, function(v) Config.BallRecolo
 va((slider(vp, "Ball Size", 0.5, 3, Config.BallSize, 2, function(v) Config.BallSize = v end)))
 
 local wp, wa = newTab("World")
-wa((dropdown(wp, "Sky Preset", {"Default","Night","Blood","Black","Neon","Vapor"}, Config.SkyPreset, function(v)
+wa(section(wp, "Sky Preset"))
+wa((dropdown(wp, "Preset", {"Default","Night","Blood","Black","Neon","Vapor"}, Config.SkyPreset, function(v)
 	Config.SkyPreset = v; applySky(v)
 end)))
 wa((slider(wp, "Clock Time", 0, 24, Config.ClockTime, 0, function(v) Config.ClockTime = v; Lighting.ClockTime = v end)))
 wa((slider(wp, "Brightness", 0, 5, Config.Brightness, 1, function(v) Config.Brightness = v; Lighting.Brightness = v end)))
+
+wa(section(wp, "Sky Particles"))
+wa((toggle(wp, "Floating Sky Particles", Config.SkyParticles, function(v) Config.SkyParticles = v; updateSkyFx() end)))
+wa((slider(wp, "Rate", 5, 400, Config.SkyParticleRate, 0, function(v) Config.SkyParticleRate = v end)))
+wa((slider(wp, "Size", 0.2, 6, Config.SkyParticleSize, 2, function(v) Config.SkyParticleSize = v end)))
+wa((slider(wp, "Height", 5, 200, Config.SkyParticleHeight, 0, function(v) Config.SkyParticleHeight = v end)))
+wa((dropdown(wp, "Color", {"White","Cyan","Purple","Gold","Pink","Green"}, "White", function(v)
+	local m = {White=Color3.fromRGB(255,255,255),Cyan=Color3.fromRGB(150,240,255),Purple=Color3.fromRGB(200,150,255),
+		Gold=Color3.fromRGB(255,225,150),Pink=Color3.fromRGB(255,170,230),Green=Color3.fromRGB(170,255,190)}
+	Config.SkyParticleColor = m[v] or Color3.new(1,1,1)
+end)))
+
+wa(section(wp, "Body Particles"))
 wa((toggle(wp, "Particles", Config.Particles, function(v) Config.Particles = v; applyParticles() end)))
 wa((slider(wp, "Particle Rate", 5, 200, Config.ParticleRate, 0, function(v) Config.ParticleRate = v; applyParticles() end)))
 
 local mp, ma = newTab("Misc")
+ma(section(mp, "Movement"))
+ma((toggle(mp, "Speed Boost", Config.SpeedBoost, function(v)
+	Config.SpeedBoost = v
+	if v then applySpeed() else restoreSpeed() end
+end)))
+ma((slider(mp, "Walk Speed", 16, 150, Config.WalkSpeed, 0, function(v) Config.WalkSpeed = v; if Config.SpeedBoost then applySpeed() end end)))
+ma((toggle(mp, "Jump Boost", Config.JumpBoost, function(v)
+	Config.JumpBoost = v
+	if v then applySpeed() else restoreSpeed() end
+end)))
+ma((slider(mp, "Jump Power", 50, 200, Config.JumpPower, 0, function(v) Config.JumpPower = v; if Config.JumpBoost then applySpeed() end end)))
+
+ma(section(mp, "Client"))
 ma((slider(mp, "Field of View", 40, 120, Config.Fov, 0, function(v) Config.Fov = v end)))
 ma((toggle(mp, "FPS Booster", Config.FpsBoost, function(v) Config.FpsBoost = v; applyFpsBoost(v) end)))
 ma((toggle(mp, "FPS / Ping HUD", Config.Hud, function(v) Config.Hud = v end)))
@@ -1408,6 +1565,8 @@ ma((button(mp, "Save Config", function() saveConfig(); notify("saved", T.Good) e
 ma((button(mp, "Unload Script", function()
 	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
 	pcall(restoreKorblox)
+	pcall(restoreSpeed)
+	pcall(function() if skyFx then skyFx:Destroy() end end)
 	pcall(function() gui:Destroy() end)
 	pcall(function()
 		Lighting.ClockTime = 14; Lighting.Brightness = 2
@@ -1454,12 +1613,20 @@ end)
 
 task.spawn(function()
 	while gui.Parent do
+		if Config.SpeedBoost then pcall(applySpeed) end
+		task.wait(0.4)
+	end
+end)
+
+task.spawn(function()
+	while gui.Parent do
 		if E.seenCount > 400 then E.seenAbility = {}; E.seenCount = 0 end
 		task.wait(10)
 	end
 end)
 
 bind(RunService.RenderStepped, function()
+	pcall(updateSkyFx)
 	local cam = Workspace.CurrentCamera
 	if cam and math.abs(cam.FieldOfView - Config.Fov) > 0.1 then cam.FieldOfView = Config.Fov end
 	local char = LP.Character
@@ -1496,6 +1663,8 @@ task.spawn(function()
 	pcall(applySky, Config.SkyPreset)
 	pcall(applyHeadless)
 	pcall(applyKorblox)
+	if Config.SpeedBoost then pcall(applySpeed) end
+	if Config.SkyParticles then pcall(updateSkyFx) end
 	if Config.FpsBoost then pcall(applyFpsBoost, true) end
 	notify(TITLE .. " loaded | abilities: " .. #discovered .. " | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
 	print("[" .. TITLE .. "] discovered abilities=" .. #discovered .. " keypress=" .. tostring(hasKeypress))
