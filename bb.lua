@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + adaptive parry + smart one-tap + korblox + ability guard
+    keypress bypass + speed-adaptive parry + smart one-tap + korblox + ability guard
     menu: RightShift
 --]]
 
@@ -487,7 +487,7 @@ local E = {
 	prevSpeed = nil, prevSpeedT = 0, boostUntil = 0, boosted = false,
 	ability = "-", seenAbility = {}, seenCount = 0,
 	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
-	redB = false, redC = false, redOk = false,
+	redB = false, redC = false,
 }
 
 local function performParry()
@@ -682,7 +682,7 @@ local function computeThreat(ball, root)
 end
 
 --=============================================================
--- RED STATE  (мяч красный + игрок красный = момент удара/стан)
+-- RED INFO (не влияет на удар)
 --=============================================================
 local RED_ATTRS = {"Red","red","IsRed","isRed","Stun","stun","Stunned","stunned","Threat","threat","Targeted","targeted","Hit","hit"}
 
@@ -849,26 +849,22 @@ local function detectBoost(threat)
 	return now < E.boostUntil
 end
 
+-- тайминг зависит от скорости: быстрее мяч -> бьём заранее, медленнее -> позже
 local function computeRadius(threat, pingSec)
 	local net = pingSec * 0.5 + (1 / 60)
-	local boost = 0
-	if Config.SpeedAssist then
-		boost = math.clamp((threat.speed - 120) / 800, 0, 0.20) * math.clamp(Config.FastBoost, 0, 1)
-	end
+	local spd = threat.speed
+	local curve = 1 + math.clamp((spd - 90) / 800, -0.30, 1.20) * math.clamp(Config.FastBoost, 0, 1)
+	local lead = Config.LeadTime * curve + (Config.PingComp and net or 0)
 	if Config.AutoRadius then
-		local lead = Config.LeadTime + boost + (Config.PingComp and net or 0)
-		return math.clamp(threat.speed * lead, Config.MinRadius, Config.MaxRadius)
+		return math.clamp(spd * lead, Config.MinRadius, Config.MaxRadius)
 	end
-	local r = Config.BaseRadius
-	if Config.PingComp then r = r + math.clamp(threat.speed * net, 0, Config.BallPredCap) end
-	if Config.SpeedAssist then
-		r = r + math.clamp((threat.speed - 120) * 0.06, 0, 16) * math.clamp(Config.FastBoost, 0, 1)
-	end
+	local r = Config.BaseRadius * curve
+	if Config.PingComp then r = r + math.clamp(spd * net, 0, Config.BallPredCap) end
 	return r
 end
 
 local function step(dt)
-	if not Config.AutoParry or not inMatch() then E.boosted = false; E.redB = false; E.redC = false; E.redOk = false; return end
+	if not Config.AutoParry or not inMatch() then E.boosted = false; E.redB = false; E.redC = false; return end
 	local char = LP.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
@@ -892,12 +888,9 @@ local function step(dt)
 	E.radius = radius
 	E.hot = threat.distance <= radius
 
-	-- RED GATE: бьём в момент когда и мяч, и игрок красные; страховка — не позже зоны
-	local ballRed = ballIsRed(ball)
-	local charRed = charIsRed(char)
-	E.redB, E.redC = ballRed, charRed
-	local redOk = (ballRed and charRed) or (threat.distance <= math.max(radius * 0.75, 6))
-	E.redOk = redOk
+	-- инфо по красному (на удар не влияет)
+	E.redB = ballIsRed(ball)
+	E.redC = charIsRed(char)
 
 	updateArm(ball, threat, radius)
 
@@ -908,8 +901,6 @@ local function step(dt)
 		if tgt == false then return end
 		if tgt == nil and not heur then return end
 	end
-
-	if not redOk then return end
 
 	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
 	local horizon = (Config.Horizon or 0.5) * (Config.Prediction or 0.07)
@@ -1504,8 +1495,8 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("in %s | acts %d | press %d | R %d", E.mode, E.actions, E.pressCount, math.floor(E.radius))
-		hudParry.TextColor3 = E.boosted and RingBoost or ((E.redB and E.redC) and RingRed or (E.hot and T.Good or (hasKeypress and T.Dim or T.Bad)))
+		hudParry.Text = string.format("in %s | acts %d | press %d | R %d | spd %d", E.mode, E.actions, E.pressCount, math.floor(E.radius), math.floor(E.speed))
+		hudParry.TextColor3 = E.boosted and RingBoost or (E.hot and T.Good or (hasKeypress and T.Dim or T.Bad))
 		hudAbility.Visible = Config.ShowAbility and E.boosted
 		if hudAbility.Visible then hudAbility.Text = "ABILITY >> " .. tostring(E.ability) end
 		hudDebug.Visible = Config.Debug and Config.Hud
@@ -1791,8 +1782,8 @@ bind(RunService.RenderStepped, function()
 		ring.Adornee = root
 		ring.Radius = r
 		ring.InnerRadius = math.max(0.05, r * (1 - Config.RingThick))
-		ring.Color3 = E.boosted and RingBoost or ((E.redB and E.redC) and RingRed or (E.hot and RingHot or (RingColors[Config.RingColor] or RingColors.Purple)))
-		ring.Transparency = (E.hot or E.boosted or (E.redB and E.redC)) and math.max(0.05, Config.RingOpacity - 0.15) or Config.RingOpacity
+		ring.Color3 = E.boosted and RingBoost or (E.hot and RingHot or (RingColors[Config.RingColor] or RingColors.Purple))
+		ring.Transparency = (E.hot or E.boosted) and math.max(0.05, Config.RingOpacity - 0.15) or Config.RingOpacity
 		ring.Visible = true
 	else
 		ring.Visible = false
