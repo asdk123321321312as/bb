@@ -35,10 +35,9 @@ local Config = {
 	Prediction    = 0.07,
 	Horizon       = 0.5,
 
-	-- один удар на подход (без ложных кликов)
 	SmartTap      = true,
-	ExtraPresses  = 1,      -- 0 = строго 1 удар на подход
-	MinRepressGap = 0.06,   -- сек между доп. ударами
+	ExtraPresses  = 1,
+	MinRepressGap = 0.06,
 
 	AutoRadius    = true,
 	LeadTime      = 0.11,
@@ -66,7 +65,6 @@ local Config = {
 	RingThick     = 0.06,
 	RingOpacity   = 0.3,
 
-	-- korblox
 	Korblox        = false,
 	KorbloxSide    = "Right",
 	KorbloxMesh    = "rbxassetid://169177037",
@@ -488,9 +486,7 @@ local E = {
 	targeted = false, hot = false, mode = "-",
 	prevSpeed = nil, prevSpeedT = 0, boostUntil = 0, boosted = false,
 	ability = "-", seenAbility = {}, seenCount = 0,
-	-- smart tap
 	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
-	-- red gate (ball+player stun)
 	redB = false, redC = false, redOk = false,
 }
 
@@ -539,7 +535,6 @@ local function actionCooldown()
 	return math.max(0.008, cd + (math.random(-1, 2) / 1000))
 end
 
--- Smart One-Tap: один удар на подход + страховочный доп-удар только если мяч не улетел
 local function canPress(ball, now)
 	if now - E.lastAction < actionCooldown() then return false end
 	if not Config.SmartTap then return true end
@@ -552,7 +547,7 @@ local function canPress(ball, now)
 	if now - (E.pressAt or 0) < gap then return false end
 
 	if not E.ballLeft and E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) and not E.emergency then
-		return false   -- лимит нажатий исчерпан, ждём пока мяч уйдёт
+		return false
 	end
 	return true
 end
@@ -573,7 +568,6 @@ local function sendAction(ball)
 	return true
 end
 
--- перевзвод: разрешаем бить снова только когда мяч реально ушёл
 local function updateArm(ball, threat, radius)
 	local now = tick()
 	if ball ~= E.pressBall then
@@ -587,9 +581,7 @@ local function updateArm(ball, threat, radius)
 		E.ballLeft = true
 		E.pressCount = 0
 	end
-	-- аварийный режим: мяч почти вплотную, а мы уже отжались
 	E.emergency = (threat.distance < radius * 0.55) and (now - (E.pressAt or 0) > 0.10)
-	-- предохранитель: если долго не жали — сбрасываем лимит
 	if now - (E.pressAt or 0) > 0.30 then
 		E.pressCount = 0
 		E.ballLeft = true
@@ -692,12 +684,23 @@ end
 --=============================================================
 -- RED STATE  (мяч красный + игрок красный = момент удара/стан)
 --=============================================================
-local RED_ATTRS = {"Red","red","IsRed","isRed","Stun","stun","Stunned","stunned","Threat","threat","Targeted","targeted"}
+local RED_ATTRS = {"Red","red","IsRed","isRed","Stun","stun","Stunned","stunned","Threat","threat","Targeted","targeted","Hit","hit"}
 
 local function isRed(c)
 	if typeof(c) ~= "Color3" then return false end
 	local r, g, b = c.R, c.G, c.B
 	return r > 0.5 and (r - g) > 0.10 and (r - b) > 0.10
+end
+
+local function scanRed(obj)
+	if not obj then return false end
+	for _, d in ipairs(obj:GetDescendants()) do
+		if d:IsA("Highlight") and (isRed(d.FillColor) or isRed(d.OutlineColor)) then return true end
+		if d:IsA("PointLight") and isRed(d.Color) then return true end
+		if d:IsA("SelectionBox") and isRed(d.Color3) then return true end
+		if d:IsA("ParticleEmitter") and d.Color.Keypoints[1] and isRed(d.Color.Keypoints[1].Value) then return true end
+	end
+	return false
 end
 
 local function ballIsRed(ball)
@@ -708,13 +711,7 @@ local function ballIsRed(ball)
 		if typeof(v) == "boolean" and v then return true end
 		if typeof(v) == "Color3" and isRed(v) then return true end
 	end
-	for _, d in ipairs(ball:GetChildren()) do
-		if d:IsA("Highlight") and (isRed(d.FillColor) or isRed(d.OutlineColor)) then return true end
-		if d:IsA("PointLight") and isRed(d.Color) then return true end
-		if d:IsA("SelectionBox") and isRed(d.Color3) then return true end
-		if d:IsA("ParticleEmitter") and d.Color.Keypoints[1] and isRed(d.Color.Keypoints[1].Value) then return true end
-	end
-	return false
+	return scanRed(ball)
 end
 
 local function charIsRed(char)
@@ -725,17 +722,13 @@ local function charIsRed(char)
 		if typeof(v) == "boolean" and v then return true end
 		if typeof(v) == "Color3" and isRed(v) then return true end
 	end
-	local hl = char:FindFirstChildOfClass("Highlight")
-	if hl and (isRed(hl.FillColor) or isRed(hl.OutlineColor)) then return true end
-	local root = char:FindFirstChild("HumanoidRootPart")
-	if root and isRed(root.Color) then return true end
-	local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
-	if torso and isRed(torso.Color) then return true end
 	local red, total = 0, 0
-	for _, d in ipairs(char:GetChildren()) do
+	for _, d in ipairs(char:GetDescendants()) do
 		if d:IsA("BasePart") then
 			total += 1
 			if isRed(d.Color) then red += 1 end
+		elseif d:IsA("Highlight") and (isRed(d.FillColor) or isRed(d.OutlineColor)) then
+			return true
 		end
 	end
 	if total >= 3 and red / total >= 0.5 then return true end
@@ -899,13 +892,11 @@ local function step(dt)
 	E.radius = radius
 	E.hot = threat.distance <= radius
 
-	-- RED GATE: бьём только когда и мяч, и игрок красные (момент удара / стан)
+	-- RED GATE: бьём в момент когда и мяч, и игрок красные; страховка — не позже зоны
 	local ballRed = ballIsRed(ball)
 	local charRed = charIsRed(char)
 	E.redB, E.redC = ballRed, charRed
-	local redOk = (ballRed and charRed)
-	-- предохранитель: мяч вплотную -> бьём даже если красный не распознался
-	if not redOk and threat.distance <= math.min(radius * 0.5, 7) then redOk = true end
+	local redOk = (ballRed and charRed) or (threat.distance <= math.max(radius * 0.75, 6))
 	E.redOk = redOk
 
 	updateArm(ball, threat, radius)
