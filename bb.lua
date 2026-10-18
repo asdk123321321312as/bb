@@ -59,24 +59,22 @@ local Config = {
 	RingThick     = 0.06,
 	RingOpacity   = 0.3,
 
-	-- korblox
+	-- korblox (Deathspeaker spike)
 	Korblox        = false,
-	KorbloxSide    = "Right",       -- Right / Left / Both
+	KorbloxSide    = "Right",
 	KorbloxMesh    = "rbxassetid://169177037",
 	KorbloxTexture = "",
-	KorbloxThin    = 1.0,
-	KorbloxScale   = 1.0,
-	KorbloxFullLeg = true,
-	KorbloxBone    = true,
+	KorbloxThin    = 0.40,     -- толщина шипа
+	KorbloxScale   = 0.55,     -- длина шипа
+	KorbloxColor   = "Dark",   -- Dark / Black / Teal / BoneWhite / Gray
+	KorbloxFullLeg = false,    -- false = только бедро (как в bundle)
 	KorbloxHideFoot= true,
 
-	-- движение
 	SpeedBoost    = false,
 	WalkSpeed     = 45,
 	JumpBoost     = false,
 	JumpPower     = 60,
 
-	-- небо
 	SkyParticles  = false,
 	SkyParticleRate = 90,
 	SkyParticleSize = 1.6,
@@ -128,7 +126,14 @@ local RingColors = {
 }
 local RingHot = Color3.fromRGB(120, 255, 160)
 local RingBoost = Color3.fromRGB(255, 170, 60)
-local BONE_WHITE = Color3.fromRGB(242, 242, 242)
+
+local KORBLOX_COLORS = {
+	Dark      = Color3.fromRGB(26, 30, 32),
+	Black     = Color3.fromRGB(10, 10, 12),
+	Teal      = Color3.fromRGB(28, 74, 74),
+	BoneWhite = Color3.fromRGB(242, 242, 242),
+	Gray      = Color3.fromRGB(95, 100, 105),
+}
 
 --=============================================================
 -- SAVE / LOAD
@@ -1025,7 +1030,7 @@ local function restoreSpeed()
 end
 
 --=============================================================
--- KORBLOX LEG (bundle 192 Korblox Deathspeaker)
+-- KORBLOX DEATHSPEAKER LEG (тонкий тёмный шип)
 --=============================================================
 local KORBLOX_TAG = "SSKorblox"
 local korbloxSaved = {}
@@ -1042,6 +1047,9 @@ local KORBLOX_PRESETS = {
 
 local function korbloxWantMesh()
 	return (Config.KorbloxMesh ~= "" and Config.KorbloxMesh) or "rbxassetid://169177037"
+end
+local function korbloxWantColor()
+	return KORBLOX_COLORS[Config.KorbloxColor] or KORBLOX_COLORS.Dark
 end
 
 local function findSideParts(side)
@@ -1107,8 +1115,9 @@ local function applyKorblox()
 	if not Config.Korblox then return end
 
 	local th = math.clamp(Config.KorbloxThin, 0.05, 1.6)
-	local sc = math.clamp(Config.KorbloxScale, 0.4, 2.5)
+	local sc = math.clamp(Config.KorbloxScale, 0.1, 2.5)
 	local meshId = korbloxWantMesh()
+	local col = korbloxWantColor()
 
 	local parts = findSideParts(Config.KorbloxSide)
 	local legs, feet = {}, {}
@@ -1121,8 +1130,9 @@ local function applyKorblox()
 		return
 	end
 
+	-- по умолчанию берём только бедро (верхняя часть ноги) — как в bundle
 	local useLegs = legs
-	if not Config.KorbloxFullLeg then useLegs = {legs[1]} end
+	if not Config.KorbloxFullLeg and #legs > 1 then useLegs = {legs[1]} end
 
 	for _, leg in ipairs(useLegs) do
 		if leg:IsA("MeshPart") then
@@ -1132,7 +1142,7 @@ local function applyKorblox()
 			if Config.KorbloxTexture ~= "" then leg.TextureID = Config.KorbloxTexture end
 			leg.Size = Vector3.new(leg.Size.X * th, leg.Size.Y * sc, leg.Size.Z * th)
 			leg.Transparency = 0
-			if Config.KorbloxBone then leg.Color = BONE_WHITE end
+			leg.Color = col
 		else
 			korbloxSaved[leg] = {size = leg.Size, trans = leg.Transparency, color = leg.Color}
 			local m = leg:FindFirstChild(KORBLOX_TAG)
@@ -1146,10 +1156,11 @@ local function applyKorblox()
 			if Config.KorbloxTexture ~= "" then m.TextureId = Config.KorbloxTexture end
 			m.Scale = Vector3.new(th * sc, sc, th * sc)
 			leg.Transparency = 0
-			if Config.KorbloxBone then leg.Color = BONE_WHITE end
+			leg.Color = col
 		end
 	end
 
+	-- всё остальное на этой стороне — прячем
 	for _, leg in ipairs(legs) do
 		if not table.find(useLegs, leg) then hidePart(leg) end
 	end
@@ -1173,18 +1184,14 @@ local function korbloxOk()
 	if not Config.Korblox then return true end
 	local want = korbloxWantMesh()
 	if leg:IsA("MeshPart") then
-		if leg.MeshId ~= want then return false end
-		if Config.KorbloxBone and leg.Color ~= BONE_WHITE then return false end
-		return true
+		return leg.MeshId == want
 	end
 	local m = leg:FindFirstChild(KORBLOX_TAG)
 	return m ~= nil and m.MeshId == want
 end
 
--- попытка надеть реальную ногу из bundle через HumanoidDescription
 local function applyRealBundleLeg()
-	local char = LP.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hum = curHum()
 	if not hum then notify("no humanoid", T.Bad); return end
 	local ok, err = pcall(function()
 		local desc = hum:GetAppliedDescription()
@@ -1495,10 +1502,10 @@ va((dropdown(vp, "Mesh Preset", presetNames, "Korblox A", function(v)
 end)))
 va((textbox(vp, "Mesh ID", Config.KorbloxMesh, "rbxassetid://...", function(v) Config.KorbloxMesh = v; applyKorblox() end)))
 va((textbox(vp, "Texture ID", Config.KorbloxTexture, "rbxassetid://...", function(v) Config.KorbloxTexture = v; applyKorblox() end)))
-va((toggle(vp, "Bone White", Config.KorbloxBone, function(v) Config.KorbloxBone = v; applyKorblox() end)))
+va((dropdown(vp, "Spike Color", {"Dark","Black","Teal","BoneWhite","Gray"}, Config.KorbloxColor, function(v) Config.KorbloxColor = v; applyKorblox() end)))
 va((toggle(vp, "Full Leg (бедро+голень)", Config.KorbloxFullLeg, function(v) Config.KorbloxFullLeg = v; applyKorblox() end)))
-va((slider(vp, "Thinness", 0.05, 1.6, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
-va((slider(vp, "Scale (длина)", 0.4, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
+va((slider(vp, "Thinness (толщина)", 0.05, 1.6, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
+va((slider(vp, "Scale (длина)", 0.1, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
 va((toggle(vp, "Hide Foot", Config.KorbloxHideFoot, function(v) Config.KorbloxHideFoot = v; applyKorblox() end)))
 va((button(vp, "Try Real Bundle Leg", function() applyRealBundleLeg() end)))
 va((button(vp, "Korblox: Reapply", function() applyKorblox(); notify("korblox reapplied", T.Good) end)))
