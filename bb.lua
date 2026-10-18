@@ -1,8 +1,4 @@
---[[
-    𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + speed-adaptive parry + smart one-tap + korblox + ability guard
-    menu: RightShift
---]]
+
 
 local cloneref = cloneref or function(o) return o end
 
