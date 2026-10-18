@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    input-based bypass + collision-course parry
+    input-based bypass (keypress) + predictive parry
     menu: RightShift
 --]]
 
@@ -29,24 +29,20 @@ local Config = {
 	ParryKey      = "F",
 	ActionsPerSec = 45,
 	BatchMode     = "Fast",
-
-	BaseRadius    = 16,
 	Prediction    = 0.08,
 	Horizon       = 0.45,
+	BaseRadius    = 16,
 	PingComp      = true,
-	PingRadiusCap = 22,
-
-	FakeReject    = true,
-	HitTolerance  = 9,
-	MoveComp      = true,
 	RequireTarget = true,
-	ForceFire     = false,
-
+	OnePerBall    = false,
+	BallPredCap   = 22,
 	Debug         = false,
 
+	-- круг
 	ParryRing     = true,
 	RingColor     = "Purple",
 	RingThick     = 0.06,
+	RingOpacity   = 0.3,
 
 	BoxEsp        = true,
 	EspColor      = Color3.fromRGB(255, 255, 255),
@@ -144,6 +140,7 @@ local T = {
 	ItemHi=Color3.fromRGB(31,31,37), Line=Color3.fromRGB(40,40,47), Text=Color3.fromRGB(238,238,243),
 	Dim=Color3.fromRGB(140,140,150), Accent=Color3.fromRGB(255,255,255),
 	Bad=Color3.fromRGB(255,105,105), Good=Color3.fromRGB(120,255,165), Warn=Color3.fromRGB(255,205,90),
+	Purple=Color3.fromRGB(190,140,255),
 }
 
 local gui
@@ -173,7 +170,7 @@ local conns = {}
 local function bind(s, f) table.insert(conns, s:Connect(f)) end
 local function notify(text, col)
 	if not gui then return end
-	local b = new("Frame", {Size=UDim2.new(0,290,0,32), Position=UDim2.new(1,-310,0,12),
+	local b = new("Frame", {Size=UDim2.new(0,280,0,32), Position=UDim2.new(1,-300,0,12),
 		BackgroundColor3=T.Bg, BackgroundTransparency=0.1, BorderSizePixel=0, ZIndex=60}, gui)
 	corner(b,8); stroke(b, col or T.Line)
 	new("TextLabel", {Size=UDim2.new(1,-20,1,0), Position=UDim2.new(0,10,0,0), BackgroundTransparency=1,
@@ -184,6 +181,7 @@ local function notify(text, col)
 		task.wait(0.45); pcall(function() b:Destroy() end)
 	end)
 end
+
 local function safeParent()
 	if gethui then local h = gethui(); if h then return h end end
 	return LP:WaitForChild("PlayerGui")
@@ -389,7 +387,7 @@ bind(UserInputService.InputEnded, function(i)
 end)
 
 --=============================================================
--- REMOTE + INPUT BACKEND
+-- PARRY REMOTE (фолбэк)
 --=============================================================
 local ParryRemote
 local function findRemote()
@@ -407,20 +405,27 @@ local hasKeypress = pcall(function() return keypress end)
 local hasMouse    = pcall(function() return mouse1click end)
 
 --=============================================================
--- ENGINE STATE
+-- PARRY ENGINE
 --=============================================================
 local E = {
-	lastAction = 0, actions = 0,
-	dist = 0, speed = 0, eta = 0, miss = 0, radius = 16,
-	targeted = false, willHit = false, mode = "-", block = "-",
-	seen = 0, blockedTarget = 0, blockedFake = 0,
+	lastAction = 0,
+	actions    = 0,
+	lastBall   = nil,
+	lastPos    = nil,
+	lastTime   = 0,
+	lastVel    = Vector3.zero,
+	accel      = Vector3.zero,
+	dist       = 0,
+	speed      = 0,
+	eta        = 0,
+	radius     = 16,   -- ФАКТИЧЕСКИЙ радиус (для круга и HUD)
+	targeted   = false,
+	mode       = "-",
 }
 
---=============================================================
--- INPUT
---=============================================================
 local function performParry()
 	local key = KeyCodes[Config.ParryKey] or 0x46
+
 	if Config.InputMode == "Remote" then
 		if ParryRemote then pcall(function() ParryRemote:FireServer() end) end
 		return "remote"
@@ -436,6 +441,7 @@ local function performParry()
 		end
 		return "key"
 	end
+
 	if hasKeypress then
 		pcall(function() keypress(key) end)
 		task.delay(0.008, function() pcall(function() keyrelease(key) end) end)
@@ -463,15 +469,17 @@ end
 local function sendAction(ball)
 	local now = tick()
 	if now - E.lastAction < actionCooldown() then return false end
+	if Config.OnePerBall and E.lastBall == ball and not E.released then return false end
 	E.lastAction = now
 	E.actions += 1
-	E.block = "-"
+	E.lastBall = ball
+	E.released = false
 	E.mode = performParry()
 	return true
 end
 
 --=============================================================
--- MATCH / BALL
+-- BALL / TARGET / THREAT
 --=============================================================
 local function inMatch()
 	local char = LP.Character
@@ -485,21 +493,23 @@ local function inMatch()
 	return true
 end
 
-local function ballVelocity(ball)
-	local v = ball.AssemblyLinearVelocity
-	local z = ball:FindFirstChild("zoomies")
-	if z then
-		if z:IsA("LinearVelocity") or z:IsA("VectorForce") then
-			v = z.VectorVelocity
-		elseif z:IsA("BodyVelocity") then
-			v = z.Velocity
+local function getBall()
+	local folder = Workspace:FindFirstChild("Balls")
+	if not folder then return nil end
+	local char = LP.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+	local best, bd
+	for _, v in ipairs(folder:GetChildren()) do
+		if v:IsA("BasePart") then
+			local d = (v.Position - root.Position).Magnitude
+			if d < (bd or math.huge) then best, bd = v, d end
 		end
 	end
-	if v.Magnitude <= 0.5 then v = ball.Velocity end
-	return v
+	return best
 end
 
-local function ballTargetAttr(ball)
+local function ballTarget(ball)
 	return ball:GetAttribute("target") or ball:GetAttribute("Target")
 		or ball:GetAttribute("currentTarget") or ball:GetAttribute("targetPlayer")
 		or ball:GetAttribute("to")
@@ -510,7 +520,7 @@ local function isTargeted(ball)
 	local char = LP.Character
 	if not ball or not char then return nil end
 
-	local t = ballTargetAttr(ball)
+	local t = ballTarget(ball)
 	if t ~= nil then
 		if t == LP.Name or t == LP.DisplayName or t == char.Name
 			or t == LP.UserId or t == tostring(LP.UserId)
@@ -542,196 +552,147 @@ local function isTargeted(ball)
 	return nil
 end
 
---=============================================================
--- PREDICTION
---=============================================================
-local accelMap = {}
+local function computeThreat(ball, root)
+	local ballPos = ball.Position
+	local playerPos = root.Position
+	local distance = (playerPos - ballPos).Magnitude
 
-bind(RunService.Heartbeat, function()
-	local folder = Workspace:FindFirstChild("Balls")
-	if not folder then return end
-	local now = tick()
-	local live = {}
-	for _, b in ipairs(folder:GetChildren()) do
-		if b:IsA("BasePart") then
-			live[b] = true
-			local rec = accelMap[b]
-			local v = ballVelocity(b)
-			if rec then
-				local dt = math.clamp(now - rec.t, 0.001, 0.05)
-				rec.a = (v - rec.v) / dt
-				rec.v = v
-				rec.t = now
-			else
-				accelMap[b] = {v = v, t = now, a = Vector3.zero}
-			end
+	local velocity = ball.AssemblyLinearVelocity
+	local zoomies = ball:FindFirstChild("zoomies")
+	if zoomies then
+		if zoomies:IsA("LinearVelocity") or zoomies:IsA("VectorForce") then
+			velocity = zoomies.VectorVelocity
+		elseif zoomies:IsA("BodyVelocity") then
+			velocity = zoomies.Velocity
 		end
 	end
-	for b in pairs(accelMap) do
-		if not live[b] and not b.Parent then accelMap[b] = nil end
+	local speed = velocity.Magnitude
+	if speed <= 0 then
+		velocity = ball.Velocity
+		speed = velocity.Magnitude
 	end
-end)
-
-local function transitTime(dt, speed)
-	local pingSec = getPing() / 1000
-	local horizon = (Config.Horizon or 0.45) * (Config.Prediction or 0.08)
-	horizon += math.clamp((speed - 150) * 0.0003, 0, 0.12)
-	return pingSec * 0.5 + math.clamp(dt or 0.016, 0.001, 0.033) * 0.5 + (1 / 60) + horizon
-end
-
-local function predictHit(ball, root, v, accel, transit)
-	local speed = v.Magnitude
-	if speed < 0.5 then return false, 999 end
-	local dir = v / speed
-	local playerVel = (Config.MoveComp and root.AssemblyLinearVelocity) or Vector3.zero
-	local futurePlayer = root.Position + playerVel * transit
-	local futureBall = ball.Position + v * transit + 0.5 * accel * (transit * transit)
-	local toPlayer = futurePlayer - futureBall
-	local proj = toPlayer.Dot(dir)
-	if proj < -3 then return false, toPlayer.Magnitude end
-	local closest = futureBall + dir * math.max(proj, 0)
-	return (futurePlayer - closest).Magnitude <= Config.HitTolerance, (futurePlayer - closest).Magnitude
-end
-
-local function buildThreat(b, root, dt)
-	local v = ballVelocity(b)
-	local speed = v.Magnitude
 	if speed <= 0.5 then return nil end
-	local ballPos = b.Position
-	local distance = (root.Position - ballPos).Magnitude
-	local dirToPlayer = (root.Position - ballPos).Unit
+
+	local now = tick()
+	local dt = math.clamp(now - E.lastTime, 0.001, 0.05)
+	E.lastTime = now
+	local accel = (velocity - E.lastVel) / dt
+	E.lastVel = velocity
+
+	local dirToPlayer = (playerPos - ballPos).Unit
+	local dot = dirToPlayer:Dot(velocity.Unit)
 	local rootVel = root.AssemblyLinearVelocity or Vector3.zero
-	local accel = (accelMap[b] and accelMap[b].a) or Vector3.zero
-	local transit = transitTime(dt, speed)
-	local willHit, miss = predictHit(b, root, v, accel, transit)
+	local approachSpeed = (velocity - rootVel):Dot(dirToPlayer)
+
 	return {
-		ball = b, distance = distance, speed = speed, velocity = v, accel = accel,
-		dot = dirToPlayer.Dot(v.Unit),
-		approachSpeed = (v - rootVel).Dot(dirToPlayer),
-		miss = miss, willHit = willHit,
-		eta = distance / math.max((v - rootVel).Dot(dirToPlayer), speed * 0.7, 1),
+		ball = ball, distance = distance, speed = speed, velocity = velocity,
+		accel = accel, dot = dot, approachSpeed = approachSpeed,
+		eta = distance / math.max(approachSpeed, speed * 0.7, 1),
 	}
 end
 
-local function pickThreat(root, dt)
-	local folder = Workspace:FindFirstChild("Balls")
-	if not folder then return nil, nil end
-	local best, bestThreat, bestScore
-	for _, b in ipairs(folder:GetChildren()) do
-		if b:IsA("BasePart") then
-			local t = buildThreat(b, root, dt)
-			if t then
-				E.seen += 1
-				local tgt = isTargeted(b)
-				local score = 0
-				if tgt == true then score += 100000
-				elseif tgt == nil then score += 30000 end
-				if t.willHit then score += 50000 end
-				score += math.clamp(1000 - t.distance, 0, 1000)
-				if not bestScore or score > bestScore then best, bestThreat, bestScore = b, t, score end
-			end
-		end
-	end
-	return best, bestThreat
-end
-
 --=============================================================
--- MAIN STEP
+-- MAIN LOGIC
 --=============================================================
 local function step(dt)
 	if not Config.AutoParry or not inMatch() then return end
 	local char = LP.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
+	local ball = getBall()
+	if not ball then return end
 
-	local ball, threat = pickThreat(root, dt)
-	if not threat then E.block = "no ball" return end
+	local threat = computeThreat(ball, root)
+	if not threat then return end
 
-	E.dist, E.speed, E.eta, E.miss = threat.distance, threat.speed, threat.eta, threat.miss
+	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
 
-	local tgt = isTargeted(threat.ball)
-	local heuristicTarget = threat.dot > 0.4 and threat.approachSpeed > 0
-	E.targeted = (tgt == true) or (tgt == nil and heuristicTarget)
-	E.willHit = threat.willHit
-
-	-- радиус считается ДО проверок
+	-- РАДИУС считается всегда — от него живёт круг и HUD
 	local pingSec = getPing() / 1000
 	local radius = Config.BaseRadius
 	if Config.PingComp then
-		radius += math.clamp(threat.speed * (pingSec * 0.5 + 1 / 60), 0, Config.PingRadiusCap)
+		radius = radius + math.clamp(threat.speed * (pingSec * 0.5 + 1 / 60), 0, Config.BallPredCap)
 	end
 	E.radius = radius
 
-	if not Config.ForceFire then
-		-- жёсткий запрет только если игра прямо сказала "цель — другой игрок"
-		if Config.RequireTarget and tgt == false then
-			E.block = "target"; E.blockedTarget += 1
-			return
-		end
-		-- неизвестно и мяч уходит от нас
-		if Config.RequireTarget and tgt == nil and not heuristicTarget then
-			E.block = "target?"; E.blockedTarget += 1
-			return
-		end
-		-- анти-фейк: только при ЯВНОМ промахе и снаружи внутренней зоны
-		if Config.FakeReject and (not threat.willHit) and threat.miss > Config.HitTolerance * 1.8
-			and threat.distance > radius * 0.8 then
-			E.block = "fake"; E.blockedFake += 1
-			return
-		end
+	local tgt = isTargeted(ball)
+	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
+	E.targeted = (tgt == true) or (tgt == nil and heur)
+
+	if Config.RequireTarget then
+		if tgt == false then return end
+		if tgt == nil and not heur then return end
 	end
 
 	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
-	local transit = transitTime(dtStep, threat.speed)
-	local playerVel = (Config.MoveComp and root.AssemblyLinearVelocity) or Vector3.zero
-	local futurePlayer = root.Position + playerVel * transit
-	local futureBall = threat.ball.Position + threat.velocity * transit + 0.5 * threat.accel * (transit * transit)
+
+	local horizon = (Config.Horizon or 0.45) * (Config.Prediction or 0.08)
+	horizon = horizon + math.clamp((threat.speed - 150) * 0.0003, 0, 0.12)
+	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
+
+	local futurePlayer = root.Position + root.AssemblyLinearVelocity * transit
+	local curveComp = 0.5 * threat.accel * (transit * transit)
+	if curveComp.Magnitude > 15 then curveComp = curveComp.Unit * 15 end
+	local futureBall = ball.Position + threat.velocity * transit + curveComp
+
 	local futureDist = (futurePlayer - futureBall).Magnitude
 
-	local dirOk = threat.dot > 0.05 or threat.approachSpeed > -5
-
-	-- 1) мяч уже в зоне
-	if threat.distance <= radius and dirOk then
-		sendAction(threat.ball)
+	if threat.distance <= radius and (threat.dot > 0.05 or threat.approachSpeed > -5) then
+		sendAction(ball)
 		return
 	end
-	-- 2) предсказанный контакт в зоне
-	if futureDist <= radius and dirOk then
-		sendAction(threat.ball)
+	if futureDist <= radius and (threat.approachSpeed > -10 or threat.dot > 0.05) then
+		sendAction(ball)
 	end
 end
 
+-- освобождение лока
+bind(RunService.Heartbeat, function()
+	if E.lastBall and E.lastBall.Parent then
+		local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+		if root then
+			local d = (E.lastBall.Position - root.Position).Magnitude
+			local v = E.lastBall.AssemblyLinearVelocity
+			if d > 32 and v.Magnitude > 1 and v.Unit:Dot((root.Position - E.lastBall.Position).Unit) < -0.2 then
+				E.released = true
+			end
+		end
+	end
+end)
+
 --=============================================================
--- PARRY RING
+-- PARRY RING  (рисуется по ФАКТИЧЕСКОМУ радиусу)
 --=============================================================
 local ring = new("CylinderHandleAdornment", {
-	Height = 0.05, Radius = Config.BaseRadius, InnerRadius = Config.BaseRadius - 0.5,
+	Height = 0.05,
+	Radius = Config.BaseRadius,
+	InnerRadius = Config.BaseRadius * (1 - Config.RingThick),
 	Color3 = RingColors[Config.RingColor] or RingColors.Purple,
-	Transparency = 0.3, AlwaysOnTop = true, ZIndex = 5,
-	CFrame = CFrame.Angles(math.rad(90), 0, 0), Visible = false,
+	Transparency = Config.RingOpacity,
+	AlwaysOnTop = true,
+	ZIndex = 5,
+	CFrame = CFrame.Angles(math.rad(90), 0, 0),
+	Visible = false,
 }, gui)
 
 --=============================================================
 -- ESP
 --=============================================================
 local espObjs = {}
-local ballEspMap = {}
-
 local function project(v)
 	local sp = Camera:WorldToViewportPoint(v)
 	if sp.Z <= 0 then return nil end
 	return Vector2.new(sp.X, sp.Y)
 end
-
 local function makeEsp(label)
 	local o = {}
 	o.box = new("Frame", {BackgroundTransparency=1, BorderSizePixel=0, Visible=false, ZIndex=2}, espFolder)
 	o.stroke = new("UIStroke", {Color=T.Accent, Thickness=1, ApplyStrokeMode=Enum.ApplyStrokeMode.Border}, o.box)
 	o.fill = new("Frame", {Size=UDim2.new(1,0,1,0), BackgroundColor3=T.Accent, BackgroundTransparency=1, BorderSizePixel=0, ZIndex=1}, o.box)
-	o.name = new("TextLabel", {Size=UDim2.new(0,240,0,13), AnchorPoint=Vector2.new(0.5,1), BackgroundTransparency=1,
+	o.name = new("TextLabel", {Size=UDim2.new(0,220,0,13), AnchorPoint=Vector2.new(0.5,1), BackgroundTransparency=1,
 		Font=Enum.Font.GothamBold, TextSize=11, TextColor3=T.Text, TextStrokeTransparency=0,
 		TextStrokeColor3=Color3.new(0,0,0), Text=label, Visible=false, ZIndex=3}, espFolder)
-	o.dist = new("TextLabel", {Size=UDim2.new(0,240,0,13), AnchorPoint=Vector2.new(0.5,0), BackgroundTransparency=1,
+	o.dist = new("TextLabel", {Size=UDim2.new(0,220,0,13), AnchorPoint=Vector2.new(0.5,0), BackgroundTransparency=1,
 		Font=Enum.Font.Gotham, TextSize=10, TextColor3=T.Dim, TextStrokeTransparency=0,
 		TextStrokeColor3=Color3.new(0,0,0), Text="", Visible=false, ZIndex=3}, espFolder)
 	o.hpBg = new("Frame", {Size=UDim2.new(0,3,1,0), BackgroundColor3=Color3.new(0,0,0), BorderSizePixel=0, Visible=false, ZIndex=3}, espFolder)
@@ -741,7 +702,7 @@ local function makeEsp(label)
 		BackgroundTransparency=0.4, BorderSizePixel=0, Visible=false, ZIndex=1}, espFolder)
 	return o
 end
-
+local ballEsp = makeEsp("BALL")
 local function hideEsp(o)
 	o.box.Visible=false; o.name.Visible=false; o.dist.Visible=false; o.hpBg.Visible=false; o.tracer.Visible=false
 end
@@ -807,41 +768,21 @@ local function updateEsp()
 			else hideEsp(o) end
 		end
 	end
-
-	local folder = Workspace:FindFirstChild("Balls")
-	if Config.BallEsp and folder then
-		local live = {}
-		for _, ball in ipairs(folder:GetChildren()) do
-			if ball:IsA("BasePart") then
-				live[ball] = true
-				local o = ballEspMap[ball]
-				if not o then
-					o = makeEsp("BALL")
-					ballEspMap[ball] = o
-				end
-				local s = project(ball.Position)
-				if s then
-					local r = 22
-					local tgt = isTargeted(ball) == true
-					o.box.Visible = true
-					o.box.Position = UDim2.fromOffset(s.X-r, s.Y-r)
-					o.box.Size = UDim2.fromOffset(r*2, r*2)
-					o.stroke.Color = tgt and Config.BallEspColor or T.Dim
-					o.stroke.Thickness = tgt and 2 or 1
-					o.name.Visible = true
-					o.name.Text = tgt and "BALL <<" or "BALL"
-					o.name.TextColor3 = tgt and Config.BallEspColor or T.Dim
-					o.name.Position = UDim2.fromOffset(s.X, s.Y-r-2)
-				else hideEsp(o) end
-			end
-		end
-		for b, o in pairs(ballEspMap) do
-			if not live[b] then
-				for _, v in pairs(o) do if typeof(v)=="Instance" then pcall(function() v:Destroy() end) end end
-				ballEspMap[b] = nil
-			end
-		end
-	end
+	local ball = getBall()
+	if Config.BallEsp and ball then
+		local s = project(ball.Position)
+		if s then
+			local r = 22
+			ballEsp.box.Visible = true
+			ballEsp.box.Position = UDim2.fromOffset(s.X-r, s.Y-r)
+			ballEsp.box.Size = UDim2.fromOffset(r*2, r*2)
+			ballEsp.stroke.Color = Config.BallEspColor
+			ballEsp.name.Visible = true
+			ballEsp.name.Text = "BALL"
+			ballEsp.name.TextColor3 = Config.BallEspColor
+			ballEsp.name.Position = UDim2.fromOffset(s.X, s.Y-r-2)
+		else hideEsp(ballEsp) end
+	else hideEsp(ballEsp) end
 end
 bind(RunService.RenderStepped, function() pcall(updateEsp) end)
 bind(Players.PlayerRemoving, function(p)
@@ -925,13 +866,8 @@ local function applySky(name)
 	elseif sky then sky:Destroy() end
 end
 local function applyParticles()
-	local folder = Workspace:FindFirstChild("Balls")
 	local targets = {}
-	if folder then
-		for _, b in ipairs(folder:GetChildren()) do
-			if b:IsA("BasePart") then table.insert(targets, b) end
-		end
-	end
+	local ball = getBall(); if ball then table.insert(targets, ball) end
 	local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
 	if hrp then table.insert(targets, hrp) end
 	for _, part in ipairs(targets) do
@@ -949,16 +885,12 @@ local function applyParticles()
 	end
 end
 local function applyBallSkin()
-	local folder = Workspace:FindFirstChild("Balls")
-	if not folder or not Config.BallRecolor then return end
-	for _, ball in ipairs(folder:GetChildren()) do
-		if ball:IsA("BasePart") then
-			ball.Color = Config.BallColor
-			local base = ball:GetAttribute("ScriptSleepBaseSize")
-			if not base then base = ball.Size; ball:SetAttribute("ScriptSleepBaseSize", base) end
-			ball.Size = base * Config.BallSize
-		end
-	end
+	local ball = getBall()
+	if not ball or not ball:IsA("BasePart") or not Config.BallRecolor then return end
+	ball.Color = Config.BallColor
+	local base = ball:GetAttribute("ScriptSleepBaseSize")
+	if not base then base = ball.Size; ball:SetAttribute("ScriptSleepBaseSize", base) end
+	ball.Size = base * Config.BallSize
 end
 
 --=============================================================
@@ -979,7 +911,7 @@ local function applyFpsBoost(on)
 	else Lighting.GlobalShadows = true end
 end
 
-local hud = new("Frame", {Size=UDim2.new(0,270,0,88), Position=UDim2.new(0,12,0,12),
+local hud = new("Frame", {Size=UDim2.new(0,255,0,74), Position=UDim2.new(0,12,0,12),
 	BackgroundColor3=T.Bg, BackgroundTransparency=0.15, BorderSizePixel=0, Visible=Config.Hud, ZIndex=10}, gui)
 corner(hud,8); stroke(hud,T.Line)
 new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,5), BackgroundTransparency=1,
@@ -990,8 +922,6 @@ local hudParry = new("TextLabel", {Size=UDim2.new(1,-16,0,14), Position=UDim2.ne
 	Font=Enum.Font.Gotham, TextSize=10, TextColor3=T.Dim, TextXAlignment=Enum.TextXAlignment.Left, Text=""}, hud)
 local hudDebug = new("TextLabel", {Size=UDim2.new(1,-16,0,14), Position=UDim2.new(0,10,0,53), BackgroundTransparency=1,
 	Font=Enum.Font.Gotham, TextSize=10, TextColor3=T.Warn, TextXAlignment=Enum.TextXAlignment.Left, Text="", Visible=false}, hud)
-local hudDebug2 = new("TextLabel", {Size=UDim2.new(1,-16,0,14), Position=UDim2.new(0,10,0,67), BackgroundTransparency=1,
-	Font=Enum.Font.Gotham, TextSize=10, TextColor3=T.Warn, TextXAlignment=Enum.TextXAlignment.Left, Text="", Visible=false}, hud)
 
 task.spawn(function()
 	while gui.Parent do
@@ -999,16 +929,12 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("in %s | acts %d | R %d | blk %s", E.mode, E.actions, math.floor(E.radius), E.block)
-		hudParry.TextColor3 = (E.block == "-") and T.Good or T.Warn
+		hudParry.Text = string.format("input: %s | acts %d | R %d", E.mode, E.actions, math.floor(E.radius))
+		hudParry.TextColor3 = hasKeypress and T.Good or (hasMouse and T.Warn or T.Bad)
 		hudDebug.Visible = Config.Debug and Config.Hud
-		hudDebug2.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
-			hudDebug.Text = string.format("d %d | miss %.1f | hit %s | tgt %s",
-				math.floor(E.dist), E.miss, tostring(E.willHit), tostring(E.targeted))
-			hudDebug2.Text = string.format("seen %d | blkT %d | blkF %d",
-				E.seen, E.blockedTarget, E.blockedFake)
-			E.seen = 0
+			hudDebug.Text = string.format("d %d | eta %.2f | tgt %s | %s",
+				math.floor(E.dist), E.eta, tostring(E.targeted), Config.InputMode)
 		end
 		task.wait(0.3)
 	end
@@ -1022,23 +948,19 @@ ca(section(cp, "Auto Parry"))
 ca((toggle(cp, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)))
 ca((dropdown(cp, "Input Mode", {"Auto", "Keypress", "Mouse", "Remote"}, Config.InputMode, function(v) Config.InputMode = v end)))
 ca((dropdown(cp, "Parry Key", {"F", "E", "Q", "R", "V", "C", "Space"}, Config.ParryKey, function(v) Config.ParryKey = v end)))
+ca((toggle(cp, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
+ca((toggle(cp, "One Parry Per Ball", Config.OnePerBall, function(v) Config.OnePerBall = v end)))
 
 ca(section(cp, "Parry Circle"))
-ca((slider(cp, "Parry Radius", 6, 45, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
+ca((slider(cp, "Parry Radius", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
 ca((toggle(cp, "Show Circle", Config.ParryRing, function(v) Config.ParryRing = v end)))
 ca((dropdown(cp, "Circle Color", {"Purple","White","Red","Cyan","Green","Gold"}, Config.RingColor, function(v)
 	Config.RingColor = v
 end)))
-ca((slider(cp, "Circle Thickness", 0.01, 0.25, Config.RingThick, 2, function(v) Config.RingThick = v end)))
+ca((slider(cp, "Circle Thickness", 0.01, 0.30, Config.RingThick, 2, function(v) Config.RingThick = v end)))
+ca((slider(cp, "Circle Opacity", 0, 0.9, Config.RingOpacity, 2, function(v) Config.RingOpacity = v end)))
 ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
-ca((slider(cp, "Ping Radius Cap", 0, 40, Config.PingRadiusCap, 0, function(v) Config.PingRadiusCap = v end)))
-
-ca(section(cp, "Anti-Fake"))
-ca((toggle(cp, "Reject Fake Trajectories", Config.FakeReject, function(v) Config.FakeReject = v end)))
-ca((slider(cp, "Hit Tolerance", 2, 25, Config.HitTolerance, 0, function(v) Config.HitTolerance = v end)))
-ca((toggle(cp, "Compensate My Movement", Config.MoveComp, function(v) Config.MoveComp = v end)))
-ca((toggle(cp, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
-ca((toggle(cp, "Force Fire (ignore checks)", Config.ForceFire, function(v) Config.ForceFire = v end)))
+ca((slider(cp, "Ping Radius Cap", 0, 40, Config.BallPredCap, 0, function(v) Config.BallPredCap = v end)))
 
 ca(section(cp, "Prediction"))
 ca((slider(cp, "Prediction", 0.02, 0.2, Config.Prediction, 2, function(v) Config.Prediction = v end)))
@@ -1049,10 +971,8 @@ ca((slider(cp, "Actions / sec", 10, 100, Config.ActionsPerSec, 0, function(v) Co
 ca((dropdown(cp, "Batch Mode", {"Extremely Fast", "Fast", "Normal", "Safe"}, Config.BatchMode, function(v) Config.BatchMode = v end)))
 ca((button(cp, "Test Parry", function()
 	E.lastAction = 0
-	notify("input -> " .. tostring(performParry()), T.Good)
-end)))
-ca((button(cp, "Reset Counters", function()
-	E.actions, E.seen, E.blockedTarget, E.blockedFake = 0, 0, 0, 0
+	local m = performParry()
+	notify("input -> " .. tostring(m), T.Good)
 end)))
 
 local bp, ba = newTab("Bypass")
@@ -1062,7 +982,6 @@ ba((button(bp, "MAX STEALTH", function()
 	Config.ActionsPerSec = 40
 	Config.BatchMode = "Normal"
 	Config.RequireTarget = true
-	Config.FakeReject = true
 	Config.PingComp = true
 	Config.BaseRadius = 15
 	Config.Headless = false
@@ -1076,22 +995,6 @@ end)))
 ba((button(bp, "Find Parry Remote", function()
 	findRemote()
 	notify(ParryRemote and ("found: " .. ParryRemote:GetFullName()) or "not found", ParryRemote and T.Good or T.Bad)
-end)))
-ba((button(bp, "Dump Ball Info", function()
-	local folder = Workspace:FindFirstChild("Balls")
-	local ball = folder and folder:GetChildren()[1]
-	if not ball then notify("no ball", T.Bad) return end
-	local attrs = {}
-	for _, k in ipairs({"target","Target","currentTarget","targetPlayer","to","realBall","Phantom","Infinity"}) do
-		local ok, v = pcall(function() return ball:GetAttribute(k) end)
-		if ok and v ~= nil then table.insert(attrs, k .. "=" .. tostring(v)) end
-	end
-	local kids = {}
-	for _, c in ipairs(ball:GetChildren()) do table.insert(kids, c.Name) end
-	notify("attrs: " .. (#attrs > 0 and table.concat(attrs, ", ") or "none"), T.Warn)
-	task.delay(0.3, function()
-		notify("kids: " .. (#kids > 0 and table.concat(kids, ", ") or "none"), T.Warn)
-	end)
 end)))
 ba((toggle(bp, "Debug Readout", Config.Debug, function(v) Config.Debug = v end)))
 
@@ -1197,7 +1100,7 @@ bind(UserInputService.InputBegan, function(i, gp)
 	if i.KeyCode == Config.MenuKey then setMenu(not window.Visible) end
 end)
 
-local fb = new("TextButton", {Size=UDim2.new(0,36,0,36), Position=UDim2.new(0,12,0,110),
+local fb = new("TextButton", {Size=UDim2.new(0,36,0,36), Position=UDim2.new(0,12,0,96),
 	BackgroundColor3=T.Bg, Text="𝒮", Font=Enum.Font.GothamBold, TextSize=17,
 	TextColor3=T.Text, AutoButtonColor=false, BorderSizePixel=0, ZIndex=11}, gui)
 corner(fb,18); stroke(fb,T.Line)
@@ -1214,6 +1117,7 @@ task.spawn(function() while gui.Parent do pcall(updateExtras); task.wait(0.35) e
 task.spawn(function() while gui.Parent do pcall(applyParticles); pcall(applyBallSkin); task.wait(0.5) end end)
 task.spawn(function() while gui.Parent do findRemote(); task.wait(5) end end)
 
+-- круг живёт по фактическому радиусу срабатывания
 bind(RunService.RenderStepped, function()
 	local cam = Workspace.CurrentCamera
 	if cam and math.abs(cam.FieldOfView - Config.Fov) > 0.1 then cam.FieldOfView = Config.Fov end
@@ -1225,6 +1129,7 @@ bind(RunService.RenderStepped, function()
 		ring.Radius = r
 		ring.InnerRadius = math.max(0.05, r * (1 - Config.RingThick))
 		ring.Color3 = RingColors[Config.RingColor] or RingColors.Purple
+		ring.Transparency = Config.RingOpacity
 		ring.Visible = true
 	else
 		ring.Visible = false
@@ -1250,5 +1155,6 @@ task.spawn(function()
 	pcall(applySky, Config.SkyPreset)
 	pcall(applyHeadless)
 	if Config.FpsBoost then pcall(applyFpsBoost, true) end
-	notify(TITLE .. " loaded | " .. (hasKeypress and "keypress" or "mouse"), T.Good)
+	notify(TITLE .. " loaded | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
+	print("[" .. TITLE .. "] keypress=" .. tostring(hasKeypress) .. " mouse=" .. tostring(hasMouse))
 end)
