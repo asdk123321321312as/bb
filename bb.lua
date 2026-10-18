@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    input-based bypass (keypress) + adaptive-radius parry
+    keypress bypass + adaptive radius + subframe lookahead
     menu: RightShift
 --]]
 
@@ -33,17 +33,19 @@ local Config = {
 	Horizon       = 0.45,
 
 	-- радиус
-	AutoRadius    = true,     -- круг подстраивается под скорость мяча
-	LeadTime      = 0.12,     -- за сколько секунд до контакта бить
+	AutoRadius    = true,
+	LeadTime      = 0.12,
 	MinRadius     = 8,
-	MaxRadius     = 40,
-	BaseRadius    = 16,       -- используется если AutoRadius выключен
-	CrossTrigger  = true,     -- бить по пересечению границы круга
+	MaxRadius     = 42,
+	BaseRadius    = 16,
 	PingComp      = true,
 	BallPredCap   = 22,
 
+	-- анти-спам и анти-скорость
+	FastAssist    = true,
+	PressLimit    = 3,
+	LookSteps     = 6,
 	RequireTarget = true,
-	OnePerBall    = false,
 	Debug         = false,
 
 	-- круг
@@ -51,6 +53,15 @@ local Config = {
 	RingColor     = "Purple",
 	RingThick     = 0.06,
 	RingOpacity   = 0.3,
+
+	-- корблокс нога
+	KorbloxLeg    = false,
+	KorbloxSide   = "Right",
+	KorbloxMesh   = "rbxassetid://169177037",
+	KorbloxTexture= "",
+	KorbloxThin   = 0.55,
+	KorbloxScale  = 0.55,
+	KorbloxColor  = Color3.fromRGB(245, 245, 245),
 
 	BoxEsp        = true,
 	EspColor      = Color3.fromRGB(255, 255, 255),
@@ -90,12 +101,9 @@ local Config = {
 
 local KeyCodes = {F = 0x46, E = 0x45, Q = 0x51, R = 0x52, V = 0x56, Space = 0x20, C = 0x43}
 local RingColors = {
-	Purple = Color3.fromRGB(190, 140, 255),
-	White  = Color3.fromRGB(255, 255, 255),
-	Red    = Color3.fromRGB(255, 90, 90),
-	Cyan   = Color3.fromRGB(90, 230, 255),
-	Green  = Color3.fromRGB(120, 255, 160),
-	Gold   = Color3.fromRGB(255, 210, 90),
+	Purple = Color3.fromRGB(190, 140, 255), White = Color3.fromRGB(255, 255, 255),
+	Red = Color3.fromRGB(255, 90, 90), Cyan = Color3.fromRGB(90, 230, 255),
+	Green = Color3.fromRGB(120, 255, 160), Gold = Color3.fromRGB(255, 210, 90),
 }
 local RingHot = Color3.fromRGB(120, 255, 160)
 
@@ -179,7 +187,7 @@ local conns = {}
 local function bind(s, f) table.insert(conns, s:Connect(f)) end
 local function notify(text, col)
 	if not gui then return end
-	local b = new("Frame", {Size=UDim2.new(0,280,0,32), Position=UDim2.new(1,-300,0,12),
+	local b = new("Frame", {Size=UDim2.new(0,290,0,32), Position=UDim2.new(1,-310,0,12),
 		BackgroundColor3=T.Bg, BackgroundTransparency=0.1, BorderSizePixel=0, ZIndex=60}, gui)
 	corner(b,8); stroke(b, col or T.Line)
 	new("TextLabel", {Size=UDim2.new(1,-20,1,0), Position=UDim2.new(0,10,0,0), BackgroundTransparency=1,
@@ -396,7 +404,7 @@ bind(UserInputService.InputEnded, function(i)
 end)
 
 --=============================================================
--- PARRY REMOTE (фолбэк)
+-- REMOTE + INPUT
 --=============================================================
 local ParryRemote
 local function findRemote()
@@ -414,28 +422,17 @@ local hasKeypress = pcall(function() return keypress end)
 local hasMouse    = pcall(function() return mouse1click end)
 
 --=============================================================
--- PARRY ENGINE
+-- ENGINE STATE
 --=============================================================
 local E = {
-	lastAction = 0,
-	actions    = 0,
-	lastBall   = nil,
-	lastTime   = 0,
-	lastVel    = Vector3.zero,
-	accel      = Vector3.zero,
-	dist       = 0,
-	speed      = 0,
-	eta        = 0,
-	radius     = 16,
-	lead       = 0,
-	targeted   = false,
-	hot        = false,
-	mode       = "-",
+	lastAction = 0, actions = 0, presses = 0,
+	dist = 0, speed = 0, radius = 16, lead = 0,
+	targeted = false, hot = false, mode = "-",
+	lastTime = 0, lastVel = Vector3.zero, accel = Vector3.zero,
 }
 
 local function performParry()
 	local key = KeyCodes[Config.ParryKey] or 0x46
-
 	if Config.InputMode == "Remote" then
 		if ParryRemote then pcall(function() ParryRemote:FireServer() end) end
 		return "remote"
@@ -451,7 +448,6 @@ local function performParry()
 		end
 		return "key"
 	end
-
 	if hasKeypress then
 		pcall(function() keypress(key) end)
 		task.delay(0.008, function() pcall(function() keyrelease(key) end) end)
@@ -466,24 +462,24 @@ local function performParry()
 	return "none"
 end
 
-local function actionCooldown()
+local function actionCooldown(speedBoost)
 	local rate = math.clamp(Config.ActionsPerSec, 10, 100)
 	local cd = 1 / rate
 	if Config.BatchMode == "Safe" then cd = math.max(0.080, cd)
 	elseif Config.BatchMode == "Normal" then cd = math.max(0.040, cd)
 	elseif Config.BatchMode == "Fast" then cd = math.max(0.025, cd)
 	elseif Config.BatchMode == "Extremely Fast" then cd = math.max(0.015, cd) end
-	return math.max(0.012, cd + (math.random(-2, 4) / 1000))
+	-- на быстром мяче жмём чаще
+	if Config.FastAssist then cd = cd * (1 - 0.55 * (speedBoost or 0)) end
+	return math.max(0.010, cd + (math.random(-2, 4) / 1000))
 end
 
-local function sendAction(ball)
+local function sendAction(ball, speedBoost)
 	local now = tick()
-	if now - E.lastAction < actionCooldown() then return false end
-	if Config.OnePerBall and E.lastBall == ball and not E.released then return false end
+	if now - E.lastAction < actionCooldown(speedBoost) then return false end
 	E.lastAction = now
 	E.actions += 1
-	E.lastBall = ball
-	E.released = false
+	E.presses += 1
 	E.mode = performParry()
 	return true
 end
@@ -528,7 +524,6 @@ end
 local function isTargeted(ball)
 	local char = LP.Character
 	if not ball or not char then return nil end
-
 	local t = ballTarget(ball)
 	if t ~= nil then
 		if t == LP.Name or t == LP.DisplayName or t == char.Name
@@ -540,7 +535,6 @@ local function isTargeted(ball)
 		end
 		if typeof(t) == "string" or typeof(t) == "number" then return false end
 	end
-
 	for _, ch in ipairs(ball:GetChildren()) do
 		if ch:IsA("ValueBase") and ch.Name:lower():find("target") then
 			local v = ch.Value
@@ -549,7 +543,6 @@ local function isTargeted(ball)
 			if v ~= nil then return false end
 		end
 	end
-
 	if char:GetAttribute("Targeted") == true then return true end
 	if char:FindFirstChild("TargetHighlight") then return true end
 	local hl = char:FindFirstChild("Highlight")
@@ -557,7 +550,6 @@ local function isTargeted(ball)
 		if hl:GetAttribute("Target") == true then return true end
 		if hl.FillColor.R > 0.6 and hl.FillColor.G < 0.5 and hl.FillColor.B < 0.5 then return true end
 	end
-
 	return nil
 end
 
@@ -567,19 +559,13 @@ local function computeThreat(ball, root)
 	local distance = (playerPos - ballPos).Magnitude
 
 	local velocity = ball.AssemblyLinearVelocity
-	local zoomies = ball:FindFirstChild("zoomies")
-	if zoomies then
-		if zoomies:IsA("LinearVelocity") or zoomies:IsA("VectorForce") then
-			velocity = zoomies.VectorVelocity
-		elseif zoomies:IsA("BodyVelocity") then
-			velocity = zoomies.Velocity
-		end
+	local z = ball:FindFirstChild("zoomies")
+	if z then
+		if z:IsA("LinearVelocity") or z:IsA("VectorForce") then velocity = z.VectorVelocity
+		elseif z:IsA("BodyVelocity") then velocity = z.Velocity end
 	end
 	local speed = velocity.Magnitude
-	if speed <= 0 then
-		velocity = ball.Velocity
-		speed = velocity.Magnitude
-	end
+	if speed <= 0 then velocity = ball.Velocity; speed = velocity.Magnitude end
 	if speed <= 0.5 then return nil end
 
 	local now = tick()
@@ -589,38 +575,45 @@ local function computeThreat(ball, root)
 	E.lastVel = velocity
 
 	local dirToPlayer = (playerPos - ballPos).Unit
-	local dot = dirToPlayer:Dot(velocity.Unit)
 	local rootVel = root.AssemblyLinearVelocity or Vector3.zero
-	local approachSpeed = (velocity - rootVel):Dot(dirToPlayer)
-
 	return {
 		ball = ball, distance = distance, speed = speed, velocity = velocity,
-		accel = accel, dot = dot, approachSpeed = approachSpeed,
-		eta = distance / math.max(approachSpeed, speed * 0.7, 1),
+		accel = accel, dot = dirToPlayer.Dot(velocity.Unit),
+		approachSpeed = (velocity - rootVel).Dot(dirToPlayer),
 	}
 end
 
 --=============================================================
--- RADIUS: подстраивается под мяч
+-- РАДИУС + ПОДКАДРОВЫЙ ПРОСМОТР
 --=============================================================
--- Задача: парри всегда должно происходить за одно и то же время до контакта.
--- Значит радиус = скорость_сближения * (lead + сеть + кадр).
--- Быстрый мяч -> широкий круг. Медленный -> узкий. Плюс жёсткие границы.
-local function computeRadius(threat, pingSec)
+local function computeRadius(threat, pingSec, speedBoost)
 	local net = pingSec * 0.5 + (1 / 60)
 	if Config.AutoRadius then
-		local lead = Config.LeadTime + (Config.PingComp and net or 0)
+		local lead = Config.LeadTime + (Config.PingComp and net or 0) + (Config.FastAssist and speedBoost * 0.05 or 0)
 		return math.clamp(threat.speed * lead, Config.MinRadius, Config.MaxRadius)
 	end
 	local r = Config.BaseRadius
-	if Config.PingComp then
-		r = r + math.clamp(threat.speed * net, 0, Config.BallPredCap)
-	end
+	if Config.PingComp then r = r + math.clamp(threat.speed * net, 0, Config.BallPredCap) end
 	return r
 end
 
+-- смотрим на несколько точек вперёд — ловим быстрый мяч, который
+-- пролетает круг между кадрами
+local function willEnterSoon(ball, root, vel, accel, radius, window)
+	local rootVel = root.AssemblyLinearVelocity or Vector3.zero
+	local steps = math.max(3, Config.LookSteps)
+	local st = window / steps
+	for i = 1, steps do
+		local t = i * st
+		local bp = ball.Position + vel * t + 0.5 * accel * t * t
+		local rp = root.Position + rootVel * t
+		if (bp - rp).Magnitude <= radius then return true, t end
+	end
+	return false
+end
+
 --=============================================================
--- MAIN LOGIC
+-- MAIN
 --=============================================================
 local function step(dt)
 	if not Config.AutoParry or not inMatch() then return end
@@ -633,84 +626,116 @@ local function step(dt)
 	local threat = computeThreat(ball, root)
 	if not threat then return end
 
-	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
+	E.dist, E.speed = threat.distance, threat.speed
 
 	local pingSec = getPing() / 1000
-	local radius = computeRadius(threat, pingSec)
+	local speedBoost = Config.FastAssist and math.clamp((threat.speed - 130) / 250, 0, 1) or 0
+	local radius = computeRadius(threat, pingSec, speedBoost)
 	E.radius = radius
 	E.hot = threat.distance <= radius
+
+	-- мяч ушёл — сбрасываем счётчик нажатий
+	if threat.distance > radius * 1.7 then E.presses = 0 end
 
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
 	E.targeted = (tgt == true) or (tgt == nil and heur)
-
 	if Config.RequireTarget then
 		if tgt == false then return end
 		if tgt == nil and not heur then return end
 	end
 
-	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
-
-	local horizon = (Config.Horizon or 0.45) * (Config.Prediction or 0.08)
-	horizon = horizon + math.clamp((threat.speed - 150) * 0.0003, 0, 0.12)
-	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
-
 	local dirOk = threat.dot > 0.05 or threat.approachSpeed > -5
+	if not dirOk then return end
 
-	if Config.CrossTrigger then
-		-- точный момент пересечения границы круга
-		local closing = math.max(threat.approachSpeed, threat.speed * 0.5, 1)
-		local tCross = (threat.distance - radius) / closing
-		E.lead = tCross
-		if tCross <= transit and dirOk then
-			sendAction(ball)
-			return
-		end
-	else
-		if threat.distance <= radius and dirOk then
-			sendAction(ball)
-			return
-		end
-	end
+	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
+	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60)
 
-	-- подстраховка: предсказанный контакт внутри круга
-	local futurePlayer = root.Position + root.AssemblyLinearVelocity * transit
-	local curveComp = 0.5 * threat.accel * (transit * transit)
-	if curveComp.Magnitude > 15 then curveComp = curveComp.Unit * 15 end
-	local futureBall = ball.Position + threat.velocity * transit + curveComp
-	if (futurePlayer - futureBall).Magnitude <= radius and dirOk then
-		sendAction(ball)
-	end
+	-- окно просмотра: сеть + кадр + запас на скорость
+	local window = transit + (Config.FastAssist and speedBoost * 0.07 or 0)
+	local inside = threat.distance <= radius
+	local soon, tHit = willEnterSoon(ball, root, threat.velocity, threat.accel, radius, window)
+	E.lead = inside and 0 or (tHit or 0)
+
+	-- ТОЛЬКО когда мяч в круге или вот-вот войдёт. Никакого слепого спама.
+	if not (inside or soon) then return end
+	if E.presses >= Config.PressLimit then return end
+
+	sendAction(ball, speedBoost)
 end
 
--- освобождение лока
-bind(RunService.Heartbeat, function()
-	if E.lastBall and E.lastBall.Parent then
-		local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-		if root then
-			local d = (E.lastBall.Position - root.Position).Magnitude
-			local v = E.lastBall.AssemblyLinearVelocity
-			if d > 32 and v.Magnitude > 1 and v.Unit:Dot((root.Position - E.lastBall.Position).Unit) < -0.2 then
-				E.released = true
+--=============================================================
+-- PARRY RING
+--=============================================================
+local ring = new("CylinderHandleAdornment", {
+	Height = 0.05, Radius = Config.BaseRadius,
+	InnerRadius = Config.BaseRadius * (1 - Config.RingThick),
+	Color3 = RingColors[Config.RingColor] or RingColors.Purple,
+	Transparency = Config.RingOpacity, AlwaysOnTop = true, ZIndex = 5,
+	CFrame = CFrame.Angles(math.rad(90), 0, 0), Visible = false,
+}, gui)
+
+--=============================================================
+-- KORBLOX LEG
+--=============================================================
+local KORBLOX_NAMES = {
+	Right = {"Right Leg", "RightUpperLeg", "RightLowerLeg", "RightLeg"},
+	Left  = {"Left Leg", "LeftUpperLeg", "LeftLowerLeg", "LeftLeg"},
+}
+
+local function applyKorblox()
+	local char = LP.Character
+	if not char then return end
+
+	local function resetPart(leg)
+		local orig = leg:GetAttribute("SS_OrigSize")
+		if orig then leg.Size = orig end
+		local oc = leg:GetAttribute("SS_OrigColor")
+		if oc then leg.Color = oc end
+		local m = leg:FindFirstChild("SS_KorbloxMesh")
+		if m then m:Destroy() end
+	end
+
+	local sides = Config.KorbloxSide == "Both" and {"Right", "Left"} or {Config.KorbloxSide}
+
+	-- сначала сброс всего
+	for _, names in pairs(KORBLOX_NAMES) do
+		for _, n in ipairs(names) do
+			local p = char:FindFirstChild(n)
+			if p and p:IsA("BasePart") then resetPart(p) end
+		end
+	end
+
+	if not Config.KorbloxLeg then return end
+
+	for _, side in ipairs(sides) do
+		for _, n in ipairs(KORBLOX_NAMES[side] or {}) do
+			local leg = char:FindFirstChild(n)
+			if leg and leg:IsA("BasePart") then
+				if not leg:GetAttribute("SS_OrigSize") then
+					leg:SetAttribute("SS_OrigSize", leg.Size)
+					leg:SetAttribute("SS_OrigColor", leg.Color)
+				end
+				local orig = leg:GetAttribute("SS_OrigSize")
+				leg.Size = Vector3.new(orig.X * Config.KorbloxThin, orig.Y, orig.Z * Config.KorbloxThin)
+				leg.Color = Config.KorbloxColor
+
+				local m = Instance.new("SpecialMesh")
+				m.Name = "SS_KorbloxMesh"
+				m.MeshType = Enum.MeshType.FileMesh
+				m.MeshId = Config.KorbloxMesh
+				if Config.KorbloxTexture ~= "" then m.TextureId = Config.KorbloxTexture end
+				m.Scale = Vector3.new(Config.KorbloxScale, Config.KorbloxScale, Config.KorbloxScale)
+				m.Parent = leg
 			end
 		end
 	end
-end)
+end
 
---=============================================================
--- PARRY RING (адаптивный, краснеет/зеленеет по факту)
---=============================================================
-local ring = new("CylinderHandleAdornment", {
-	Height = 0.05,
-	Radius = Config.BaseRadius,
-	InnerRadius = Config.BaseRadius * (1 - Config.RingThick),
-	Color3 = RingColors[Config.RingColor] or RingColors.Purple,
-	Transparency = Config.RingOpacity,
-	AlwaysOnTop = true,
-	ZIndex = 5,
-	CFrame = CFrame.Angles(math.rad(90), 0, 0),
-	Visible = false,
-}, gui)
+bind(LP.CharacterAdded, function()
+	task.wait(0.8)
+	pcall(applyKorblox)
+end)
 
 --=============================================================
 -- ESP
@@ -948,7 +973,7 @@ local function applyFpsBoost(on)
 	else Lighting.GlobalShadows = true end
 end
 
-local hud = new("Frame", {Size=UDim2.new(0,265,0,74), Position=UDim2.new(0,12,0,12),
+local hud = new("Frame", {Size=UDim2.new(0,270,0,74), Position=UDim2.new(0,12,0,12),
 	BackgroundColor3=T.Bg, BackgroundTransparency=0.15, BorderSizePixel=0, Visible=Config.Hud, ZIndex=10}, gui)
 corner(hud,8); stroke(hud,T.Line)
 new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,5), BackgroundTransparency=1,
@@ -966,11 +991,12 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("in %s | acts %d | spd %d | R %d", E.mode, E.actions, math.floor(E.speed), math.floor(E.radius))
-		hudParry.TextColor3 = E.hot and T.Good or (hasKeypress and T.Dim or T.Bad)
+		hudParry.Text = string.format("in %s | acts %d | spd %d | R %d | p %d/%d",
+			E.mode, E.actions, math.floor(E.speed), math.floor(E.radius), E.presses, Config.PressLimit)
+		hudParry.TextColor3 = E.hot and T.Good or T.Dim
 		hudDebug.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
-			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | %s",
+			hudDebug.Text = string.format("d %d | lead %.3f | tgt %s | %s",
 				math.floor(E.dist), E.lead, tostring(E.targeted), Config.InputMode)
 		end
 		task.wait(0.3)
@@ -986,36 +1012,54 @@ ca((toggle(cp, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v 
 ca((dropdown(cp, "Input Mode", {"Auto", "Keypress", "Mouse", "Remote"}, Config.InputMode, function(v) Config.InputMode = v end)))
 ca((dropdown(cp, "Parry Key", {"F", "E", "Q", "R", "V", "C", "Space"}, Config.ParryKey, function(v) Config.ParryKey = v end)))
 ca((toggle(cp, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
-ca((toggle(cp, "One Parry Per Ball", Config.OnePerBall, function(v) Config.OnePerBall = v end)))
+
+ca(section(cp, "Anti-Spam"))
+ca((slider(cp, "Presses Per Approach", 1, 8, Config.PressLimit, 0, function(v) Config.PressLimit = v end)))
+ca((slider(cp, "Actions / sec", 10, 100, Config.ActionsPerSec, 0, function(v) Config.ActionsPerSec = v end)))
+ca((dropdown(cp, "Batch Mode", {"Extremely Fast", "Fast", "Normal", "Safe"}, Config.BatchMode, function(v) Config.BatchMode = v end)))
+
+ca(section(cp, "Fast Ball Assist"))
+ca((toggle(cp, "Fast Assist", Config.FastAssist, function(v) Config.FastAssist = v end)))
+ca((slider(cp, "Lookahead Steps", 3, 12, Config.LookSteps, 0, function(v) Config.LookSteps = v end)))
+ca((slider(cp, "Lead Time (s)", 0.03, 0.35, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
 
 ca(section(cp, "Adaptive Radius"))
-ca((toggle(cp, "Auto Radius (follow ball speed)", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
-ca((slider(cp, "Lead Time (s)", 0.03, 0.35, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
+ca((toggle(cp, "Auto Radius", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
 ca((slider(cp, "Min Radius", 4, 30, Config.MinRadius, 0, function(v) Config.MinRadius = v end)))
-ca((slider(cp, "Max Radius", 10, 80, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
-ca((toggle(cp, "Cross Trigger (exact edge)", Config.CrossTrigger, function(v) Config.CrossTrigger = v end)))
+ca((slider(cp, "Max Radius", 10, 90, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
 ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
 ca((slider(cp, "Fixed Radius (manual)", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
 
 ca(section(cp, "Parry Circle"))
 ca((toggle(cp, "Show Circle", Config.ParryRing, function(v) Config.ParryRing = v end)))
-ca((dropdown(cp, "Circle Color", {"Purple","White","Red","Cyan","Green","Gold"}, Config.RingColor, function(v)
-	Config.RingColor = v
-end)))
+ca((dropdown(cp, "Circle Color", {"Purple","White","Red","Cyan","Green","Gold"}, Config.RingColor, function(v) Config.RingColor = v end)))
 ca((slider(cp, "Circle Thickness", 0.01, 0.30, Config.RingThick, 2, function(v) Config.RingThick = v end)))
 ca((slider(cp, "Circle Opacity", 0, 0.9, Config.RingOpacity, 2, function(v) Config.RingOpacity = v end)))
 
 ca(section(cp, "Prediction"))
 ca((slider(cp, "Prediction", 0.02, 0.2, Config.Prediction, 2, function(v) Config.Prediction = v end)))
 ca((slider(cp, "Horizon", 0.1, 1.0, Config.Horizon, 2, function(v) Config.Horizon = v end)))
-
-ca(section(cp, "Rate"))
-ca((slider(cp, "Actions / sec", 10, 100, Config.ActionsPerSec, 0, function(v) Config.ActionsPerSec = v end)))
-ca((dropdown(cp, "Batch Mode", {"Extremely Fast", "Fast", "Normal", "Safe"}, Config.BatchMode, function(v) Config.BatchMode = v end)))
 ca((button(cp, "Test Parry", function()
 	E.lastAction = 0
-	local m = performParry()
-	notify("input -> " .. tostring(m), T.Good)
+	notify("input -> " .. tostring(performParry()), T.Good)
+end)))
+
+local gp, ga = newTab("Korblox")
+ga(section(gp, "Korblox Leg"))
+ga((toggle(gp, "Wear Korblox Leg", Config.KorbloxLeg, function(v) Config.KorbloxLeg = v; applyKorblox() end)))
+ga((dropdown(gp, "Side", {"Right", "Left", "Both"}, Config.KorbloxSide, function(v) Config.KorbloxSide = v; applyKorblox() end)))
+ga((textbox(gp, "Mesh ID", Config.KorbloxMesh, "rbxassetid://...", function(v) Config.KorbloxMesh = v; applyKorblox() end)))
+ga((textbox(gp, "Texture ID (opt)", Config.KorbloxTexture, "rbxassetid://...", function(v) Config.KorbloxTexture = v; applyKorblox() end)))
+ga((slider(gp, "Leg Thinness", 0.2, 1.0, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
+ga((slider(gp, "Mesh Scale", 0.2, 1.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
+ga((button(gp, "Apply / Refresh", function()
+	applyKorblox()
+	notify(Config.KorbloxLeg and "korblox applied" or "korblox off", T.Good)
+end)))
+ga((button(gp, "Reset Legs", function()
+	Config.KorbloxLeg = false
+	applyKorblox()
+	notify("legs reset", T.Good)
 end)))
 
 local bp, ba = newTab("Bypass")
@@ -1027,6 +1071,7 @@ ba((button(bp, "MAX STEALTH", function()
 	Config.RequireTarget = true
 	Config.AutoRadius = true
 	Config.LeadTime = 0.14
+	Config.PressLimit = 3
 	Config.Headless = false
 	Config.Particles = false
 	Config.BallRecolor = false
@@ -1160,7 +1205,6 @@ task.spawn(function() while gui.Parent do pcall(updateExtras); task.wait(0.35) e
 task.spawn(function() while gui.Parent do pcall(applyParticles); pcall(applyBallSkin); task.wait(0.5) end end)
 task.spawn(function() while gui.Parent do findRemote(); task.wait(5) end end)
 
--- круг дышит вместе с радиусом: зелёный когда мяч внутри
 bind(RunService.RenderStepped, function()
 	local cam = Workspace.CurrentCamera
 	if cam and math.abs(cam.FieldOfView - Config.Fov) > 0.1 then cam.FieldOfView = Config.Fov end
@@ -1194,10 +1238,10 @@ bind(RunService.RenderStepped, cycle)
 bind(RunService.Heartbeat, cycle)
 
 task.spawn(function()
-	task.wait(0.5)
+	task.wait(0.6)
 	pcall(applySky, Config.SkyPreset)
 	pcall(applyHeadless)
+	pcall(applyKorblox)
 	if Config.FpsBoost then pcall(applyFpsBoost, true) end
-	notify(TITLE .. " loaded | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
-	print("[" .. TITLE .. "] keypress=" .. tostring(hasKeypress) .. " mouse=" .. tostring(hasMouse))
+	notify(TITLE .. " loaded | " .. (hasKeypress and "keypress" or "mouse"), T.Good)
 end)
