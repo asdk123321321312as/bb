@@ -1,11 +1,8 @@
 --[[
-    𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝑝  |  BLADE BALL  |  BAC-safe
+    𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝑝  |  BLADE BALL  |  BAC v2
     menu: RightShift
 --]]
 
---=============================================================
--- SERVICES
---=============================================================
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -18,35 +15,31 @@ local VirtualUser      = game:GetService("VirtualUser")
 
 local LP     = Players.LocalPlayer
 local CAMERA = workspace.CurrentCamera
-
-local TITLE = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝑝"
+local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝑝"
 
 --=============================================================
 -- CONFIG
 --=============================================================
 local Config = {
-	-- combat
 	AutoParry     = true,
-	ParryMode     = "Both",
-	BypassMode    = "Safe",
-	OnePerThrow   = true,
-	ReactionJitter= 70,
-	TriggerJitter = 5,
+	RequireTarget = true,
+	TargetTol     = 8,
+	OnePerBall    = true,
+	CloseRange    = 15,
 	Humanize      = true,
-	SmartOffset   = true,
-	BaseOffset    = 0.14,
-	CloseRange    = 12,
-	RateLimit     = true,
+	ReactionJitter= 60,
+	TriggerJitter = 4,
+	HumanError    = 8,
+	LockTimeout   = 1.6,
 	GateDistance  = true,
 	GateApproach  = true,
 	GateSpeed     = true,
+	SendBall      = false,
 	AutoAbility   = false,
 	AbilityDelay  = 1.2,
-	SendBall      = false,
 	DebugParry    = false,
 	RemotePath    = "",
 
-	-- visuals (всё клиентское, BAC не видит)
 	BoxEsp        = true,
 	EspColor      = Color3.fromRGB(255, 255, 255),
 	EspFill       = false,
@@ -60,7 +53,6 @@ local Config = {
 	Highlights    = true,
 	Hitboxes      = false,
 
-	-- реплицируемое (может триггерить BAC)
 	Headless      = false,
 	Fullbright    = false,
 	Particles     = false,
@@ -71,17 +63,14 @@ local Config = {
 	BallMaterial  = "Plastic",
 	BallSize      = 1,
 
-	-- world
 	SkyPreset     = "Default",
 	ClockTime     = 14,
 	Brightness    = 2,
 	FogEnd        = 100000,
 
-	-- skins
 	SwordMesh     = "",
 	SwordTexture  = "",
 
-	-- misc
 	Fov           = 70,
 	FpsBoost      = false,
 	Hud           = true,
@@ -94,19 +83,6 @@ local Config = {
 }
 
 --=============================================================
--- BYPASS PROFILES  (cooldown = мин. пауза между выстрелами)
---=============================================================
-local Bypass = {
-	Off      = {cooldown = 0.05, offMin = 0.08, offMax = 0.09, maxDist = 250, maxRate = 30, onePerThrow = false},
-	Light    = {cooldown = 0.20, offMin = 0.10, offMax = 0.16, maxDist = 80,  maxRate = 8,  onePerThrow = false},
-	Medium   = {cooldown = 0.30, offMin = 0.12, offMax = 0.20, maxDist = 50,  maxRate = 6,  onePerThrow = true},
-	Safe     = {cooldown = 0.40, offMin = 0.14, offMax = 0.24, maxDist = 35,  maxRate = 3,  onePerThrow = true},
-	Paranoid = {cooldown = 0.55, offMin = 0.16, offMax = 0.30, maxDist = 28,  maxRate = 2,  onePerThrow = true},
-}
-
-local function profile() return Bypass[Config.BypassMode] or Bypass.Safe end
-
---=============================================================
 -- SAVE / LOAD
 --=============================================================
 local FILE  = "ScriptSleep_BladeBall.json"
@@ -115,14 +91,12 @@ local hasFS = pcall(function() return writefile end)
 local function ser(v)
 	if typeof(v) == "Color3"  then return {__t = "c", r = v.R, g = v.G, b = v.B} end
 	if typeof(v) == "EnumItem" then return {__t = "e", a = tostring(v.EnumType), b = v.Name} end
-	if typeof(v) == "Vector3" then return {__t = "v", x = v.X, y = v.Y, z = v.Z} end
 	return v
 end
 
 local function deser(v)
 	if type(v) == "table" and v.__t then
 		if v.__t == "c" then return Color3.new(v.r, v.g, v.b) end
-		if v.__t == "v" then return Vector3.new(v.x, v.y, v.z) end
 		if v.__t == "e" then
 			local ok, e = pcall(function() return Enum[v.a][v.b] end)
 			if ok then return e end
@@ -162,7 +136,7 @@ end
 loadConfig()
 
 --=============================================================
--- THEME
+-- THEME + HELPERS
 --=============================================================
 local T = {
 	Bg     = Color3.fromRGB(9, 9, 11),
@@ -180,9 +154,6 @@ local T = {
 
 local gui
 
---=============================================================
--- HELPERS
---=============================================================
 local function new(class, props, parent)
 	local inst = Instance.new(class)
 	for k, v in next, props do inst[k] = v end
@@ -190,10 +161,8 @@ local function new(class, props, parent)
 	return inst
 end
 
-local function corner(inst, r) new("UICorner", {CornerRadius = UDim.new(0, r or 8)}, inst) end
-local function stroke(inst, col, th)
-	new("UIStroke", {Color = col or T.Line, Thickness = th or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, inst)
-end
+local function corner(i, r) new("UICorner", {CornerRadius = UDim.new(0, r or 8)}, i) end
+local function stroke(i, c, t) new("UIStroke", {Color = c or T.Line, Thickness = t or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, i) end
 
 local function getPing()
 	local ok, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
@@ -206,7 +175,7 @@ local function bind(sig, fn) table.insert(conns, sig:Connect(fn)) end
 local function notify(text, col)
 	if not gui then return end
 	local box = new("Frame", {
-		Size = UDim2.new(0, 260, 0, 32), Position = UDim2.new(1, -280, 0, 12),
+		Size = UDim2.new(0, 270, 0, 32), Position = UDim2.new(1, -290, 0, 12),
 		BackgroundColor3 = T.Bg, BackgroundTransparency = 0.1, BorderSizePixel = 0, ZIndex = 60,
 	}, gui)
 	corner(box, 8); stroke(box, col or T.Line)
@@ -222,13 +191,9 @@ local function notify(text, col)
 	end)
 end
 
---=============================================================
--- GUI ROOT
---=============================================================
 gui = new("ScreenGui", {
 	Name = "ScriptSleep", ResetOnSpawn = false,
-	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-	IgnoreGuiInset = true, DisplayOrder = 999,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true, DisplayOrder = 999,
 })
 pcall(function() gui.Parent = game:GetService("CoreGui") end)
 if not gui.Parent then gui.Parent = LP:WaitForChild("PlayerGui") end
@@ -263,7 +228,6 @@ local function toggle(parent, label, state, onChange)
 		BackgroundColor3 = T.Dim, BorderSizePixel = 0,
 	}, btn)
 	corner(knob, 7)
-
 	local on = state
 	local function render()
 		TweenService:Create(knob, TweenInfo.new(0.15), {
@@ -307,7 +271,6 @@ local function slider(parent, label, minV, maxV, default, decimals, onChange)
 		Position = UDim2.new(0, 0, 0.5, 0), BackgroundColor3 = T.Accent, BorderSizePixel = 0,
 	}, bar)
 	corner(knob, 5)
-
 	local function set(v, fire)
 		v = math.clamp(v, minV, maxV)
 		local a = (v - minV) / (maxV - minV)
@@ -317,7 +280,6 @@ local function slider(parent, label, minV, maxV, default, decimals, onChange)
 		if fire and onChange then onChange(v) end
 	end
 	set(default, false)
-
 	local dragging = false
 	local function upd(i)
 		local rel = (i.Position.X - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1)
@@ -356,12 +318,6 @@ local function dropdown(parent, label, options, default, onChange)
 		BackgroundTransparency = 1, Font = Enum.Font.GothamMedium, TextSize = 12,
 		TextColor3 = T.Text, TextXAlignment = Enum.TextXAlignment.Left, Text = tostring(default),
 	}, btn)
-	new("TextLabel", {
-		Size = UDim2.new(0, 12, 0, 12), Position = UDim2.new(1, -16, 0.5, -6),
-		BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 10,
-		TextColor3 = T.Dim, Text = "v",
-	}, btn)
-
 	local listH = #options * 24 + 8
 	local list = new("Frame", {
 		Size = UDim2.new(0, 130, 0, listH), Position = UDim2.new(1, -130, 0, 32),
@@ -370,16 +326,7 @@ local function dropdown(parent, label, options, default, onChange)
 	corner(list, 6); stroke(list, T.Line)
 	new("UIListLayout", {Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder}, list)
 	new("UIPadding", {PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4)}, list)
-
 	local opened = false
-	local function setOpen(v)
-		opened = v
-		list.Visible = v
-		TweenService:Create(holder, TweenInfo.new(0.12), {
-			Size = v and UDim2.new(1, 0, 0, 30 + listH + 6) or UDim2.new(1, 0, 0, 30),
-		}):Play()
-	end
-
 	for i, opt in ipairs(options) do
 		local b = new("TextButton", {
 			Size = UDim2.new(1, 0, 0, 22), BackgroundTransparency = 1,
@@ -390,13 +337,18 @@ local function dropdown(parent, label, options, default, onChange)
 		b.MouseLeave:Connect(function() b.TextColor3 = T.Dim end)
 		b.MouseButton1Click:Connect(function()
 			txt.Text = tostring(opt)
-			setOpen(false)
+			list.Visible = false
+			opened = false
+			holder.Size = UDim2.new(1, 0, 0, 30)
 			if onChange then onChange(opt) end
 			queueSave()
 		end)
 	end
-
-	btn.MouseButton1Click:Connect(function() setOpen(not opened) end)
+	btn.MouseButton1Click:Connect(function()
+		opened = not opened
+		list.Visible = opened
+		holder.Size = opened and UDim2.new(1, 0, 0, 30 + listH + 6) or UDim2.new(1, 0, 0, 30)
+	end)
 	return holder, function(v) txt.Text = tostring(v) end
 end
 
@@ -438,8 +390,7 @@ end
 -- WINDOW
 --=============================================================
 local window = new("Frame", {
-	Name = "Window", Size = UDim2.new(0, 660, 0, 450),
-	Position = UDim2.new(0.5, -330, 0.5, -225),
+	Size = UDim2.new(0, 660, 0, 450), Position = UDim2.new(0.5, -330, 0.5, -225),
 	BackgroundColor3 = T.Bg, BorderSizePixel = 0, Visible = Config.MenuOpen,
 }, gui)
 corner(window, 12); stroke(window, T.Line, 1)
@@ -447,7 +398,6 @@ corner(window, 12); stroke(window, T.Line, 1)
 local topbar = new("Frame", {Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = T.Panel, BorderSizePixel = 0}, window)
 corner(topbar, 12)
 new("Frame", {Size = UDim2.new(1, 0, 0, 12), Position = UDim2.new(0, 0, 1, -12), BackgroundColor3 = T.Panel, BorderSizePixel = 0}, topbar)
-
 new("TextLabel", {
 	Size = UDim2.new(0, 420, 1, 0), Position = UDim2.new(0, 16, 0, 0), BackgroundTransparency = 1,
 	Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = T.Text,
@@ -502,8 +452,7 @@ local function newTab(name)
 	local btn = new("TextButton", {
 		Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1,
 		Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = T.Dim,
-		TextXAlignment = Enum.TextXAlignment.Left, Text = "   " .. name,
-		AutoButtonColor = false,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = "   " .. name, AutoButtonColor = false,
 	}, sidebar)
 	local ind = new("Frame", {
 		Size = UDim2.new(0, 2, 0, 0), Position = UDim2.new(0, 0, 0.5, 0),
@@ -540,18 +489,9 @@ bind(UserInputService.InputEnded, function(i)
 end)
 
 --=============================================================
--- REMOTE FINDER
+-- REMOTE
 --=============================================================
 local ParryRemote, AbilityRemote, ParryPath = nil, nil, ""
-
-local function scoreRemote(inst)
-	local n = inst.Name:lower()
-	if n == "parry" then return 1 end
-	if n == "parrybuttonpress" then return 2 end
-	if n == "parryevent" then return 3 end
-	if n:find("parry") then return 4 end
-	return 99
-end
 
 local function collectRemotes()
 	local out = {}
@@ -560,15 +500,16 @@ local function collectRemotes()
 			table.insert(out, d)
 		end
 	end
-	table.sort(out, function(a, b) return scoreRemote(a) < scoreRemote(b) end)
+	table.sort(out, function(a, b)
+		local function sc(x)
+			local n = x.Name:lower()
+			if n == "parry" then return 1 end
+			if n == "parrybuttonpress" then return 2 end
+			return 3
+		end
+		return sc(a) < sc(b)
+	end)
 	return out
-end
-
-local function setRemote(inst)
-	if not inst then return false end
-	ParryRemote = inst
-	ParryPath = inst:GetFullName()
-	return true
 end
 
 local function findRemotes()
@@ -579,139 +520,135 @@ local function findRemotes()
 			return node
 		end)
 		if ok and inst and (inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction")) then
-			return setRemote(inst)
+			ParryRemote, ParryPath = inst, inst:GetFullName()
+			return true
 		end
 	end
-
-	local candidates = collectRemotes()
-	if #candidates > 0 then return setRemote(candidates[1]) end
-
-	for _, path in ipairs({{"Remotes","Parry"},{"Remotes","ParryButtonPress"},{"RemoteEvents","Parry"},{"Packets","Parry"}}) do
+	local c = collectRemotes()
+	if #c > 0 then ParryRemote, ParryPath = c[1], c[1]:GetFullName() return true end
+	for _, path in ipairs({{"Remotes","Parry"},{"Remotes","ParryButtonPress"},{"RemoteEvents","Parry"}}) do
 		local node = ReplicatedStorage
 		for _, seg in ipairs(path) do node = node and node:FindFirstChild(seg) end
-		if node and (node:IsA("RemoteEvent") or node:IsA("RemoteFunction")) then return setRemote(node) end
+		if node and node:IsA("RemoteEvent") then ParryRemote, ParryPath = node, node:GetFullName() return true end
 	end
 	return false
-end
-
-local function fireRemote(inst, ball)
-	if not inst then return end
-	if inst:IsA("RemoteFunction") then
-		pcall(function() inst:InvokeServer() end)
-	else
-		if Config.SendBall and ball then
-			pcall(function() inst:FireServer(ball) end)
-		else
-			pcall(function() inst:FireServer() end)
-		end
-	end
 end
 
 local function findAbility()
 	AbilityRemote = nil
 	for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-		if d:IsA("RemoteEvent") and d.Name:lower():find("abilit") then
-			AbilityRemote = d
-			return
-		end
+		if d:IsA("RemoteEvent") and d.Name:lower():find("abilit") then AbilityRemote = d return end
 	end
 end
 
-findRemotes()
-findAbility()
+findRemotes(); findAbility()
 
 --=============================================================
--- BALL
+-- BALL + TARGET DETECTION
 --=============================================================
 local function getBall()
 	local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+	local folder = workspace:FindFirstChild("Balls")
+	local list = {}
+	if folder then
+		for _, b in ipairs(folder:GetChildren()) do
+			if b:IsA("BasePart") and b.Name:lower():find("ball") then table.insert(list, b) end
+		end
+	end
+	if #list == 0 then
+		for _, d in ipairs(workspace:GetChildren()) do
+			if d:IsA("BasePart") and d.Name:lower():find("ball") then table.insert(list, d) end
+		end
+	end
+	if #list == 0 then return nil end
+	if not hrp then return list[1] end
+	local best, bestD
+	for _, b in ipairs(list) do
+		local d = (b.Position - hrp.Position).Magnitude
+		if not bestD or d < bestD then best, bestD = b, d end
+	end
+	return best
+end
 
-	local function pick(container)
-		local best, bestD
-		for _, b in ipairs(container:GetChildren()) do
-			if b:IsA("BasePart") and b.Name:lower():find("ball") then
-				if not hrp then return b end
-				local d = (b.Position - hrp.Position).Magnitude
-				if not bestD or d < bestD then best, bestD = b, d end
+-- true = летит в меня, false = не в меня, nil = не смог определить
+local function targetsMe(ball, hrp, vel)
+	-- 1) атрибуты мяча
+	for _, key in ipairs({"Target", "TargetPlayer", "TargetUserId", "UserId", "Owner"}) do
+		local ok, val = pcall(function() return ball:GetAttribute(key) end)
+		if ok and val ~= nil then
+			if typeof(val) == "Instance" then
+				if val == LP or val == LP.Character then return true end
+				if val:IsA("Player") then return false end
+			elseif type(val) == "string" then
+				if val == LP.Name or val == LP.DisplayName or tostring(val) == tostring(LP.UserId) then return true end
+			elseif type(val) == "number" then
+				if val == LP.UserId then return true end
 			end
 		end
-		return best
 	end
 
-	local folder = workspace:FindFirstChild("Balls")
-	if folder then
-		local b = pick(folder)
-		if b then return b end
+	-- 2) дочерние объекты с именем цели
+	for _, ch in ipairs(ball:GetChildren()) do
+		if ch.Name:lower():find("target") then
+			local v = ch.Value
+			if typeof(v) == "Instance" then
+				if v == LP or v == LP.Character then return true end
+				if v:IsA("Player") then return false end
+			end
+		end
 	end
-	for _, d in ipairs(workspace:GetChildren()) do
-		if d:IsA("BasePart") and d.Name:lower():find("ball") then return d end
-	end
-	return nil
+
+	-- 3) геометрия: проходит ли траектория рядом со мной
+	local speed = vel.Magnitude
+	if speed < 1 then return nil end
+	local dir = vel / speed
+	local toMe = hrp.Position - ball.Position
+	local proj = toMe:Dot(dir)
+	if proj <= 0 then return false end
+	local closest = ball.Position + dir * proj
+	local miss = (hrp.Position - closest).Magnitude
+	return miss <= Config.TargetTol
 end
 
 --=============================================================
 -- STATE
 --=============================================================
 local state = {
-	lastFire    = 0,
-	lastSoft    = 0,
-	offset      = Config.BaseOffset,
-	parries     = 0,
-	fails       = 0,
-	rateCount   = 0,
-	rateWindow  = tick(),
-	wasMoving   = false,
-	throwOffset = Config.BaseOffset,
+	fired = 0, success = 0, failed = 0,
+	locked = false, lockBall = nil,
+	lastFire = 0,
+	reactAt = nil,
+	pendingCheck = nil,
 	triggerDist = Config.CloseRange,
-	reactAt     = nil,
-	armed       = true,
-	lastDist    = 999,
-	pendingFail = nil,
-	eta         = 0,
-	dist        = 0,
-	speed       = 0,
+	wasMoving = false,
+	dist = 0, eta = 0, speed = 0, targeting = "-",
 }
 
 local function newThrow()
-	local pr = profile()
-	state.armed = true
 	state.reactAt = nil
 	state.triggerDist = Config.CloseRange + math.random(-2, Config.TriggerJitter)
-	if Config.Humanize then
-		state.throwOffset = pr.offMin + math.random() * (pr.offMax - pr.offMin)
-	else
-		state.throwOffset = Config.BaseOffset
-	end
 end
 
-local function doParry(ball, critical)
-	local pr = profile()
-	local now = tick()
+local function fire(ball)
+	if not ParryRemote then return false end
+	if state.locked and Config.OnePerBall then return false end
+	if tick() - state.lastFire < 0.12 then return false end
 
-	if Config.OnePerThrow and pr.onePerThrow and not state.armed then return false end
-	if now - state.lastFire < 0.06 then return false end
+	state.lastFire = tick()
+	state.fired += 1
+	state.locked = true
+	state.lockBall = ball
 
-	local softOk = (now - state.lastSoft) >= pr.cooldown
-	if not softOk and not critical then return false end
-
-	if Config.RateLimit and not critical then
-		if now - state.rateWindow >= 1 then
-			state.rateCount = 0
-			state.rateWindow = now
+	if ParryRemote:IsA("RemoteFunction") then
+		pcall(function() ParryRemote:InvokeServer() end)
+	else
+		if Config.SendBall and ball then
+			pcall(function() ParryRemote:FireServer(ball) end)
+		else
+			pcall(function() ParryRemote:FireServer() end)
 		end
-		if state.rateCount >= pr.maxRate then return false end
-		state.rateCount += 1
 	end
-
-	state.lastFire = now
-	state.lastSoft = now
-	state.parries += 1
-	state.armed = false
-
-	if ParryRemote then fireRemote(ParryRemote, ball) end
-
-	local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-	if hum then state.pendingFail = {t = now, hp = hum.Health} end
+	state.pendingCheck = {t = tick(), ball = ball}
 	return true
 end
 
@@ -723,24 +660,27 @@ local function doAbility()
 end
 
 --=============================================================
--- COMBAT LOOP
+-- COMBAT
 --=============================================================
-local lastBallPos, lastBallTime
-
 bind(RunService.Heartbeat, function()
+	local now = tick()
 	local char = LP.Character
 	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-	local hum  = char and char:FindFirstChildOfClass("Humanoid")
-	local pr   = profile()
 
-	if state.pendingFail and hum and tick() - state.pendingFail.t > 0.55 then
-		if hum.Health < state.pendingFail.hp then
-			state.fails += 1
-			if Config.SmartOffset then
-				state.offset = math.clamp(state.offset + 0.008, 0.05, 0.35)
+	-- проверка успешности парри
+	if state.pendingCheck and now - state.pendingCheck.t > 0.4 then
+		local b = state.pendingCheck.ball
+		if b and b.Parent and hrp then
+			local v = b.AssemblyLinearVelocity
+			if v.Magnitude > 1 then
+				if v.Unit:Dot((hrp.Position - b.Position).Unit) < 0 then
+					state.success += 1
+				else
+					state.failed += 1
+				end
 			end
 		end
-		state.pendingFail = nil
+		state.pendingCheck = nil
 	end
 
 	if Config.AutoAbility then doAbility() end
@@ -748,72 +688,65 @@ bind(RunService.Heartbeat, function()
 
 	local ball = getBall()
 	if not ball then
-		state.dist, state.eta, state.speed = 0, 0, 0
+		state.dist, state.eta, state.speed, state.targeting = 0, 0, 0, "-"
 		return
 	end
 
-	local now = tick()
+	-- скорость: реальная или вычисленная по смещению
 	local vel = ball.AssemblyLinearVelocity
-	if lastBallPos and lastBallTime then
-		local dt = now - lastBallTime
+	if state.lockBall == ball and state.lastPos and state.lastTime then
+		local dt = now - state.lastTime
 		if dt > 0 then
-			local predicted = (ball.Position - lastBallPos) / dt
-			if predicted.Magnitude > vel.Magnitude then vel = predicted end
+			local p = (ball.Position - state.lastPos) / dt
+			if p.Magnitude > vel.Magnitude then vel = p end
 		end
 	end
-	lastBallPos, lastBallTime = ball.Position, now
+	state.lastPos, state.lastTime = ball.Position, now
 
 	local speed = vel.Magnitude
 	local moving = speed > 1.5
 	local toMe = hrp.Position - ball.Position
 	local dist = toMe.Magnitude
 
-	-- новый бросок -> перезаряжаемся и рандомизируем тайминг
 	if moving and not state.wasMoving then newThrow() end
 	state.wasMoving = moving
 
-	-- мяч уходит от нас -> снова можно парить (клэш/рикошет)
-	if dist > state.lastDist + 0.6 and now - state.lastFire > 0.2 then
-		state.armed = true
-		state.reactAt = nil
+	state.dist, state.eta, state.speed = dist, dist / math.max(speed, 1), speed
+
+	-- разблокировка: мяч ушёл или таймаут
+	if state.locked then
+		local receding = speed > 1 and (vel.Unit:Dot(toMe.Unit) < -0.2)
+		if (dist > 30 and receding) or now - state.lastFire > Config.LockTimeout then
+			state.locked = false
+		end
+		if state.lockBall ~= ball then state.locked = false end
 	end
-	state.lastDist = dist
 
+	if Config.GateDistance and dist > 90 then return end
 	if Config.GateSpeed and not moving and dist > 25 then return end
-	if Config.GateDistance and dist > pr.maxDist then return end
 
-	if Config.GateApproach and dist > 0.5 and speed > 0.5 then
+	local targeting = targetsMe(ball, hrp, vel)
+	state.targeting = targeting == true and "yes" or (targeting == false and "no" or "?")
+
+	if Config.RequireTarget and targeting == false then return end
+
+	if Config.GateApproach and speed > 0.5 and dist > 0.5 then
 		if (vel / speed):Dot(toMe.Unit) < 0.05 then return end
 	end
 
-	local ping = getPing() / 1000
-	local baseOff = Config.Humanize and state.throwOffset or Config.BaseOffset
-	if Config.SmartOffset then baseOff = baseOff * (state.offset / math.max(Config.BaseOffset, 0.01)) end
-	local eta = dist / math.max(speed, 1)
+	-- человеческая ошибка: иногда реагируем позже
+	local jitter = Config.ReactionJitter
+	if math.random(100) <= Config.HumanError then jitter = jitter + math.random(40, 110) end
 
-	state.dist, state.eta, state.speed = dist, eta, speed
-
-	local critical = dist <= math.max(5, Config.CloseRange * 0.45)
-
-	local want = false
-	if Config.ParryMode == "Distance" then
-		want = dist <= state.triggerDist
-	elseif Config.ParryMode == "Prediction" then
-		want = eta <= ping + baseOff
-	else
-		want = (dist <= state.triggerDist) or (eta <= ping + baseOff)
+	local want = dist <= state.triggerDist
+	if want and not state.reactAt then
+		state.reactAt = now + (jitter / 1000) * math.random()
 	end
-	if critical then want = true end
+	if not want then state.reactAt = nil end
 
-	if want and state.armed then
-		if not state.reactAt then
-			state.reactAt = now + (Config.ReactionJitter / 1000) * math.random()
-		end
-		if now >= state.reactAt or critical then
-			doParry(ball, critical)
-		end
-	elseif not want then
-		state.reactAt = nil
+	local critical = dist <= math.max(5, Config.CloseRange * 0.4)
+	if (want and state.reactAt and now >= state.reactAt) or critical then
+		fire(ball)
 	end
 end)
 
@@ -881,7 +814,6 @@ local function updateEsp()
 						end
 					end
 				end
-
 				if minX then
 					local w, h = maxX - minX, maxY - minY
 					o.box.Visible = true
@@ -896,13 +828,11 @@ local function updateEsp()
 						o.name.Text = p.DisplayName
 						o.name.Position = UDim2.fromOffset(minX + w / 2, minY - 2)
 					end
-
 					o.dist.Visible = Config.DistEsp
 					if Config.DistEsp then
 						o.dist.Text = string.format("%d studs", math.floor((hrp.Position - CAMERA.CFrame.Position).Magnitude))
 						o.dist.Position = UDim2.fromOffset(minX + w / 2, maxY + 2)
 					end
-
 					o.hpBg.Visible = Config.HealthEsp
 					if Config.HealthEsp then
 						o.hpBg.Position = UDim2.fromOffset(minX - 6, minY)
@@ -911,7 +841,6 @@ local function updateEsp()
 						o.hp.Size = UDim2.new(1, 0, ratio, 0)
 						o.hp.BackgroundColor3 = Color3.fromRGB(255, 105, 105):Lerp(Color3.fromRGB(120, 255, 165), ratio)
 					end
-
 					o.tracer.Visible = Config.Tracers
 					if Config.Tracers then
 						local from = Vector2.new(CAMERA.ViewportSize.X / 2, CAMERA.ViewportSize.Y)
@@ -958,7 +887,7 @@ bind(Players.PlayerRemoving, function(p)
 end)
 
 --=============================================================
--- HIGHLIGHTS / HITBOXES
+-- HIGHLIGHTS / HEADLESS
 --=============================================================
 local function updateExtras()
 	for _, p in ipairs(Players:GetPlayers()) do
@@ -999,35 +928,28 @@ local function updateExtras()
 	end
 end
 
---=============================================================
--- HEADLESS
---=============================================================
 local function applyHeadless()
-	local char = LP.Character
-	local head = char and char:FindFirstChild("Head")
+	local head = LP.Character and LP.Character:FindFirstChild("Head")
 	if not head then return end
-	local alpha = Config.Headless and 1 or 0
-	if head:IsA("BasePart") then head.Transparency = alpha end
+	local a = Config.Headless and 1 or 0
+	if head:IsA("BasePart") then head.Transparency = a end
 	for _, d in ipairs(head:GetDescendants()) do
-		if d:IsA("BasePart") or d:IsA("Decal") then d.Transparency = alpha end
+		if d:IsA("BasePart") or d:IsA("Decal") then d.Transparency = a end
 	end
 end
 
-bind(LP.CharacterAdded, function()
-	task.wait(0.6)
-	pcall(applyHeadless)
-end)
+bind(LP.CharacterAdded, function() task.wait(0.6); pcall(applyHeadless) end)
 
 --=============================================================
 -- SKY / PARTICLES / BALL SKIN
 --=============================================================
 local SkyPresets = {
-	Default = {ClockTime = 14, Brightness = 2,    Ambient = Color3.fromRGB(70, 70, 70),  Outdoor = Color3.fromRGB(128, 128, 128), Sky = true},
-	Night   = {ClockTime = 0,  Brightness = 1,    Ambient = Color3.fromRGB(28, 28, 45),  Outdoor = Color3.fromRGB(40, 40, 70),    Sky = true},
-	Blood   = {ClockTime = 17, Brightness = 1.5,  Ambient = Color3.fromRGB(80, 20, 20),  Outdoor = Color3.fromRGB(120, 40, 40),   Sky = true},
-	Black   = {ClockTime = 12, Brightness = 0.25, Ambient = Color3.new(0, 0, 0),        Outdoor = Color3.new(0, 0, 0),           Sky = false},
-	Neon    = {ClockTime = 2,  Brightness = 1,    Ambient = Color3.fromRGB(40, 20, 90),  Outdoor = Color3.fromRGB(70, 35, 140),   Sky = true},
-	Vapor   = {ClockTime = 6,  Brightness = 2,    Ambient = Color3.fromRGB(95, 55, 115), Outdoor = Color3.fromRGB(160, 95, 180),  Sky = true},
+	Default = {ClockTime = 14, Brightness = 2, Ambient = Color3.fromRGB(70,70,70), Outdoor = Color3.fromRGB(128,128,128), Sky = true},
+	Night   = {ClockTime = 0, Brightness = 1, Ambient = Color3.fromRGB(28,28,45), Outdoor = Color3.fromRGB(40,40,70), Sky = true},
+	Blood   = {ClockTime = 17, Brightness = 1.5, Ambient = Color3.fromRGB(80,20,20), Outdoor = Color3.fromRGB(120,40,40), Sky = true},
+	Black   = {ClockTime = 12, Brightness = 0.25, Ambient = Color3.new(0,0,0), Outdoor = Color3.new(0,0,0), Sky = false},
+	Neon    = {ClockTime = 2, Brightness = 1, Ambient = Color3.fromRGB(40,20,90), Outdoor = Color3.fromRGB(70,35,140), Sky = true},
+	Vapor   = {ClockTime = 6, Brightness = 2, Ambient = Color3.fromRGB(95,55,115), Outdoor = Color3.fromRGB(160,95,180), Sky = true},
 }
 
 local function applySky(name)
@@ -1055,10 +977,8 @@ local function applyParticles()
 	local targets = {}
 	local ball = getBall()
 	if ball then table.insert(targets, ball) end
-	local char = LP.Character
-	local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+	local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
 	if hrp then table.insert(targets, hrp) end
-
 	for _, part in ipairs(targets) do
 		local p = part:FindFirstChild("ScriptSleepParticles")
 		if Config.Particles then
@@ -1093,34 +1013,23 @@ local function applyBallSkin()
 end
 
 --=============================================================
--- FPS / FOV / HUD
+-- FPS / HUD
 --=============================================================
 local fps, frames, fpsTimer = 0, 0, tick()
 bind(RunService.RenderStepped, function()
 	frames = frames + 1
-	if tick() - fpsTimer >= 1 then
-		fps, frames, fpsTimer = frames, 0, tick()
-	end
+	if tick() - fpsTimer >= 1 then fps, frames, fpsTimer = frames, 0, tick() end
 end)
 
 local function applyFpsBoost(on)
 	if on then
 		pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
-		pcall(function() UserSettings():GetService("UserGameSettings").SavedQualityLevel = 1 end)
 		Lighting.GlobalShadows = false
 		Lighting.ShadowSoftness = 0
-		Lighting.FogEnd = Config.FogEnd
 		Lighting.EnvironmentDiffuseScale = 0
 		Lighting.EnvironmentSpecularScale = 0
 		for _, e in ipairs(Lighting:GetChildren()) do
 			if e:IsA("PostEffect") then e.Enabled = false end
-		end
-		for _, d in ipairs(workspace:GetDescendants()) do
-			if d.Name ~= "ScriptSleepParticles" and d.Name ~= "ScriptSleepHitbox" then
-				if d:IsA("Decal") or d:IsA("Texture") then d.Transparency = 1
-				elseif d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Beam") then d.Enabled = false
-				elseif d:IsA("Fire") or d:IsA("Smoke") or d:IsA("Sparkles") then d.Enabled = false end
-			end
 		end
 		pcall(function() setfpscap(240) end)
 	else
@@ -1129,7 +1038,7 @@ local function applyFpsBoost(on)
 end
 
 local hud = new("Frame", {
-	Size = UDim2.new(0, 240, 0, 74), Position = UDim2.new(0, 12, 0, 12),
+	Size = UDim2.new(0, 250, 0, 74), Position = UDim2.new(0, 12, 0, 12),
 	BackgroundColor3 = T.Bg, BackgroundTransparency = 0.15, BorderSizePixel = 0,
 	Visible = Config.Hud, ZIndex = 10,
 }, gui)
@@ -1147,7 +1056,7 @@ local hudStats = new("TextLabel", {
 local hudParry = new("TextLabel", {
 	Size = UDim2.new(1, -16, 0, 14), Position = UDim2.new(0, 10, 0, 38), BackgroundTransparency = 1,
 	Font = Enum.Font.Gotham, TextSize = 10, TextColor3 = T.Dim,
-	TextXAlignment = Enum.TextXAlignment.Left, Text = "parries: 0  |  fails: 0",
+	TextXAlignment = Enum.TextXAlignment.Left, Text = "",
 }, hud)
 local hudDebug = new("TextLabel", {
 	Size = UDim2.new(1, -16, 0, 14), Position = UDim2.new(0, 10, 0, 53), BackgroundTransparency = 1,
@@ -1161,15 +1070,15 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("parries: %d  |  fails: %d  |  %s", state.parries, state.fails, Config.BypassMode)
-		hudParry.TextColor3 = ParryRemote and T.Good or T.Bad
+		hudParry.Text = string.format("fired %d | ok %d | miss %d", state.fired, state.success, state.failed)
+		hudParry.TextColor3 = state.failed > state.success and T.Warn or T.Good
 		hudDebug.Visible = Config.DebugParry and Config.Hud
 		if Config.DebugParry then
-			hudDebug.Text = string.format("dist %d | eta %.3f | armed %s | %s",
-				math.floor(state.dist), state.eta, tostring(state.armed),
+			hudDebug.Text = string.format("d %d | lock %s | target %s | %s",
+				math.floor(state.dist), tostring(state.locked), state.targeting,
 				ParryRemote and ParryRemote.Name or "NO REMOTE")
 		end
-		task.wait(0.35)
+		task.wait(0.3)
 	end
 end)
 
@@ -1179,77 +1088,50 @@ end)
 local combatPage, combatAdd = newTab("Combat")
 combatAdd(section(combatPage, "Auto Parry"))
 combatAdd((toggle(combatPage, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)))
-combatAdd((dropdown(combatPage, "Trigger Mode", {"Both", "Distance", "Prediction"}, Config.ParryMode, function(v) Config.ParryMode = v end)))
 combatAdd((slider(combatPage, "Close Range", 5, 40, Config.CloseRange, 0, function(v) Config.CloseRange = v end)))
-combatAdd((slider(combatPage, "Base Offset", 0.05, 0.4, Config.BaseOffset, 2, function(v) Config.BaseOffset = v end)))
+combatAdd(section(combatPage, "Target Check"))
+combatAdd((toggle(combatPage, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
+combatAdd((slider(combatPage, "Trajectory Tolerance", 3, 20, Config.TargetTol, 0, function(v) Config.TargetTol = v end)))
 combatAdd(section(combatPage, "Humanizer"))
-combatAdd((toggle(combatPage, "One Parry Per Throw", Config.OnePerThrow, function(v) Config.OnePerThrow = v end)))
+combatAdd((toggle(combatPage, "One Parry Per Ball", Config.OnePerBall, function(v) Config.OnePerBall = v end)))
 combatAdd((slider(combatPage, "Reaction Jitter (ms)", 0, 200, Config.ReactionJitter, 0, function(v) Config.ReactionJitter = v end)))
 combatAdd((slider(combatPage, "Trigger Jitter (studs)", 0, 12, Config.TriggerJitter, 0, function(v) Config.TriggerJitter = v end)))
-combatAdd((toggle(combatPage, "Humanize Offset", Config.Humanize, function(v) Config.Humanize = v end)))
-combatAdd(section(combatPage, "Abilities"))
-combatAdd((toggle(combatPage, "Auto Ability", Config.AutoAbility, function(v) Config.AutoAbility = v end)))
-combatAdd((slider(combatPage, "Ability Delay", 0.3, 4, Config.AbilityDelay, 1, function(v) Config.AbilityDelay = v end)))
-combatAdd((button(combatPage, "Test Parry Now", function()
-	state.armed, state.lastFire, state.lastSoft = true, 0, 0
-	doParry(getBall(), true)
-	notify(ParryRemote and ("fired -> " .. ParryRemote.Name) or "no remote found", ParryRemote and T.Good or T.Bad)
+combatAdd((slider(combatPage, "Human Error (%)", 0, 30, Config.HumanError, 0, function(v) Config.HumanError = v end)))
+combatAdd((slider(combatPage, "Lock Timeout", 0.6, 4, Config.LockTimeout, 1, function(v) Config.LockTimeout = v end)))
+combatAdd((button(combatPage, "Reset Counters", function()
+	state.fired, state.success, state.failed = 0, 0, 0
 end)))
 
 local byPage, byAdd = newTab("Bypass")
 byAdd(section(byPage, "BAC"))
-byAdd((dropdown(byPage, "Profile", {"Off", "Light", "Medium", "Safe", "Paranoid"}, Config.BypassMode, function(v)
-	Config.BypassMode = v
-	notify("BAC profile: " .. v, T.Warn)
-end)))
-byAdd((button(byPage, "MAX STEALTH (Paranoid)", function()
-	Config.BypassMode = "Paranoid"
-	Config.OnePerThrow = true
-	Config.Humanize = true
-	Config.ReactionJitter = 120
-	Config.TriggerJitter = 7
-	Config.GateApproach = true
-	Config.GateDistance = true
-	Config.GateSpeed = true
+byAdd((button(byPage, "MAX STEALTH", function()
+	Config.RequireTarget = true
+	Config.OnePerBall = true
+	Config.CloseRange = 13
+	Config.ReactionJitter = 110
+	Config.TriggerJitter = 6
+	Config.HumanError = 12
 	Config.AutoAbility = false
 	Config.Headless = false
 	Config.Particles = false
 	Config.BallRecolor = false
-	notify("stealth mode armed", T.Good)
+	notify("stealth armed", T.Good)
 end)))
-byAdd(section(byPage, "Gates"))
 byAdd((toggle(byPage, "Distance Gate", Config.GateDistance, function(v) Config.GateDistance = v end)))
 byAdd((toggle(byPage, "Approach Gate", Config.GateApproach, function(v) Config.GateApproach = v end)))
 byAdd((toggle(byPage, "Speed Gate", Config.GateSpeed, function(v) Config.GateSpeed = v end)))
-byAdd((toggle(byPage, "Rate Limit", Config.RateLimit, function(v) Config.RateLimit = v end)))
-byAdd((toggle(byPage, "Smart Offset", Config.SmartOffset, function(v) Config.SmartOffset = v end)))
 byAdd(section(byPage, "Remote"))
 byAdd((textbox(byPage, "Manual Path", Config.RemotePath, "ReplicatedStorage.Remotes.Parry", function(v)
 	Config.RemotePath = v
-	if v ~= "" then
-		notify(findRemotes() and ("bound: " .. ParryPath) or "path not resolved", ParryRemote and T.Good or T.Bad)
-	else
-		findRemotes()
-	end
+	if v ~= "" then notify(findRemotes() and ("bound: " .. ParryPath) or "not resolved", ParryRemote and T.Good or T.Bad) end
 end)))
 byAdd((button(byPage, "Auto Detect Remote", function()
 	Config.RemotePath = ""
 	findRemotes(); findAbility()
 	notify(ParryRemote and ("found: " .. ParryPath) or "nothing found", ParryRemote and T.Good or T.Bad)
 end)))
-byAdd((button(byPage, "List Candidates", function()
-	local c = collectRemotes()
-	if #c == 0 then notify("no parry remotes found", T.Bad) return end
-	for i = 1, math.min(#c, 4) do
-		task.delay(i * 0.25, function() notify(i .. ") " .. c[i]:GetFullName(), T.Warn) end)
-	end
-end)))
 byAdd((toggle(byPage, "Send Ball As Argument", Config.SendBall, function(v) Config.SendBall = v end)))
 byAdd((toggle(byPage, "Debug Readout", Config.DebugParry, function(v) Config.DebugParry = v end)))
-byAdd((button(byPage, "Reset Counters", function()
-	state.parries, state.fails = 0, 0
-	state.offset = Config.BaseOffset
-end)))
 
 local visPage, visAdd = newTab("Visuals")
 visAdd(section(visPage, "Players"))
@@ -1261,64 +1143,40 @@ visAdd((toggle(visPage, "Health Bar", Config.HealthEsp, function(v) Config.Healt
 visAdd((toggle(visPage, "Tracers", Config.Tracers, function(v) Config.Tracers = v end)))
 visAdd((toggle(visPage, "Highlights", Config.Highlights, function(v) Config.Highlights = v end)))
 visAdd((toggle(visPage, "Hitboxes 3D", Config.Hitboxes, function(v) Config.Hitboxes = v end)))
-visAdd((dropdown(visPage, "ESP Color", {"White", "Red", "Cyan", "Lime", "Purple", "Gold"}, "White", function(v)
-	local map = {
-		White = Color3.fromRGB(255,255,255), Red = Color3.fromRGB(255,80,80),
-		Cyan = Color3.fromRGB(80,230,255), Lime = Color3.fromRGB(140,255,140),
-		Purple = Color3.fromRGB(190,130,255), Gold = Color3.fromRGB(255,210,90),
-	}
-	Config.EspColor = map[v] or Color3.new(1, 1, 1)
+visAdd((dropdown(visPage, "ESP Color", {"White","Red","Cyan","Lime","Purple","Gold"}, "White", function(v)
+	local m = {White=Color3.fromRGB(255,255,255),Red=Color3.fromRGB(255,80,80),Cyan=Color3.fromRGB(80,230,255),Lime=Color3.fromRGB(140,255,140),Purple=Color3.fromRGB(190,130,255),Gold=Color3.fromRGB(255,210,90)}
+	Config.EspColor = m[v] or Color3.new(1,1,1)
 end)))
 visAdd(section(visPage, "Ball"))
 visAdd((toggle(visPage, "Ball ESP", Config.BallEsp, function(v) Config.BallEsp = v end)))
-visAdd((dropdown(visPage, "Ball ESP Color", {"Red", "White", "Cyan", "Gold", "Magenta"}, "Red", function(v)
-	local map = {
-		Red = Color3.fromRGB(255,90,90), White = Color3.fromRGB(255,255,255),
-		Cyan = Color3.fromRGB(90,230,255), Gold = Color3.fromRGB(255,210,90),
-		Magenta = Color3.fromRGB(255,110,240),
-	}
-	Config.BallEspColor = map[v] or Color3.fromRGB(255, 90, 90)
+visAdd((dropdown(visPage, "Ball ESP Color", {"Red","White","Cyan","Gold","Magenta"}, "Red", function(v)
+	local m = {Red=Color3.fromRGB(255,90,90),White=Color3.fromRGB(255,255,255),Cyan=Color3.fromRGB(90,230,255),Gold=Color3.fromRGB(255,210,90),Magenta=Color3.fromRGB(255,110,240)}
+	Config.BallEspColor = m[v] or Color3.fromRGB(255,90,90)
 end)))
 visAdd(section(visPage, "Character"))
 visAdd((toggle(visPage, "Headless", Config.Headless, function(v) Config.Headless = v; applyHeadless() end)))
 visAdd((toggle(visPage, "Fullbright", Config.Fullbright, function(v)
 	Config.Fullbright = v
 	if v then
-		Lighting.Ambient = Color3.fromRGB(200, 200, 200)
-		Lighting.OutdoorAmbient = Color3.fromRGB(200, 200, 200)
+		Lighting.Ambient = Color3.fromRGB(200,200,200)
+		Lighting.OutdoorAmbient = Color3.fromRGB(200,200,200)
 		Lighting.Brightness = 2
 		Lighting.GlobalShadows = false
-	else
-		applySky(Config.SkyPreset)
-	end
+	else applySky(Config.SkyPreset) end
 end)))
 
 local worldPage, worldAdd = newTab("World")
-worldAdd(section(worldPage, "Sky"))
-worldAdd((dropdown(worldPage, "Preset", {"Default", "Night", "Blood", "Black", "Neon", "Vapor"}, Config.SkyPreset, function(v)
-	Config.SkyPreset = v
-	applySky(v)
+worldAdd((dropdown(worldPage, "Sky Preset", {"Default","Night","Blood","Black","Neon","Vapor"}, Config.SkyPreset, function(v)
+	Config.SkyPreset = v; applySky(v)
 end)))
 worldAdd((slider(worldPage, "Clock Time", 0, 24, Config.ClockTime, 0, function(v) Config.ClockTime = v; Lighting.ClockTime = v end)))
 worldAdd((slider(worldPage, "Brightness", 0, 5, Config.Brightness, 1, function(v) Config.Brightness = v; Lighting.Brightness = v end)))
-worldAdd((slider(worldPage, "Fog End", 100, 100000, Config.FogEnd, 0, function(v) Config.FogEnd = v; Lighting.FogEnd = v end)))
-worldAdd(section(worldPage, "Particles"))
-worldAdd((toggle(worldPage, "Ball / Self Particles", Config.Particles, function(v) Config.Particles = v; applyParticles() end)))
+worldAdd((toggle(worldPage, "Particles", Config.Particles, function(v) Config.Particles = v; applyParticles() end)))
 worldAdd((slider(worldPage, "Particle Rate", 5, 200, Config.ParticleRate, 0, function(v) Config.ParticleRate = v; applyParticles() end)))
-worldAdd((dropdown(worldPage, "Particle Color", {"White", "Red", "Cyan", "Gold", "Purple"}, "White", function(v)
-	local map = {
-		White = Color3.fromRGB(255,255,255), Red = Color3.fromRGB(255,90,90),
-		Cyan = Color3.fromRGB(90,230,255), Gold = Color3.fromRGB(255,210,90),
-		Purple = Color3.fromRGB(190,130,255),
-	}
-	Config.ParticleColor = map[v] or Color3.new(1, 1, 1)
-	applyParticles()
-end)))
 
 local skinPage, skinAdd = newTab("Skins")
-skinAdd(section(skinPage, "Sword"))
-skinAdd((textbox(skinPage, "Mesh ID", Config.SwordMesh, "rbxassetid://...", function(v) Config.SwordMesh = v end)))
-skinAdd((textbox(skinPage, "Texture ID", Config.SwordTexture, "rbxassetid://...", function(v) Config.SwordTexture = v end)))
+skinAdd((textbox(skinPage, "Sword Mesh ID", Config.SwordMesh, "rbxassetid://...", function(v) Config.SwordMesh = v end)))
+skinAdd((textbox(skinPage, "Sword Texture ID", Config.SwordTexture, "rbxassetid://...", function(v) Config.SwordTexture = v end)))
 skinAdd((button(skinPage, "Apply Sword Skin", function()
 	local char = LP.Character
 	if not char then return end
@@ -1335,33 +1193,20 @@ skinAdd((button(skinPage, "Apply Sword Skin", function()
 			end)
 		end
 	end
-	notify(found and "sword skin applied" or "sword not found", found and T.Good or T.Bad)
+	notify(found and "applied" or "sword not found", found and T.Good or T.Bad)
 end)))
-skinAdd(section(skinPage, "Ball (может триггерить BAC)"))
 skinAdd((toggle(skinPage, "Recolor Ball", Config.BallRecolor, function(v) Config.BallRecolor = v end)))
-skinAdd((dropdown(skinPage, "Ball Color", {"White", "Red", "Cyan", "Gold", "Purple", "Neon Green"}, "White", function(v)
-	local map = {
-		White = Color3.fromRGB(255,255,255), Red = Color3.fromRGB(255,70,70),
-		Cyan = Color3.fromRGB(80,230,255), Gold = Color3.fromRGB(255,205,80),
-		Purple = Color3.fromRGB(185,120,255), ["Neon Green"] = Color3.fromRGB(120,255,120),
-	}
-	Config.BallColor = map[v] or Color3.new(1, 1, 1)
-end)))
-skinAdd((dropdown(skinPage, "Ball Material", {"Plastic", "Neon", "ForceField", "Glass", "Metal", "Ice"}, Config.BallMaterial, function(v) Config.BallMaterial = v end)))
 skinAdd((slider(skinPage, "Ball Size", 0.5, 3, Config.BallSize, 2, function(v) Config.BallSize = v end)))
 
 local miscPage, miscAdd = newTab("Misc")
-miscAdd(section(miscPage, "Camera"))
 miscAdd((slider(miscPage, "Field of View", 40, 120, Config.Fov, 0, function(v) Config.Fov = v end)))
-miscAdd(section(miscPage, "Performance"))
 miscAdd((toggle(miscPage, "FPS Booster", Config.FpsBoost, function(v) Config.FpsBoost = v; applyFpsBoost(v) end)))
 miscAdd((toggle(miscPage, "FPS / Ping HUD", Config.Hud, function(v) Config.Hud = v end)))
-miscAdd(section(miscPage, "Character"))
 miscAdd((toggle(miscPage, "Custom Speed", Config.UseSpeed, function(v) Config.UseSpeed = v end)))
 miscAdd((slider(miscPage, "Walk Speed", 8, 120, Config.WalkSpeed, 0, function(v) Config.WalkSpeed = v end)))
 miscAdd((slider(miscPage, "Jump Power", 20, 200, Config.JumpPower, 0, function(v) Config.JumpPower = v end)))
 miscAdd((toggle(miscPage, "Anti AFK", Config.AntiAfk, function(v) Config.AntiAfk = v end)))
-miscAdd(section(miscPage, "Menu"))
+miscAdd((toggle(miscPage, "Auto Ability", Config.AutoAbility, function(v) Config.AutoAbility = v end)))
 local keyBtn
 keyBtn = miscAdd((button(miscPage, "Menu Key: " .. Config.MenuKey.Name, function()
 	local conn
@@ -1370,17 +1215,11 @@ keyBtn = miscAdd((button(miscPage, "Menu Key: " .. Config.MenuKey.Name, function
 		if i.UserInputType == Enum.UserInputType.Keyboard then
 			Config.MenuKey = i.KeyCode
 			keyBtn.Text = "Menu Key: " .. i.KeyCode.Name
-			conn:Disconnect()
-			queueSave()
+			conn:Disconnect(); queueSave()
 		end
 	end)
 end)))
-miscAdd(section(miscPage, "Config"))
 miscAdd((button(miscPage, "Save Config", function() saveConfig(); notify("saved", T.Good) end)))
-miscAdd((button(miscPage, "Reload Config", function() loadConfig(); notify("reloaded", T.Good) end)))
-miscAdd((button(miscPage, "Delete Config File", function()
-	if hasFS then pcall(function() delfile(FILE) end) end
-end)))
 miscAdd((button(miscPage, "Rejoin Server", function()
 	pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LP) end)
 end)))
@@ -1390,22 +1229,17 @@ miscAdd((button(miscPage, "Unload Script", function()
 	pcall(function()
 		Lighting.ClockTime = 14
 		Lighting.Brightness = 2
-		Lighting.Ambient = Color3.fromRGB(70, 70, 70)
-		Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+		Lighting.Ambient = Color3.fromRGB(70,70,70)
+		Lighting.OutdoorAmbient = Color3.fromRGB(128,128,128)
 		Lighting.GlobalShadows = true
 		workspace.CurrentCamera.FieldOfView = 70
 	end)
 end)))
 
 --=============================================================
--- OPEN / CLOSE
+-- OPEN / CLOSE + LOOPS
 --=============================================================
-local function setMenu(open)
-	Config.MenuOpen = open
-	window.Visible = open
-	queueSave()
-end
-
+local function setMenu(open) Config.MenuOpen = open; window.Visible = open; queueSave() end
 closeBtn.MouseButton1Click:Connect(function() setMenu(false) end)
 minBtn.MouseButton1Click:Connect(function() setMenu(false) end)
 
@@ -1429,29 +1263,15 @@ for n, t in pairs(tabs) do
 	t.ind.Size = on and UDim2.new(0, 2, 0, 16) or UDim2.new(0, 2, 0, 0)
 end
 
---=============================================================
--- LOOPS
---=============================================================
 task.spawn(function()
-	while gui.Parent do
-		pcall(updateExtras)
-		task.wait(0.35)
-	end
+	while gui.Parent do pcall(updateExtras); task.wait(0.35) end
 end)
-
 task.spawn(function()
-	while gui.Parent do
-		pcall(applyParticles)
-		pcall(applyBallSkin)
-		task.wait(0.5)
-	end
+	while gui.Parent do pcall(applyParticles); pcall(applyBallSkin); task.wait(0.5) end
 end)
-
 task.spawn(function()
 	while gui.Parent do
-		if not ParryRemote or not ParryRemote:IsDescendantOf(game) then
-			findRemotes(); findAbility()
-		end
+		if not ParryRemote or not ParryRemote:IsDescendantOf(game) then findRemotes(); findAbility() end
 		task.wait(3)
 	end
 end)
@@ -1459,8 +1279,7 @@ end)
 bind(RunService.RenderStepped, function()
 	local cam = workspace.CurrentCamera
 	if cam and math.abs(cam.FieldOfView - Config.Fov) > 0.1 then cam.FieldOfView = Config.Fov end
-	local char = LP.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
 	if hum and Config.UseSpeed then
 		if hum.WalkSpeed ~= Config.WalkSpeed then hum.WalkSpeed = Config.WalkSpeed end
 		if hum.UseJumpPower and hum.JumpPower ~= Config.JumpPower then hum.JumpPower = Config.JumpPower end
@@ -1474,15 +1293,10 @@ bind(LP.Idled, function()
 	end
 end)
 
---=============================================================
--- STARTUP
---=============================================================
 task.spawn(function()
 	task.wait(0.5)
 	pcall(applySky, Config.SkyPreset)
 	pcall(applyHeadless)
-	if Config.FpsBoost then pcall(applyFpsBoost, true) end
-	pcall(function() Lighting.FogEnd = Config.FogEnd end)
-	print("[" .. TITLE .. "] loaded | BAC profile: " .. Config.BypassMode)
-	notify(TITLE .. " | BAC: " .. Config.BypassMode, T.Good)
+	notify(TITLE .. " | BAC v2", T.Good)
+	print("[" .. TITLE .. "] loaded | remote: " .. (ParryRemote and ParryPath or "NOT FOUND"))
 end)
