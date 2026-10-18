@@ -27,7 +27,6 @@ local Config = {
 	AutoParry     = true,
 	InputMode     = "Auto",
 	ParryKey      = "F",
-	ActionsPerSec = 45,
 	BatchMode     = "Fast",
 	Prediction    = 0.08,
 	Horizon       = 0.45,
@@ -41,7 +40,6 @@ local Config = {
 	BallPredCap   = 22,
 
 	FastAssist    = true,
-	PressLimit    = 4,
 	LookSteps     = 6,
 	RequireTarget = true,
 	Debug         = false,
@@ -421,10 +419,9 @@ local hasMouse    = pcall(function() return mouse1click end)
 -- ENGINE STATE
 --=============================================================
 local E = {
-	lastAction = 0, actions = 0, presses = 0,
+	lastAction = 0, actions = 0,
 	dist = 0, speed = 0, radius = 16, lead = 0,
 	targeted = false, hot = false, mode = "-",
-	trackedBall = nil,
 	lastTime = 0, lastVel = Vector3.zero, accel = Vector3.zero,
 }
 
@@ -459,13 +456,13 @@ local function performParry()
 	return "none"
 end
 
+-- темп задаётся ТОЛЬКО Batch Mode, никаких "actions per second"
 local function actionCooldown(speedBoost)
-	local rate = math.clamp(Config.ActionsPerSec, 10, 100)
-	local cd = 1 / rate
-	if Config.BatchMode == "Safe" then cd = math.max(0.080, cd)
-	elseif Config.BatchMode == "Normal" then cd = math.max(0.040, cd)
-	elseif Config.BatchMode == "Fast" then cd = math.max(0.025, cd)
-	elseif Config.BatchMode == "Extremely Fast" then cd = math.max(0.015, cd) end
+	local cd
+	if Config.BatchMode == "Safe" then cd = 0.085
+	elseif Config.BatchMode == "Normal" then cd = 0.045
+	elseif Config.BatchMode == "Fast" then cd = 0.028
+	else cd = 0.016 end -- Extremely Fast
 	if Config.FastAssist then cd = cd * (1 - 0.55 * (speedBoost or 0)) end
 	return math.max(0.010, cd + (math.random(-2, 4) / 1000))
 end
@@ -475,7 +472,6 @@ local function sendAction(ball, speedBoost)
 	if now - E.lastAction < actionCooldown(speedBoost) then return false end
 	E.lastAction = now
 	E.actions += 1
-	E.presses += 1
 	E.mode = performParry()
 	return true
 end
@@ -628,18 +624,6 @@ local function step(dt)
 	E.radius = radius
 	E.hot = threat.distance <= radius
 
-	-- ===== СБРОС ЛИМИТА НАЖАТИЙ (4 независимых условия) =====
-	if E.trackedBall ~= ball then
-		E.presses = 0
-		E.trackedBall = ball
-	end
-	local outside = threat.distance > radius
-	local idle = threat.speed < 8
-	if (outside or idle) and tick() - E.lastAction > 0.25 then
-		E.presses = 0
-	end
-	if tick() - E.lastAction > 1.2 then E.presses = 0 end
-
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
 	E.targeted = (tgt == true) or (tgt == nil and heur)
@@ -659,16 +643,8 @@ local function step(dt)
 	local soon, tHit = willEnterSoon(ball, root, threat.velocity, threat.accel, radius, window)
 	E.lead = tHit or 0
 
-	local veryClose = threat.distance <= radius * 0.45
-
-	-- только когда мяч в круге или вот-вот войдёт
-	if not (inside or soon or veryClose) then return end
-
-	-- лимит: исчерпали — но в упор или с паузой всё равно добьём
-	if E.presses >= Config.PressLimit and not veryClose
-		and tick() - E.lastAction < 0.15 then
-		return
-	end
+	-- единственное правило: мяч в круге или вот-вот войдёт
+	if not (inside or soon) then return end
 
 	sendAction(ball, speedBoost)
 end
@@ -978,7 +954,7 @@ local function applyFpsBoost(on)
 	else Lighting.GlobalShadows = true end
 end
 
-local hud = new("Frame", {Size=UDim2.new(0,275,0,74), Position=UDim2.new(0,12,0,12),
+local hud = new("Frame", {Size=UDim2.new(0,255,0,74), Position=UDim2.new(0,12,0,12),
 	BackgroundColor3=T.Bg, BackgroundTransparency=0.15, BorderSizePixel=0, Visible=Config.Hud, ZIndex=10}, gui)
 corner(hud,8); stroke(hud,T.Line)
 new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,5), BackgroundTransparency=1,
@@ -996,8 +972,7 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("in %s | acts %d | spd %d | R %d | p %d/%d",
-			E.mode, E.actions, math.floor(E.speed), math.floor(E.radius), E.presses, Config.PressLimit)
+		hudParry.Text = string.format("in %s | acts %d | spd %d | R %d", E.mode, E.actions, math.floor(E.speed), math.floor(E.radius))
 		hudParry.TextColor3 = E.hot and T.Good or T.Dim
 		hudDebug.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
@@ -1017,10 +992,6 @@ ca((toggle(cp, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v 
 ca((dropdown(cp, "Input Mode", {"Auto", "Keypress", "Mouse", "Remote"}, Config.InputMode, function(v) Config.InputMode = v end)))
 ca((dropdown(cp, "Parry Key", {"F", "E", "Q", "R", "V", "C", "Space"}, Config.ParryKey, function(v) Config.ParryKey = v end)))
 ca((toggle(cp, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
-
-ca(section(cp, "Anti-Spam"))
-ca((slider(cp, "Presses Per Approach", 1, 10, Config.PressLimit, 0, function(v) Config.PressLimit = v end)))
-ca((slider(cp, "Actions / sec", 10, 100, Config.ActionsPerSec, 0, function(v) Config.ActionsPerSec = v end)))
 ca((dropdown(cp, "Batch Mode", {"Extremely Fast", "Fast", "Normal", "Safe"}, Config.BatchMode, function(v) Config.BatchMode = v end)))
 
 ca(section(cp, "Fast Ball Assist"))
@@ -1071,12 +1042,10 @@ local bp, ba = newTab("Bypass")
 ba(section(bp, "Input (BAC bypass)"))
 ba((button(bp, "MAX STEALTH", function()
 	Config.InputMode = "Keypress"
-	Config.ActionsPerSec = 40
 	Config.BatchMode = "Normal"
 	Config.RequireTarget = true
 	Config.AutoRadius = true
 	Config.LeadTime = 0.14
-	Config.PressLimit = 4
 	Config.Headless = false
 	Config.Particles = false
 	Config.BallRecolor = false
@@ -1088,10 +1057,6 @@ end)))
 ba((button(bp, "Find Parry Remote", function()
 	findRemote()
 	notify(ParryRemote and ("found: " .. ParryRemote:GetFullName()) or "not found", ParryRemote and T.Good or T.Bad)
-end)))
-ba((button(bp, "Reset Engine", function()
-	E.presses, E.actions, E.trackedBall = 0, 0, nil
-	notify("engine reset", T.Good)
 end)))
 ba((toggle(bp, "Debug Readout", Config.Debug, function(v) Config.Debug = v end)))
 
