@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    input-based bypass (keypress) + predictive parry
+    input-based bypass (keypress) + adaptive-radius parry
     menu: RightShift
 --]]
 
@@ -31,11 +31,19 @@ local Config = {
 	BatchMode     = "Fast",
 	Prediction    = 0.08,
 	Horizon       = 0.45,
-	BaseRadius    = 16,
+
+	-- радиус
+	AutoRadius    = true,     -- круг подстраивается под скорость мяча
+	LeadTime      = 0.12,     -- за сколько секунд до контакта бить
+	MinRadius     = 8,
+	MaxRadius     = 40,
+	BaseRadius    = 16,       -- используется если AutoRadius выключен
+	CrossTrigger  = true,     -- бить по пересечению границы круга
 	PingComp      = true,
+	BallPredCap   = 22,
+
 	RequireTarget = true,
 	OnePerBall    = false,
-	BallPredCap   = 22,
 	Debug         = false,
 
 	-- круг
@@ -89,6 +97,7 @@ local RingColors = {
 	Green  = Color3.fromRGB(120, 255, 160),
 	Gold   = Color3.fromRGB(255, 210, 90),
 }
+local RingHot = Color3.fromRGB(120, 255, 160)
 
 --=============================================================
 -- SAVE / LOAD
@@ -411,15 +420,16 @@ local E = {
 	lastAction = 0,
 	actions    = 0,
 	lastBall   = nil,
-	lastPos    = nil,
 	lastTime   = 0,
 	lastVel    = Vector3.zero,
 	accel      = Vector3.zero,
 	dist       = 0,
 	speed      = 0,
 	eta        = 0,
-	radius     = 16,   -- ФАКТИЧЕСКИЙ радиус (для круга и HUD)
+	radius     = 16,
+	lead       = 0,
 	targeted   = false,
+	hot        = false,
 	mode       = "-",
 }
 
@@ -479,7 +489,7 @@ local function sendAction(ball)
 end
 
 --=============================================================
--- BALL / TARGET / THREAT
+-- MATCH / BALL
 --=============================================================
 local function inMatch()
 	local char = LP.Character
@@ -515,7 +525,6 @@ local function ballTarget(ball)
 		or ball:GetAttribute("to")
 end
 
--- true / false / nil(неизвестно)
 local function isTargeted(ball)
 	local char = LP.Character
 	if not ball or not char then return nil end
@@ -592,6 +601,25 @@ local function computeThreat(ball, root)
 end
 
 --=============================================================
+-- RADIUS: подстраивается под мяч
+--=============================================================
+-- Задача: парри всегда должно происходить за одно и то же время до контакта.
+-- Значит радиус = скорость_сближения * (lead + сеть + кадр).
+-- Быстрый мяч -> широкий круг. Медленный -> узкий. Плюс жёсткие границы.
+local function computeRadius(threat, pingSec)
+	local net = pingSec * 0.5 + (1 / 60)
+	if Config.AutoRadius then
+		local lead = Config.LeadTime + (Config.PingComp and net or 0)
+		return math.clamp(threat.speed * lead, Config.MinRadius, Config.MaxRadius)
+	end
+	local r = Config.BaseRadius
+	if Config.PingComp then
+		r = r + math.clamp(threat.speed * net, 0, Config.BallPredCap)
+	end
+	return r
+end
+
+--=============================================================
 -- MAIN LOGIC
 --=============================================================
 local function step(dt)
@@ -607,13 +635,10 @@ local function step(dt)
 
 	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
 
-	-- РАДИУС считается всегда — от него живёт круг и HUD
 	local pingSec = getPing() / 1000
-	local radius = Config.BaseRadius
-	if Config.PingComp then
-		radius = radius + math.clamp(threat.speed * (pingSec * 0.5 + 1 / 60), 0, Config.BallPredCap)
-	end
+	local radius = computeRadius(threat, pingSec)
 	E.radius = radius
+	E.hot = threat.distance <= radius
 
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
@@ -630,18 +655,30 @@ local function step(dt)
 	horizon = horizon + math.clamp((threat.speed - 150) * 0.0003, 0, 0.12)
 	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
 
+	local dirOk = threat.dot > 0.05 or threat.approachSpeed > -5
+
+	if Config.CrossTrigger then
+		-- точный момент пересечения границы круга
+		local closing = math.max(threat.approachSpeed, threat.speed * 0.5, 1)
+		local tCross = (threat.distance - radius) / closing
+		E.lead = tCross
+		if tCross <= transit and dirOk then
+			sendAction(ball)
+			return
+		end
+	else
+		if threat.distance <= radius and dirOk then
+			sendAction(ball)
+			return
+		end
+	end
+
+	-- подстраховка: предсказанный контакт внутри круга
 	local futurePlayer = root.Position + root.AssemblyLinearVelocity * transit
 	local curveComp = 0.5 * threat.accel * (transit * transit)
 	if curveComp.Magnitude > 15 then curveComp = curveComp.Unit * 15 end
 	local futureBall = ball.Position + threat.velocity * transit + curveComp
-
-	local futureDist = (futurePlayer - futureBall).Magnitude
-
-	if threat.distance <= radius and (threat.dot > 0.05 or threat.approachSpeed > -5) then
-		sendAction(ball)
-		return
-	end
-	if futureDist <= radius and (threat.approachSpeed > -10 or threat.dot > 0.05) then
+	if (futurePlayer - futureBall).Magnitude <= radius and dirOk then
 		sendAction(ball)
 	end
 end
@@ -661,7 +698,7 @@ bind(RunService.Heartbeat, function()
 end)
 
 --=============================================================
--- PARRY RING  (рисуется по ФАКТИЧЕСКОМУ радиусу)
+-- PARRY RING (адаптивный, краснеет/зеленеет по факту)
 --=============================================================
 local ring = new("CylinderHandleAdornment", {
 	Height = 0.05,
@@ -911,7 +948,7 @@ local function applyFpsBoost(on)
 	else Lighting.GlobalShadows = true end
 end
 
-local hud = new("Frame", {Size=UDim2.new(0,255,0,74), Position=UDim2.new(0,12,0,12),
+local hud = new("Frame", {Size=UDim2.new(0,265,0,74), Position=UDim2.new(0,12,0,12),
 	BackgroundColor3=T.Bg, BackgroundTransparency=0.15, BorderSizePixel=0, Visible=Config.Hud, ZIndex=10}, gui)
 corner(hud,8); stroke(hud,T.Line)
 new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,5), BackgroundTransparency=1,
@@ -929,12 +966,12 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("input: %s | acts %d | R %d", E.mode, E.actions, math.floor(E.radius))
-		hudParry.TextColor3 = hasKeypress and T.Good or (hasMouse and T.Warn or T.Bad)
+		hudParry.Text = string.format("in %s | acts %d | spd %d | R %d", E.mode, E.actions, math.floor(E.speed), math.floor(E.radius))
+		hudParry.TextColor3 = E.hot and T.Good or (hasKeypress and T.Dim or T.Bad)
 		hudDebug.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
-			hudDebug.Text = string.format("d %d | eta %.2f | tgt %s | %s",
-				math.floor(E.dist), E.eta, tostring(E.targeted), Config.InputMode)
+			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | %s",
+				math.floor(E.dist), E.lead, tostring(E.targeted), Config.InputMode)
 		end
 		task.wait(0.3)
 	end
@@ -951,16 +988,22 @@ ca((dropdown(cp, "Parry Key", {"F", "E", "Q", "R", "V", "C", "Space"}, Config.Pa
 ca((toggle(cp, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
 ca((toggle(cp, "One Parry Per Ball", Config.OnePerBall, function(v) Config.OnePerBall = v end)))
 
+ca(section(cp, "Adaptive Radius"))
+ca((toggle(cp, "Auto Radius (follow ball speed)", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
+ca((slider(cp, "Lead Time (s)", 0.03, 0.35, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
+ca((slider(cp, "Min Radius", 4, 30, Config.MinRadius, 0, function(v) Config.MinRadius = v end)))
+ca((slider(cp, "Max Radius", 10, 80, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
+ca((toggle(cp, "Cross Trigger (exact edge)", Config.CrossTrigger, function(v) Config.CrossTrigger = v end)))
+ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
+ca((slider(cp, "Fixed Radius (manual)", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
+
 ca(section(cp, "Parry Circle"))
-ca((slider(cp, "Parry Radius", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
 ca((toggle(cp, "Show Circle", Config.ParryRing, function(v) Config.ParryRing = v end)))
 ca((dropdown(cp, "Circle Color", {"Purple","White","Red","Cyan","Green","Gold"}, Config.RingColor, function(v)
 	Config.RingColor = v
 end)))
 ca((slider(cp, "Circle Thickness", 0.01, 0.30, Config.RingThick, 2, function(v) Config.RingThick = v end)))
 ca((slider(cp, "Circle Opacity", 0, 0.9, Config.RingOpacity, 2, function(v) Config.RingOpacity = v end)))
-ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
-ca((slider(cp, "Ping Radius Cap", 0, 40, Config.BallPredCap, 0, function(v) Config.BallPredCap = v end)))
 
 ca(section(cp, "Prediction"))
 ca((slider(cp, "Prediction", 0.02, 0.2, Config.Prediction, 2, function(v) Config.Prediction = v end)))
@@ -982,8 +1025,8 @@ ba((button(bp, "MAX STEALTH", function()
 	Config.ActionsPerSec = 40
 	Config.BatchMode = "Normal"
 	Config.RequireTarget = true
-	Config.PingComp = true
-	Config.BaseRadius = 15
+	Config.AutoRadius = true
+	Config.LeadTime = 0.14
 	Config.Headless = false
 	Config.Particles = false
 	Config.BallRecolor = false
@@ -1117,7 +1160,7 @@ task.spawn(function() while gui.Parent do pcall(updateExtras); task.wait(0.35) e
 task.spawn(function() while gui.Parent do pcall(applyParticles); pcall(applyBallSkin); task.wait(0.5) end end)
 task.spawn(function() while gui.Parent do findRemote(); task.wait(5) end end)
 
--- круг живёт по фактическому радиусу срабатывания
+-- круг дышит вместе с радиусом: зелёный когда мяч внутри
 bind(RunService.RenderStepped, function()
 	local cam = Workspace.CurrentCamera
 	if cam and math.abs(cam.FieldOfView - Config.Fov) > 0.1 then cam.FieldOfView = Config.Fov end
@@ -1128,8 +1171,8 @@ bind(RunService.RenderStepped, function()
 		ring.Adornee = root
 		ring.Radius = r
 		ring.InnerRadius = math.max(0.05, r * (1 - Config.RingThick))
-		ring.Color3 = RingColors[Config.RingColor] or RingColors.Purple
-		ring.Transparency = Config.RingOpacity
+		ring.Color3 = E.hot and RingHot or (RingColors[Config.RingColor] or RingColors.Purple)
+		ring.Transparency = E.hot and math.max(0.05, Config.RingOpacity - 0.15) or Config.RingOpacity
 		ring.Visible = true
 	else
 		ring.Visible = false
