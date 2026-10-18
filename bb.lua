@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + adaptive parry + korblox + ability guard + speed + sky fx
+    keypress bypass + adaptive parry + smart one-tap + korblox + ability guard
     menu: RightShift
 --]]
 
@@ -21,7 +21,7 @@ local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
 
-local CONFIG_VER = 5
+local CONFIG_VER = 6
 
 --=============================================================
 -- CONFIG
@@ -34,6 +34,11 @@ local Config = {
 	BatchMode     = "Extremely Fast",
 	Prediction    = 0.07,
 	Horizon       = 0.5,
+
+	-- один удар на подход (без ложных кликов)
+	SmartTap      = true,
+	ExtraPresses  = 1,      -- 0 = строго 1 удар на подход
+	MinRepressGap = 0.06,   -- сек между доп. ударами
 
 	AutoRadius    = true,
 	LeadTime      = 0.11,
@@ -54,7 +59,6 @@ local Config = {
 	ShowAbility   = true,
 
 	RequireTarget = true,
-	OnePerBall    = false,
 	Debug         = false,
 
 	ParryRing     = true,
@@ -164,7 +168,6 @@ local function saveConfig()
 	pcall(function() writefile(FILE, HttpService:JSONEncode(out)) end)
 end
 
--- сброс коробокса на рабочие значения (когда старый конфиг)
 local function resetKorbloxConfig()
 	Config.KorbloxMesh    = "rbxassetid://169177037"
 	Config.KorbloxTexture = ""
@@ -484,6 +487,8 @@ local E = {
 	targeted = false, hot = false, mode = "-",
 	prevSpeed = nil, prevSpeedT = 0, boostUntil = 0, boosted = false,
 	ability = "-", seenAbility = {}, seenCount = 0,
+	-- smart tap
+	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
 }
 
 local function performParry()
@@ -531,13 +536,61 @@ local function actionCooldown()
 	return math.max(0.008, cd + (math.random(-1, 2) / 1000))
 end
 
+-- Smart One-Tap: один удар на подход + страховочный доп-удар только если мяч не улетел
+local function canPress(ball, now)
+	if now - E.lastAction < actionCooldown() then return false end
+	if not Config.SmartTap then return true end
+
+	if ball ~= E.pressBall then
+		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false
+	end
+
+	local gap = math.clamp(Config.MinRepressGap, 0.02, 0.5)
+	if now - (E.pressAt or 0) < gap then return false end
+
+	if not E.ballLeft and E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) and not E.emergency then
+		return false   -- лимит нажатий исчерпан, ждём пока мяч уйдёт
+	end
+	return true
+end
+
 local function sendAction(ball)
 	local now = tick()
-	if now - E.lastAction < actionCooldown() then return false end
-	if Config.OnePerBall and E.lastBall == ball and not E.released then return false end
-	E.lastAction = now; E.actions += 1; E.lastBall = ball; E.released = false
+	if not canPress(ball, now) then return false end
+	if Config.SmartTap then
+		E.pressCount += 1
+		E.pressAt = now
+		if E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) then E.ballLeft = false end
+	end
+	E.lastAction = now
+	E.actions += 1
+	E.lastBall = ball
+	E.released = false
 	E.mode = performParry()
 	return true
+end
+
+-- перевзвод: разрешаем бить снова только когда мяч реально ушёл
+local function updateArm(ball, threat, radius)
+	local now = tick()
+	if ball ~= E.pressBall then
+		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false
+		return
+	end
+	local gone = (threat.dot < -0.15 and threat.speed > 2)
+		or (threat.distance > radius * 1.35)
+		or (threat.speed < 3)
+	if gone then
+		E.ballLeft = true
+		E.pressCount = 0
+	end
+	-- аварийный режим: мяч почти вплотную, а мы уже отжались
+	E.emergency = (threat.distance < radius * 0.55) and (now - (E.pressAt or 0) > 0.10)
+	-- предохранитель: если долго не жали — сбрасываем лимит
+	if now - (E.pressAt or 0) > 0.30 then
+		E.pressCount = 0
+		E.ballLeft = true
+	end
 end
 
 --=============================================================
@@ -789,6 +842,8 @@ local function step(dt)
 
 	E.radius = radius
 	E.hot = threat.distance <= radius
+
+	updateArm(ball, threat, radius)
 
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
@@ -1221,8 +1276,6 @@ end
 
 local function verifyKorbloxMesh()
 	task.spawn(function()
-		local char = LP.Character
-		if not char then return end
 		local parts = findSideParts(Config.KorbloxSide)
 		if #parts == 0 then notify("no leg part", T.Bad); return end
 		local ok = pcall(function() ContentProvider:PreloadAsync({parts[1]}) end)
@@ -1393,14 +1446,14 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("in %s | acts %d | spd %d | R %d", E.mode, E.actions, math.floor(E.speed), math.floor(E.radius))
+		hudParry.Text = string.format("in %s | acts %d | press %d | R %d", E.mode, E.actions, E.pressCount, math.floor(E.radius))
 		hudParry.TextColor3 = E.boosted and RingBoost or (E.hot and T.Good or (hasKeypress and T.Dim or T.Bad))
 		hudAbility.Visible = Config.ShowAbility and E.boosted
 		if hudAbility.Visible then hudAbility.Text = "ABILITY >> " .. tostring(E.ability) end
 		hudDebug.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
-			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | %s",
-				math.floor(E.dist), E.lead, tostring(E.targeted), Config.InputMode)
+			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | left %s",
+				math.floor(E.dist), E.lead, tostring(E.targeted), tostring(E.ballLeft))
 		end
 		task.wait(0.25)
 	end
@@ -1415,14 +1468,17 @@ ca((toggle(cp, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v 
 ca((dropdown(cp, "Input Mode", {"Auto", "Keypress", "Mouse", "Remote"}, Config.InputMode, function(v) Config.InputMode = v end)))
 ca((dropdown(cp, "Parry Key", {"F", "E", "Q", "R", "V", "C", "Space"}, Config.ParryKey, function(v) Config.ParryKey = v end)))
 ca((toggle(cp, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
-ca((toggle(cp, "One Parry Per Ball", Config.OnePerBall, function(v) Config.OnePerBall = v end)))
+
+ca(section(cp, "Anti Double-Hit"))
+ca((toggle(cp, "Smart One-Tap (no false clicks)", Config.SmartTap, function(v) Config.SmartTap = v end)))
+ca((slider(cp, "Extra Presses", 0, 3, Config.ExtraPresses, 0, function(v) Config.ExtraPresses = v end)))
+ca((slider(cp, "Re-press Gap (s)", 0.02, 0.25, Config.MinRepressGap, 2, function(v) Config.MinRepressGap = v end)))
 
 ca(section(cp, "Abilities"))
 ca((toggle(cp, "Ability Guard", Config.AbilityGuard, function(v) Config.AbilityGuard = v end)))
 ca((toggle(cp, "Detect Speed Spike", Config.BoostDetect, function(v) Config.BoostDetect = v end)))
 ca((slider(cp, "Boost Radius Mult", 1.0, 3.0, Config.BoostMult, 2, function(v) Config.BoostMult = v end)))
 ca((slider(cp, "Boost Hold (s)", 0.15, 2.0, Config.BoostHold, 2, function(v) Config.BoostHold = v end)))
-ca((toggle(cp, "Show Ability In HUD", Config.ShowAbility, function(v) Config.ShowAbility = v end)))
 ca((button(cp, "Scan Game Abilities", function()
 	local out = scanGameAbilities()
 	notify("abilities found: " .. #out, #out > 0 and T.Good or T.Warn)
@@ -1460,7 +1516,7 @@ ba(section(bp, "Input (BAC bypass)"))
 ba((button(bp, "MAX STEALTH", function()
 	Config.InputMode = "Keypress"; Config.ActionsPerSec = 45; Config.BatchMode = "Normal"
 	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.13
-	Config.SpeedAssist = true; Config.AbilityGuard = true
+	Config.SpeedAssist = true; Config.AbilityGuard = true; Config.SmartTap = true; Config.ExtraPresses = 1
 	Config.Headless = false; Config.Particles = false; Config.BallRecolor = false
 	notify("stealth armed", T.Good)
 end)))
@@ -1468,6 +1524,7 @@ ba((button(bp, "MAX SPEED", function()
 	Config.InputMode = "Keypress"; Config.ActionsPerSec = 90; Config.BatchMode = "Extremely Fast"
 	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.11
 	Config.SpeedAssist = true; Config.FastBoost = 0.8; Config.AbilityGuard = true; Config.BoostMult = 2.0
+	Config.SmartTap = true; Config.ExtraPresses = 1
 	notify("speed armed", T.Good)
 end)))
 ba((button(bp, "Show Input Backend", function()
