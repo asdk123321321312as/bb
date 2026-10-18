@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + adaptive parry + smart one-tap + move-assist + korblox(auto)
+    keypress bypass + smart one-tap + move-assist + real korblox bundle leg
     menu: RightShift
 --]]
 
@@ -21,7 +21,7 @@ local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
 
-local CONFIG_VER = 7
+local CONFIG_VER = 8
 
 --=============================================================
 -- CONFIG
@@ -37,9 +37,9 @@ local Config = {
 
 	SmartTap      = true,
 	ExtraPresses  = 1,
-	MinRepressGap = 0.06,
+	MinRepressGap = 0.09,
 
-	MoveAssist    = true,   -- реакция на рывок/прыжок/телепорт/клэш
+	MoveAssist    = true,
 
 	AutoRadius    = true,
 	LeadTime      = 0.11,
@@ -67,8 +67,11 @@ local Config = {
 	RingThick     = 0.06,
 	RingOpacity   = 0.3,
 
+	-- korblox
 	Korblox        = false,
+	KorbloxMethod  = "Bundle",     -- Bundle (настоящая нога) | Mesh (шип)
 	KorbloxSide    = "Right",
+	KorbloxLegId   = 139607718,    -- asset id ноги из bundle 192
 	KorbloxMesh    = "rbxassetid://169177037",
 	KorbloxTexture = "",
 	KorbloxThin    = 0.55,
@@ -76,7 +79,7 @@ local Config = {
 	KorbloxColor   = "Dark",
 	KorbloxFullLeg = true,
 	KorbloxHideFoot= true,
-	KorbloxPlain   = true,   -- фолбэк без меша, если ничего не грузится
+	KorbloxPlain   = true,
 
 	SpeedBoost    = false,
 	WalkSpeed     = 45,
@@ -170,6 +173,8 @@ local function saveConfig()
 end
 
 local function resetKorbloxConfig()
+	Config.KorbloxMethod  = "Bundle"
+	Config.KorbloxLegId   = 139607718
 	Config.KorbloxMesh    = "rbxassetid://169177037"
 	Config.KorbloxTexture = ""
 	Config.KorbloxThin    = 0.55
@@ -489,8 +494,9 @@ local E = {
 	prevSpeed = nil, prevSpeedT = 0, boostUntil = 0, boosted = false,
 	ability = "-", seenAbility = {}, seenCount = 0,
 	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
+	pressVel = nil, unstableResetAt = 0,
 	lastRootPos = nil, tpUntil = 0, unstable = false, moveState = "-",
-	korbloxMeshOk = nil, korbloxDiag = "-",
+	korbloxMeshOk = nil, lastBundleApply = 0,
 }
 
 local function performParry()
@@ -535,11 +541,10 @@ local function actionCooldown()
 		cd = cd * (1 - 0.6 * math.clamp(Config.FastBoost, 0, 1))
 	end
 	if E.boosted then cd = cd * 0.5 end
-	if E.unstable then cd = cd * 0.7 end
 	return math.max(0.008, cd + (math.random(-1, 2) / 1000))
 end
 
-local function canPress(ball, now)
+local function canPress(ball, now, threat)
 	if now - E.lastAction < actionCooldown() then return false end
 	if not Config.SmartTap then return true end
 
@@ -548,9 +553,8 @@ local function canPress(ball, now)
 	end
 
 	local gap = math.clamp(Config.MinRepressGap, 0.02, 0.5)
+	if E.unstable then gap = math.max(gap, 0.10) end
 	if now - (E.pressAt or 0) < gap then return false end
-
-	if E.unstable then return true end   -- при рывке/прыжке не ограничиваем
 
 	if not E.ballLeft and E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) and not E.emergency then
 		return false
@@ -558,12 +562,13 @@ local function canPress(ball, now)
 	return true
 end
 
-local function sendAction(ball)
+local function sendAction(ball, threat)
 	local now = tick()
-	if not canPress(ball, now) then return false end
+	if not canPress(ball, now, threat) then return false end
 	if Config.SmartTap then
 		E.pressCount += 1
 		E.pressAt = now
+		if threat then E.pressVel = threat.velocity end
 		if E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) then E.ballLeft = false end
 	end
 	E.lastAction = now
@@ -574,24 +579,36 @@ local function sendAction(ball)
 	return true
 end
 
+-- мяч улетел? (разворот вектора / скачок скорости / дистанция / остановка)
 local function updateArm(ball, threat, radius)
 	local now = tick()
 	if ball ~= E.pressBall then
 		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false
 		return
 	end
-	if E.unstable then
-		E.ballLeft = true
-		E.pressCount = 0
-		return
-	end
-	local gone = (threat.dot < -0.15 and threat.speed > 2)
-		or (threat.distance > radius * 1.35)
-		or (threat.speed < 3)
+
+	local gone = false
+	if E.pressVel and (threat.velocity - E.pressVel).Magnitude > 22 then gone = true end  -- дефлект: мгновенный скачок
+	if threat.dot < -0.15 and threat.speed > 2 then gone = true end
+	if threat.distance > radius * 1.35 then gone = true end
+	if threat.speed < 3 then gone = true end
+
 	if gone then
 		E.ballLeft = true
 		E.pressCount = 0
+		E.pressVel = nil
 	end
+
+	if E.unstable then
+		-- в рывке не сбрасываем каждый кадр, иначе получается очередь нажатий
+		if now - (E.unstableResetAt or 0) > 0.22 then
+			E.pressCount = 0
+			E.ballLeft = true
+			E.unstableResetAt = now
+		end
+		return
+	end
+
 	E.emergency = (threat.distance < radius * 0.55) and (now - (E.pressAt or 0) > 0.10)
 	if now - (E.pressAt or 0) > 0.30 then
 		E.pressCount = 0
@@ -668,7 +685,6 @@ local function computeThreat(ball, root)
 	local rootVel = root.AssemblyLinearVelocity or Vector3.zero
 	local now = tick()
 
-	-- детект рывка / прыжка / телепорта
 	local moved = (playerPos - (E.lastRootPos or playerPos)).Magnitude
 	E.lastRootPos = playerPos
 	if moved > 6 then E.tpUntil = now + 0.35 end
@@ -678,7 +694,6 @@ local function computeThreat(ball, root)
 	E.unstable = (dashing or airborne or tp)
 	E.moveState = tp and "tp" or (dashing and "dash" or (airborne and "air" or "-"))
 
-	-- дистанция с ослабленным Y (в прыжке/рывке вертикаль не должна мешать)
 	local d = playerPos - ballPos
 	local wy = E.unstable and 0.30 or 0.55
 	local distance = Vector3.new(d.X, d.Y * wy, d.Z).Magnitude
@@ -703,7 +718,6 @@ local function computeThreat(ball, root)
 
 	local dirToPlayer = (distance > 0.01) and d.Unit or Vector3.new(0,0,1)
 	local dot = dirToPlayer:Dot(velocity.Unit)
-	-- сближение в системе игрока (учитывает наш рывок)
 	local relVel = velocity - rootVel
 	local closing = relVel:Dot(dirToPlayer)
 
@@ -889,9 +903,8 @@ local function step(dt)
 	if E.unstable then horizon = horizon + 0.06 end
 	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
 
-	-- РЫВОК / ПРЫЖОК / ТП: бьём просто по факту нахождения мяча в круге
 	if E.unstable and Config.MoveAssist then
-		if threat.distance <= radius * 1.05 then sendAction(ball); return end
+		if threat.distance <= radius * 1.05 then sendAction(ball, threat); return end
 	end
 
 	local dirOk = E.unstable
@@ -903,30 +916,17 @@ local function step(dt)
 		local closing = math.max(threat.closing, threat.speed * 0.5, 1)
 		local tCross = (threat.distance - radius) / closing
 		E.lead = tCross
-		if tCross <= transit and dirOk then sendAction(ball); return end
+		if tCross <= transit and dirOk then sendAction(ball, threat); return end
 	else
-		if threat.distance <= radius and dirOk then sendAction(ball); return end
+		if threat.distance <= radius and dirOk then sendAction(ball, threat); return end
 	end
 
 	local futurePlayer = root.Position + threat.rootVel * transit
 	local curveComp = 0.5 * threat.accel * (transit * transit)
 	if curveComp.Magnitude > 15 then curveComp = curveComp.Unit * 15 end
 	local futureBall = ball.Position + threat.velocity * transit + curveComp
-	if (futurePlayer - futureBall).Magnitude <= radius and dirOk then sendAction(ball) end
+	if (futurePlayer - futureBall).Magnitude <= radius and dirOk then sendAction(ball, threat) end
 end
-
-bind(RunService.Heartbeat, function()
-	if E.lastBall and E.lastBall.Parent then
-		local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-		if root then
-			local d = (E.lastBall.Position - root.Position).Magnitude
-			local v = E.lastBall.AssemblyLinearVelocity
-			if d > 32 and v.Magnitude > 1 and v.Unit:Dot((root.Position - E.lastBall.Position).Unit) < -0.2 then
-				E.released = true
-			end
-		end
-	end
-end)
 
 --=============================================================
 -- PARRY RING
@@ -1103,6 +1103,7 @@ end
 bind(LP.CharacterAdded, function()
 	task.wait(0.6); pcall(applyHeadless)
 	E.lastRootPos = nil
+	E.korbloxMeshOk = nil
 end)
 
 --=============================================================
@@ -1146,7 +1147,7 @@ local function restoreSpeed()
 end
 
 --=============================================================
--- KORBLOX (с проверкой загрузки меша + plain-фолбэк)
+-- KORBLOX
 --=============================================================
 local KORBLOX_TAG = "SSKorblox"
 local korbloxSaved = {}
@@ -1166,6 +1167,9 @@ local function korbloxWantMesh()
 end
 local function korbloxWantColor()
 	return KORBLOX_COLORS[Config.KorbloxColor] or KORBLOX_COLORS.Dark
+end
+local function korbloxLegId()
+	return tonumber(tostring(Config.KorbloxLegId):match("%d+")) or 139607718
 end
 
 local function findSideParts(side)
@@ -1224,12 +1228,48 @@ local function hidePart(part)
 	part.Transparency = 1
 end
 
-local function applyKorblox()
+-- ОСНОВНОЙ СПОСОБ: настоящая нога из bundle через HumanoidDescription
+local function applyBundleLeg()
+	local hum = curHum()
+	if not hum then return false end
+	local id = korbloxLegId()
+	local ok, err = pcall(function()
+		local desc = hum:GetAppliedDescription()
+		if Config.KorbloxSide == "Right" or Config.KorbloxSide == "Both" then desc.RightLeg = id end
+		if Config.KorbloxSide == "Left"  or Config.KorbloxSide == "Both" then desc.LeftLeg  = id end
+		hum:ApplyDescription(desc)
+	end)
+	E.lastBundleApply = tick()
+	if not ok then notify("bundle leg error: " .. tostring(err), T.Bad) end
+	return ok
+end
+
+local function bundleLegOk()
+	local id = tostring(korbloxLegId())
+	local parts = findSideParts(Config.KorbloxSide)
+	if #parts == 0 then return true end
+	local checked = 0
+	for _, p in ipairs(parts) do
+		if p.Name:lower():find("leg", 1, true) then
+			checked += 1
+			local mid
+			if p:IsA("MeshPart") then
+				mid = p.MeshId
+			else
+				local m = p:FindFirstChildOfClass("SpecialMesh")
+				mid = m and m.MeshId
+			end
+			if mid and not tostring(mid):find(id, 1, true) then return false end
+		end
+	end
+	return checked == 0
+end
+
+-- МЕШ-СПОСОБ (шип)
+local function applyMeshKorblox()
 	local char = LP.Character
 	if not char then return end
 	restoreKorblox()
-	if not Config.Korblox then return end
-
 	local parts = findSideParts(Config.KorbloxSide)
 	local legs, feet = {}, {}
 	for _, d in ipairs(parts) do
@@ -1244,10 +1284,7 @@ local function applyKorblox()
 	local th = math.clamp(Config.KorbloxThin, 0.05, 1.6)
 	local sc = math.clamp(Config.KorbloxScale, 0.1, 2.5)
 	local col = korbloxWantColor()
-
-	-- mesh-режим только если меш реально загрузился
-	local meshMode = (E.korbloxMeshOk == true)
-		or (E.korbloxMeshOk == nil and not Config.KorbloxPlain)
+	local meshMode = (E.korbloxMeshOk == true) or (E.korbloxMeshOk == nil and not Config.KorbloxPlain)
 
 	if meshMode then
 		local meshId = korbloxWantMesh()
@@ -1285,10 +1322,10 @@ local function applyKorblox()
 			for _, f in ipairs(feet) do hidePart(f) end
 		end
 	else
-		-- plain-режим: тонкая тёмная нога, ничего не пропадает
 		for _, leg in ipairs(legs) do
 			korbloxSaved[leg] = {size = leg.Size, trans = leg.Transparency, color = leg.Color}
-			leg.Size = Vector3.new(leg.Size.X * math.max(th, 0.3), leg.Size.Y * sc, leg.Size.Z * math.max(th, 0.3))
+			local w = math.max(th, 0.3)
+			leg.Size = Vector3.new(leg.Size.X * w, leg.Size.Y * sc, leg.Size.Z * w)
 			leg.Transparency = 0
 			leg.Color = col
 		end
@@ -1298,26 +1335,16 @@ local function applyKorblox()
 	end
 end
 
-local function korbloxOk()
-	local char = LP.Character
-	if not char then return true end
-	local parts = findSideParts(Config.KorbloxSide)
-	if #parts == 0 then return true end
-	local leg
-	for _, p in ipairs(parts) do
-		if not p.Name:lower():find("foot", 1, true) then leg = p; break end
+local function applyKorblox()
+	if not Config.Korblox then restoreKorblox(); return end
+	if Config.KorbloxMethod == "Mesh" then
+		applyMeshKorblox()
+	else
+		restoreKorblox()
+		applyBundleLeg()
 	end
-	if not leg then return true end
-	local applied = korbloxSaved[leg] ~= nil or leg:FindFirstChild(KORBLOX_TAG) ~= nil
-	if Config.Korblox ~= applied then return false end
-	if not Config.Korblox then return true end
-	if E.korbloxMeshOk == true and leg:IsA("MeshPart") then
-		return leg.MeshId == korbloxWantMesh()
-	end
-	return true
 end
 
--- проверка загрузки меша через PreloadAsync
 local function testMeshAsset(meshId)
 	local p = Instance.new("MeshPart")
 	p.MeshId = meshId
@@ -1341,7 +1368,7 @@ local function autoDetectMesh()
 	if detecting then return end
 	detecting = true
 	E.korbloxMeshOk = nil
-	notify("проверяю меши коробокса...", T.Dim)
+	notify("проверяю меши...", T.Dim)
 	task.spawn(function()
 		local list = {}
 		if Config.KorbloxMesh ~= "" then table.insert(list, Config.KorbloxMesh) end
@@ -1353,8 +1380,8 @@ local function autoDetectMesh()
 				Config.KorbloxMesh = m
 				E.korbloxMeshOk = true
 				detecting = false
-				applyKorblox()
-				notify("korblox mesh OK: " .. m, T.Good)
+				if Config.KorbloxMethod == "Mesh" then applyMeshKorblox() end
+				notify("mesh OK: " .. m, T.Good)
 				print("[" .. TITLE .. "] korblox mesh OK: " .. m)
 				return
 			end
@@ -1362,9 +1389,8 @@ local function autoDetectMesh()
 		end
 		E.korbloxMeshOk = false
 		detecting = false
-		applyKorblox()
-		notify("меши не грузятся -> plain нога", T.Warn)
-		print("[" .. TITLE .. "] no korblox mesh loaded")
+		if Config.KorbloxMethod == "Mesh" then applyMeshKorblox() end
+		notify("меши не грузятся -> plain", T.Warn)
 	end)
 end
 
@@ -1381,26 +1407,17 @@ local function diagnoseKorblox()
 	for _, p in ipairs(parts) do
 		table.insert(found, p.Name .. "|" .. tostring(p:IsA("MeshPart") and p.MeshId or "part"))
 	end
-	print("[" .. TITLE .. "] rig=" .. tostring(hum and hum.RigType))
+	print("[" .. TITLE .. "] rig=" .. tostring(hum and hum.RigType) .. " method=" .. Config.KorbloxMethod)
 	print("[" .. TITLE .. "] parts: " .. table.concat(names, ", "))
 	print("[" .. TITLE .. "] matched: " .. table.concat(found, ", "))
-	print("[" .. TITLE .. "] meshOk=" .. tostring(E.korbloxMeshOk))
+	print("[" .. TITLE .. "] bundleOk=" .. tostring(bundleLegOk()) .. " meshOk=" .. tostring(E.korbloxMeshOk))
 	notify("diag в консоль (" .. #parts .. " частей ноги)", #parts > 0 and T.Good or T.Bad)
 end
 
-local function applyRealBundleLeg()
-	local hum = curHum()
-	if not hum then notify("no humanoid", T.Bad); return end
-	local ok, err = pcall(function()
-		local desc = hum:GetAppliedDescription()
-		if Config.KorbloxSide == "Right" or Config.KorbloxSide == "Both" then desc.RightLeg = 139607718 end
-		if Config.KorbloxSide == "Left"  or Config.KorbloxSide == "Both" then desc.LeftLeg  = 139607718 end
-		hum:ApplyDescription(desc)
-	end)
-	notify(ok and "bundle leg applied" or ("failed: " .. tostring(err)), ok and T.Good or T.Bad)
-end
-
-bind(LP.CharacterAdded, function() task.wait(0.9); pcall(applyKorblox) end)
+bind(LP.CharacterAdded, function()
+	task.wait(1.2)
+	if Config.Korblox then pcall(applyKorblox) end
+end)
 
 --=============================================================
 -- SKY PARTICLES
@@ -1592,7 +1609,7 @@ ca((toggle(cp, "Dash / Jump / TP Assist", Config.MoveAssist, function(v) Config.
 ca(section(cp, "Anti Double-Hit"))
 ca((toggle(cp, "Smart One-Tap (no false clicks)", Config.SmartTap, function(v) Config.SmartTap = v end)))
 ca((slider(cp, "Extra Presses", 0, 3, Config.ExtraPresses, 0, function(v) Config.ExtraPresses = v end)))
-ca((slider(cp, "Re-press Gap (s)", 0.02, 0.25, Config.MinRepressGap, 2, function(v) Config.MinRepressGap = v end)))
+ca((slider(cp, "Re-press Gap (s)", 0.02, 0.30, Config.MinRepressGap, 2, function(v) Config.MinRepressGap = v end)))
 
 ca(section(cp, "Abilities"))
 ca((toggle(cp, "Ability Guard", Config.AbilityGuard, function(v) Config.AbilityGuard = v end)))
@@ -1693,13 +1710,24 @@ va(section(vp, "Korblox Deathspeaker Leg"))
 va((toggle(vp, "Wear Korblox Leg", Config.Korblox, function(v)
 	Config.Korblox = v
 	applyKorblox()
-	if v and E.korbloxMeshOk == nil then autoDetectMesh() end
+	if v and Config.KorbloxMethod == "Mesh" and E.korbloxMeshOk == nil then autoDetectMesh() end
+end)))
+va((dropdown(vp, "Method", {"Bundle", "Mesh"}, Config.KorbloxMethod, function(v)
+	Config.KorbloxMethod = v
+	E.korbloxMeshOk = nil
+	applyKorblox()
+	if v == "Mesh" then autoDetectMesh() end
 end)))
 va((dropdown(vp, "Side", {"Right", "Left", "Both"}, Config.KorbloxSide, function(v) Config.KorbloxSide = v; applyKorblox() end)))
+va((textbox(vp, "Leg Asset ID", tostring(Config.KorbloxLegId), "139607718", function(v)
+	Config.KorbloxLegId = tonumber(tostring(v):match("%d+")) or 139607718
+	applyKorblox()
+end)))
+
 local presetNames = {}
 for _, p in ipairs(KORBLOX_PRESETS) do table.insert(presetNames, p.name) end
 table.insert(presetNames, "Custom")
-va((dropdown(vp, "Mesh Preset", presetNames, "Korblox A", function(v)
+va((dropdown(vp, "Mesh Preset (Mesh mode)", presetNames, "Korblox A", function(v)
 	for _, p in ipairs(KORBLOX_PRESETS) do
 		if p.name == v then
 			Config.KorbloxMesh = p.mesh
@@ -1710,25 +1738,23 @@ va((dropdown(vp, "Mesh Preset", presetNames, "Korblox A", function(v)
 		end
 	end
 end)))
-va((textbox(vp, "Mesh ID", Config.KorbloxMesh, "rbxassetid://...", function(v)
+va((textbox(vp, "Mesh ID (Mesh mode)", Config.KorbloxMesh, "rbxassetid://...", function(v)
 	Config.KorbloxMesh = v; E.korbloxMeshOk = true; applyKorblox()
 end)))
-va((textbox(vp, "Texture ID", Config.KorbloxTexture, "rbxassetid://...", function(v) Config.KorbloxTexture = v; applyKorblox() end)))
-va((dropdown(vp, "Spike Color", {"Dark","Black","Teal","BoneWhite","Gray"}, Config.KorbloxColor, function(v) Config.KorbloxColor = v; applyKorblox() end)))
-va((toggle(vp, "Full Leg (бедро+голень)", Config.KorbloxFullLeg, function(v) Config.KorbloxFullLeg = v; applyKorblox() end)))
-va((slider(vp, "Thinness (толщина)", 0.05, 1.6, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
-va((slider(vp, "Scale (длина)", 0.1, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
-va((toggle(vp, "Hide Foot", Config.KorbloxHideFoot, function(v) Config.KorbloxHideFoot = v; applyKorblox() end)))
-va((toggle(vp, "Plain Fallback (без меша)", Config.KorbloxPlain, function(v) Config.KorbloxPlain = v; applyKorblox() end)))
+va((dropdown(vp, "Spike Color (Mesh mode)", {"Dark","Black","Teal","BoneWhite","Gray"}, Config.KorbloxColor, function(v) Config.KorbloxColor = v; applyKorblox() end)))
+va((toggle(vp, "Full Leg (Mesh mode)", Config.KorbloxFullLeg, function(v) Config.KorbloxFullLeg = v; applyKorblox() end)))
+va((slider(vp, "Thinness (Mesh mode)", 0.05, 1.6, Config.KorbloxThin, 2, function(v) Config.KorbloxThin = v; applyKorblox() end)))
+va((slider(vp, "Scale (Mesh mode)", 0.1, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
+va((toggle(vp, "Hide Foot (Mesh mode)", Config.KorbloxHideFoot, function(v) Config.KorbloxHideFoot = v; applyKorblox() end)))
+va((toggle(vp, "Plain Fallback (Mesh mode)", Config.KorbloxPlain, function(v) Config.KorbloxPlain = v; applyKorblox() end)))
 va((button(vp, "AUTO FIND LEG MESH", function() autoDetectMesh() end)))
 va((button(vp, "Diagnose", function() diagnoseKorblox() end)))
-va((button(vp, "Try Real Bundle Leg", function() applyRealBundleLeg() end)))
-va((button(vp, "Korblox: Reapply", function() applyKorblox(); notify("korblox reapplied", T.Good) end)))
+va((button(vp, "Korblox: Reapply", function() applyKorblox(); notify("reapplied", T.Good) end)))
 va((button(vp, "Korblox: Reset Defaults", function()
 	resetKorbloxConfig(); E.korbloxMeshOk = nil; applyKorblox(); saveConfig()
-	notify("reset -> запускаю авто-поиск", T.Good); autoDetectMesh()
+	notify("reset -> Bundle", T.Good)
 end)))
-va((button(vp, "Korblox: Remove", function() restoreKorblox(); notify("korblox removed", T.Good) end)))
+va((button(vp, "Korblox: Remove", function() restoreKorblox(); notify("removed", T.Good) end)))
 
 va(section(vp, "Ball Look"))
 va((toggle(vp, "Recolor Ball", Config.BallRecolor, function(v) Config.BallRecolor = v end)))
@@ -1830,10 +1856,20 @@ task.spawn(function() while gui.Parent do pcall(updateExtras); task.wait(0.35) e
 task.spawn(function() while gui.Parent do pcall(applyParticles); pcall(applyBallSkin); task.wait(0.5) end end)
 task.spawn(function() while gui.Parent do findRemote(); task.wait(5) end end)
 
+-- self-heal коробокса
 task.spawn(function()
 	while gui.Parent do
-		pcall(function() if not korbloxOk() then applyKorblox() end end)
-		task.wait(0.8)
+		if Config.Korblox then
+			if Config.KorbloxMethod == "Mesh" then
+				pcall(applyMeshKorblox)
+			else
+				local now = tick()
+				if now - (E.lastBundleApply or 0) > 2 and not bundleLegOk() then
+					pcall(applyBundleLeg)
+				end
+			end
+		end
+		task.wait(1.2)
 	end
 end)
 
@@ -1888,13 +1924,9 @@ task.spawn(function()
 	task.wait(0.5)
 	pcall(applySky, Config.SkyPreset)
 	pcall(applyHeadless)
-	if Config.Korblox then
-		applyKorblox()
-		autoDetectMesh()
-	end
+	if Config.Korblox then applyKorblox() end
 	if Config.SpeedBoost then pcall(applySpeed) end
 	if Config.SkyParticles then pcall(updateSkyFx) end
 	if Config.FpsBoost then pcall(applyFpsBoost, true) end
-	notify(TITLE .. " loaded | abilities: " .. #discovered .. " | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
-	print("[" .. TITLE .. "] discovered abilities=" .. #discovered .. " keypress=" .. tostring(hasKeypress))
+	notify(TITLE .. " loaded | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
 end)
