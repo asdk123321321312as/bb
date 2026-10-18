@@ -13,12 +13,15 @@ local UserInputService = cloneref(game:GetService("UserInputService"))
 local TweenService     = cloneref(game:GetService("TweenService"))
 local Lighting         = cloneref(game:GetService("Lighting"))
 local ReplicatedStorage= cloneref(game:GetService("ReplicatedStorage"))
+local ContentProvider  = cloneref(game:GetService("ContentProvider"))
 local Stats            = cloneref(game:GetService("Stats"))
 local HttpService      = cloneref(game:GetService("HttpService"))
 
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local TITLE  = "ScriptSleep"
+local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
+
+local CONFIG_VER = 5
 
 --=============================================================
 -- CONFIG
@@ -59,15 +62,15 @@ local Config = {
 	RingThick     = 0.06,
 	RingOpacity   = 0.3,
 
-	-- korblox (Deathspeaker spike)
+	-- korblox
 	Korblox        = false,
 	KorbloxSide    = "Right",
 	KorbloxMesh    = "rbxassetid://169177037",
 	KorbloxTexture = "",
-	KorbloxThin    = 0.40,     -- толщина шипа
-	KorbloxScale   = 0.55,     -- длина шипа
-	KorbloxColor   = "Dark",   -- Dark / Black / Teal / BoneWhite / Gray
-	KorbloxFullLeg = false,    -- false = только бедро (как в bundle)
+	KorbloxThin    = 0.55,
+	KorbloxScale   = 1.00,
+	KorbloxColor   = "Dark",
+	KorbloxFullLeg = true,
 	KorbloxHideFoot= true,
 
 	SpeedBoost    = false,
@@ -157,17 +160,35 @@ local function saveConfig()
 	if not hasFS then return end
 	local out = {}
 	for k,v in pairs(Config) do out[k] = ser(v) end
+	out.__ver = CONFIG_VER
 	pcall(function() writefile(FILE, HttpService:JSONEncode(out)) end)
 end
+
+-- сброс коробокса на рабочие значения (когда старый конфиг)
+local function resetKorbloxConfig()
+	Config.KorbloxMesh    = "rbxassetid://169177037"
+	Config.KorbloxTexture = ""
+	Config.KorbloxThin    = 0.55
+	Config.KorbloxScale   = 1.00
+	Config.KorbloxColor   = "Dark"
+	Config.KorbloxFullLeg = true
+	Config.KorbloxHideFoot= true
+	Config.KorbloxSide    = "Right"
+end
+
 local function loadConfig()
 	if not hasFS then return end
 	local ok, data = pcall(readfile, FILE)
 	if not ok or not data then return end
 	local ok2, dec = pcall(function() return HttpService:JSONDecode(data) end)
 	if not ok2 or type(dec) ~= "table" then return end
+	local ver = tonumber(dec.__ver) or 0
 	for k,v in pairs(dec) do
-		if Config[k] ~= nil then local d = deser(v); if d ~= nil then Config[k] = d end end
+		if k ~= "__ver" and Config[k] ~= nil then
+			local d = deser(v); if d ~= nil then Config[k] = d end
+		end
 	end
+	if ver < CONFIG_VER then resetKorbloxConfig() end
 end
 local sq = false
 local function queueSave()
@@ -1030,7 +1051,7 @@ local function restoreSpeed()
 end
 
 --=============================================================
--- KORBLOX DEATHSPEAKER LEG (тонкий тёмный шип)
+-- KORBLOX DEATHSPEAKER LEG
 --=============================================================
 local KORBLOX_TAG = "SSKorblox"
 local korbloxSaved = {}
@@ -1130,7 +1151,6 @@ local function applyKorblox()
 		return
 	end
 
-	-- по умолчанию берём только бедро (верхняя часть ноги) — как в bundle
 	local useLegs = legs
 	if not Config.KorbloxFullLeg and #legs > 1 then useLegs = {legs[1]} end
 
@@ -1160,7 +1180,6 @@ local function applyKorblox()
 		end
 	end
 
-	-- всё остальное на этой стороне — прячем
 	for _, leg in ipairs(legs) do
 		if not table.find(useLegs, leg) then hidePart(leg) end
 	end
@@ -1183,9 +1202,7 @@ local function korbloxOk()
 	if Config.Korblox ~= applied then return false end
 	if not Config.Korblox then return true end
 	local want = korbloxWantMesh()
-	if leg:IsA("MeshPart") then
-		return leg.MeshId == want
-	end
+	if leg:IsA("MeshPart") then return leg.MeshId == want end
 	local m = leg:FindFirstChild(KORBLOX_TAG)
 	return m ~= nil and m.MeshId == want
 end
@@ -1200,6 +1217,17 @@ local function applyRealBundleLeg()
 		hum:ApplyDescription(desc)
 	end)
 	notify(ok and "bundle leg applied" or ("failed: " .. tostring(err)), ok and T.Good or T.Bad)
+end
+
+local function verifyKorbloxMesh()
+	task.spawn(function()
+		local char = LP.Character
+		if not char then return end
+		local parts = findSideParts(Config.KorbloxSide)
+		if #parts == 0 then notify("no leg part", T.Bad); return end
+		local ok = pcall(function() ContentProvider:PreloadAsync({parts[1]}) end)
+		notify(ok and "mesh loaded ok" or "mesh may be broken", ok and T.Good or T.Bad)
+	end)
 end
 
 bind(LP.CharacterAdded, function() task.wait(0.9); pcall(applyKorblox) end)
@@ -1508,7 +1536,12 @@ va((slider(vp, "Thinness (толщина)", 0.05, 1.6, Config.KorbloxThin, 2, fu
 va((slider(vp, "Scale (длина)", 0.1, 2.5, Config.KorbloxScale, 2, function(v) Config.KorbloxScale = v; applyKorblox() end)))
 va((toggle(vp, "Hide Foot", Config.KorbloxHideFoot, function(v) Config.KorbloxHideFoot = v; applyKorblox() end)))
 va((button(vp, "Try Real Bundle Leg", function() applyRealBundleLeg() end)))
+va((button(vp, "Verify Mesh", function() verifyKorbloxMesh() end)))
 va((button(vp, "Korblox: Reapply", function() applyKorblox(); notify("korblox reapplied", T.Good) end)))
+va((button(vp, "Korblox: Reset Defaults", function()
+	resetKorbloxConfig(); applyKorblox(); saveConfig()
+	notify("korblox reset to working defaults", T.Good)
+end)))
 va((button(vp, "Korblox: Remove", function() restoreKorblox(); notify("korblox removed", T.Good) end)))
 
 va(section(vp, "Ball Look"))
