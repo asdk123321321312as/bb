@@ -1,7 +1,7 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + toward+red parry + one-parry + smart one-tap + korblox
-    menu: RightShift
+    keypress bypass + red+red+dist parry + one-parry + korblox
+    menu: RightShift   |   one-parry toggle key: H
 --]]
 
 local cloneref = cloneref or function(o) return o end
@@ -21,7 +21,7 @@ local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
 
-local CONFIG_VER = 6
+local CONFIG_VER = 7
 
 --=============================================================
 -- CONFIG
@@ -30,7 +30,7 @@ local Config = {
 	AutoParry     = true,
 	InputMode     = "Auto",
 	ParryKey      = "F",
-	ActionsPerSec = 90,
+	ActionsPerSec = 120,
 	BatchMode     = "Extremely Fast",
 	Prediction    = 0.07,
 	Horizon       = 0.5,
@@ -39,26 +39,27 @@ local Config = {
 	ExtraPresses  = 1,
 	MinRepressGap = 0.05,
 
-	-- один удар на подход (биндится, вкл/выкл кнопкой)
-	OneParry      = false,
+	-- один удар на подход (вкл/выкл кнопкой)
+	OneParry      = true,
 	OneParryKey   = Enum.KeyCode.H,
 
 	AutoRadius    = true,
+	OptimalRadius = 13,     -- основной рабочий радиус (маленький, без фейков)
+	MinRadius     = 8,
+	MaxRadius     = 26,
+	BaseRadius    = 13,
 	LeadTime      = 0.11,
-	MinRadius     = 9,
-	MaxRadius     = 50,
-	BaseRadius    = 16,
 	CrossTrigger  = true,
 	PingComp      = true,
-	BallPredCap   = 22,
+	BallPredCap   = 18,
 
 	SpeedAssist   = true,
-	FastBoost     = 0.6,
+	FastBoost     = 0.5,
 
 	AbilityGuard  = true,
 	BoostDetect   = true,
-	BoostMult     = 1.7,
-	BoostHold     = 0.7,
+	BoostMult     = 1.5,
+	BoostHold     = 0.6,
 	ShowAbility   = true,
 
 	RequireTarget = true,
@@ -486,7 +487,7 @@ local hasMouse    = pcall(function() return mouse1click end)
 local E = {
 	lastAction = 0, actions = 0, lastBall = nil, lastTime = 0,
 	lastVel = Vector3.zero, accel = Vector3.zero,
-	dist = 0, speed = 0, eta = 0, radius = 16, lead = 0, closing = 0,
+	dist = 0, speed = 0, eta = 0, radius = 13, lead = 0, closing = 0,
 	targeted = false, hot = false, mode = "-",
 	prevSpeed = nil, prevSpeedT = 0, boostUntil = 0, boosted = false,
 	ability = "-", seenAbility = {}, seenCount = 0,
@@ -529,21 +530,20 @@ end
 local function actionCooldown()
 	local rate = math.clamp(Config.ActionsPerSec, 10, 240)
 	local cd = 1 / rate
-	if Config.BatchMode == "Safe" then cd = math.max(0.050, cd)
-	elseif Config.BatchMode == "Normal" then cd = math.max(0.026, cd)
-	elseif Config.BatchMode == "Fast" then cd = math.max(0.013, cd)
-	elseif Config.BatchMode == "Extremely Fast" then cd = math.max(0.007, cd) end
+	if Config.BatchMode == "Safe" then cd = math.max(0.045, cd)
+	elseif Config.BatchMode == "Normal" then cd = math.max(0.024, cd)
+	elseif Config.BatchMode == "Fast" then cd = math.max(0.012, cd)
+	elseif Config.BatchMode == "Extremely Fast" then cd = math.max(0.006, cd) end
 	if Config.SpeedAssist and E.speed > 120 then
 		cd = cd * (1 - 0.6 * math.clamp(Config.FastBoost, 0, 1))
 	end
 	if E.boosted then cd = cd * 0.5 end
-	return math.max(0.006, cd + math.random() * 0.0015)
+	return math.max(0.005, cd + math.random() * 0.0015)
 end
 
 local function canPress(ball, now)
 	if now - E.lastAction < actionCooldown() then return false end
 
-	-- режим «один удар»: пока мяч не ушёл — больше не жмём
 	if Config.OneParry then
 		if ball ~= E.pressBall then
 			E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.onePressed = false; E.emergency = false
@@ -585,7 +585,7 @@ local function sendAction(ball)
 	return true
 end
 
--- перевзвод. при движении/в режиме «один удар» — только по реальному уходу мяча
+-- перевзвод. при движении / one-parry — только по реальному уходу мяча
 local function updateArm(ball, threat, radius)
 	local now = tick()
 	if ball ~= E.pressBall then
@@ -593,10 +593,10 @@ local function updateArm(ball, threat, radius)
 		return
 	end
 
-	local strict = Config.OneParry or E.unstable
+	local moving = (E.rootSpeed or 0) > 8
+	local strict = Config.OneParry or E.unstable or moving
 	local gone
 	if strict then
-		-- мяч должен реально уйти: по дистанции или полной остановке (не по скорости игрока)
 		gone = (threat.distance > radius * 1.5) or (threat.speed < 3)
 	else
 		gone = (threat.dot < -0.10 and threat.speed > 2)
@@ -614,7 +614,7 @@ local function updateArm(ball, threat, radius)
 		E.emergency = false
 	else
 		E.emergency = (threat.distance < radius * 0.5) and (now - (E.pressAt or 0) > 0.06)
-		local to = strict and 0.30 or 0.18
+		local to = strict and 0.28 or 0.16
 		if now - (E.pressAt or 0) > to then
 			E.pressCount = 0
 			E.ballLeft = true
@@ -716,7 +716,7 @@ local function computeThreat(ball, root)
 end
 
 --=============================================================
--- RED STATE
+-- RED STATE (приоритетный сигнал)
 --=============================================================
 local RED_ATTRS = {"Red","red","IsRed","isRed","Stun","stun","Stunned","stunned","Threat","threat","Targeted","targeted","Hit","hit"}
 
@@ -883,17 +883,17 @@ local function detectBoost(threat)
 	return now < E.boostUntil
 end
 
+-- ОПТИМАЛЬНЫЙ радиус: маленький, чуть шире только на очень быстром мяче
 local function computeRadius(threat, pingSec)
-	local net = pingSec * 0.5 + (1 / 60)
 	local spd = threat.speed
-	local curve = 1 + math.clamp((spd - 90) / 800, -0.30, 1.20) * math.clamp(Config.FastBoost, 0, 1)
-	local lead = Config.LeadTime * curve + (Config.PingComp and net or 0)
-	if Config.AutoRadius then
-		return math.clamp(spd * lead, Config.MinRadius, Config.MaxRadius)
+	if not Config.AutoRadius then return Config.BaseRadius end
+	local r = Config.OptimalRadius
+	r = r + math.clamp((spd - 110) * 0.03, 0, 7)                       -- + на высокой скорости
+	if Config.PingComp then r = r + math.clamp(spd * (pingSec * 0.5), 0, 9) end
+	if Config.SpeedAssist and spd > 130 then
+		r = r + math.clamp((spd - 130) * 0.02, 0, 5) * math.clamp(Config.FastBoost, 0, 1)
 	end
-	local r = Config.BaseRadius * curve
-	if Config.PingComp then r = r + math.clamp(spd * net, 0, Config.BallPredCap) end
-	return r
+	return math.clamp(r, Config.MinRadius, Config.MaxRadius)
 end
 
 local function step(dt)
@@ -910,6 +910,7 @@ local function step(dt)
 	E.closing = threat.approachSpeed
 
 	local rv = root.AssemblyLinearVelocity or Vector3.zero
+	E.rootSpeed = rv.Magnitude
 	local unstable = (rv.Magnitude > 22) or (math.abs(rv.Y) > 12)
 	local rp = root.Position
 	if E.lastRootPos and (rp - E.lastRootPos).Magnitude > 8 then unstable = true end
@@ -923,7 +924,7 @@ local function step(dt)
 
 	local pingSec = getPing() / 1000
 	local radius = computeRadius(threat, pingSec)
-	if unstable then radius = math.min(radius * 1.15, Config.MaxRadius * 1.8) end
+	if unstable then radius = math.min(radius * 1.15, Config.MaxRadius * 1.6) end
 
 	local boosted = false
 	if Config.AbilityGuard then boosted = detectBoost(threat) end
@@ -953,12 +954,12 @@ local function step(dt)
 	local now = tick()
 	if bothRed then E.redSeenAt = now end
 
+	-- ПРИОРИТЕТ: мяч красный + игрок красный + дистанция в радиусе.
+	-- если мяч уже совсем вплотную — бьём даже без красного (страховка)
 	local redLive = (now - (E.redSeenAt or 0)) < 4
 	local allow
-	if unstable then
-		allow = (effDist <= radius)
-	elseif redLive then
-		allow = toward and (bothRed or effDist <= math.max(radius * 0.55, 6))
+	if redLive then
+		allow = toward and ( (bothRed and effDist <= radius) or effDist <= radius * 0.6 )
 	else
 		allow = toward and (effDist <= radius)
 	end
@@ -971,9 +972,9 @@ local function step(dt)
 
 	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
 	local horizon = (Config.Horizon or 0.5) * (Config.Prediction or 0.07)
-	horizon = horizon + math.clamp((threat.speed - 150) * 0.00035, 0, 0.12)
-	if boosted then horizon = horizon + 0.06 end
-	local transit = math.clamp(pingSec * 0.5 + dtStep * 0.5 + (1 / 90) + horizon * 0.4, 0.018, 0.10)
+	horizon = horizon + math.clamp((threat.speed - 150) * 0.00035, 0, 0.10)
+	if boosted then horizon = horizon + 0.05 end
+	local transit = math.clamp(pingSec * 0.5 + dtStep * 0.5 + (1 / 90) + horizon * 0.4, 0.015, 0.09)
 
 	local dirOk = toward
 
@@ -999,7 +1000,7 @@ bind(RunService.Heartbeat, function()
 		if root then
 			local d = (E.lastBall.Position - root.Position).Magnitude
 			local v = E.lastBall.AssemblyLinearVelocity
-			if d > 30 and v.Magnitude > 1 and v.Unit:Dot((root.Position - E.lastBall.Position).Unit) < -0.15 then
+			if d > 28 and v.Magnitude > 1 and v.Unit:Dot((root.Position - E.lastBall.Position).Unit) < -0.15 then
 				E.released = true
 			end
 		end
@@ -1541,7 +1542,7 @@ local function applyFpsBoost(on)
 	else Lighting.GlobalShadows = true end
 end
 
-local hud = new("Frame", {Size=UDim2.new(0,290,0,88), Position=UDim2.new(0,12,0,12),
+local hud = new("Frame", {Size=UDim2.new(0,295,0,88), Position=UDim2.new(0,12,0,12),
 	BackgroundColor3=T.Bg, BackgroundTransparency=0.15, BorderSizePixel=0, Visible=Config.Hud, ZIndex=10}, gui)
 corner(hud,8); stroke(hud,T.Line)
 new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,5), BackgroundTransparency=1,
@@ -1619,14 +1620,14 @@ ca((button(cp, "Scan Game Abilities", function()
 	if #out > 0 then print("[" .. TITLE .. "] abilities: " .. table.concat(out, ", ")) end
 end)))
 
-ca(section(cp, "Adaptive Radius"))
-ca((toggle(cp, "Auto Radius (follow ball speed)", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
-ca((slider(cp, "Lead Time (s)", 0.03, 0.35, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
+ca(section(cp, "Radius (оптимальный)"))
+ca((toggle(cp, "Auto Radius", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
+ca((slider(cp, "Optimal Radius", 6, 30, Config.OptimalRadius, 0, function(v) Config.OptimalRadius = v end)))
 ca((slider(cp, "Min Radius", 4, 30, Config.MinRadius, 0, function(v) Config.MinRadius = v end)))
-ca((slider(cp, "Max Radius", 10, 90, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
+ca((slider(cp, "Max Radius", 10, 40, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
 ca((toggle(cp, "Cross Trigger (exact edge)", Config.CrossTrigger, function(v) Config.CrossTrigger = v end)))
 ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
-ca((slider(cp, "Fixed Radius (manual)", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
+ca((slider(cp, "Fixed Radius (manual)", 4, 40, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
 
 ca(section(cp, "Parry Circle"))
 ca((toggle(cp, "Show Circle", Config.ParryRing, function(v) Config.ParryRing = v end)))
@@ -1649,16 +1650,16 @@ local bp, ba = newTab("Bypass")
 ba(section(bp, "Input (BAC bypass)"))
 ba((button(bp, "MAX STEALTH", function()
 	Config.InputMode = "Keypress"; Config.ActionsPerSec = 60; Config.BatchMode = "Normal"
-	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.11
-	Config.SpeedAssist = true; Config.AbilityGuard = true; Config.SmartTap = true; Config.ExtraPresses = 1
+	Config.RequireTarget = true; Config.AutoRadius = true; Config.OptimalRadius = 13
+	Config.SpeedAssist = true; Config.AbilityGuard = true; Config.SmartTap = true; Config.OneParry = true
 	Config.Headless = false; Config.Particles = false; Config.BallRecolor = false
 	notify("stealth armed", T.Good)
 end)))
 ba((button(bp, "MAX SPEED", function()
-	Config.InputMode = "Keypress"; Config.ActionsPerSec = 150; Config.BatchMode = "Extremely Fast"
-	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.10
-	Config.SpeedAssist = true; Config.FastBoost = 0.8; Config.AbilityGuard = true; Config.BoostMult = 2.0
-	Config.SmartTap = true; Config.ExtraPresses = 1
+	Config.InputMode = "Keypress"; Config.ActionsPerSec = 180; Config.BatchMode = "Extremely Fast"
+	Config.RequireTarget = true; Config.AutoRadius = true; Config.OptimalRadius = 14
+	Config.SpeedAssist = true; Config.FastBoost = 0.8; Config.AbilityGuard = true; Config.BoostMult = 1.8
+	Config.SmartTap = true; Config.OneParry = true
 	notify("speed armed", T.Good)
 end)))
 ba((button(bp, "Show Input Backend", function()
