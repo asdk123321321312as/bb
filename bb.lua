@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + speed-adaptive parry + smart one-tap + korblox + ability guard
+    keypress bypass + toward+red parry + smart one-tap + korblox + ability guard
     menu: RightShift
 --]]
 
@@ -131,6 +131,7 @@ local RingColors = {
 }
 local RingHot = Color3.fromRGB(120, 255, 160)
 local RingBoost = Color3.fromRGB(255, 170, 60)
+local RingRed = Color3.fromRGB(255, 70, 70)
 
 local KORBLOX_COLORS = {
 	Dark      = Color3.fromRGB(26, 30, 32),
@@ -486,7 +487,7 @@ local E = {
 	prevSpeed = nil, prevSpeedT = 0, boostUntil = 0, boosted = false,
 	ability = "-", seenAbility = {}, seenCount = 0,
 	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
-	redB = false, redC = false,
+	redB = false, redC = false, redSeenAt = 0, toward = false, allow = false,
 }
 
 local function performParry()
@@ -582,7 +583,6 @@ local function updateArm(ball, threat, radius)
 		E.ballLeft = true
 		E.pressCount = 0
 	end
-	-- аварийный повтор если мяч уже вплотную и мы давно не жали
 	E.emergency = (threat.distance < radius * 0.5) and (now - (E.pressAt or 0) > 0.06)
 	if now - (E.pressAt or 0) > 0.18 then
 		E.pressCount = 0
@@ -684,7 +684,7 @@ local function computeThreat(ball, root)
 end
 
 --=============================================================
--- RED INFO (на удар не влияет)
+-- RED STATE (мяч+игрок красные = момент удара)
 --=============================================================
 local RED_ATTRS = {"Red","red","IsRed","isRed","Stun","stun","Stunned","stunned","Threat","threat","Targeted","targeted","Hit","hit"}
 
@@ -891,11 +891,6 @@ local function step(dt)
 	E.radius = radius
 	E.hot = threat.distance <= radius
 
-	E.redB = ballIsRed(ball)
-	E.redC = charIsRed(char)
-
-	updateArm(ball, threat, radius)
-
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
 	E.targeted = (tgt == true) or (tgt == nil and heur)
@@ -904,13 +899,33 @@ local function step(dt)
 		if tgt == nil and not heur then return end
 	end
 
-	-- мяч должен реально сближаться с игроком, а не просто висеть рядом
-	local toward = (threat.approachSpeed > 1.5 and threat.dot > 0.15)
-		or (threat.distance < radius * 0.40 and threat.speed > 4)
-	if boosted then toward = true end
+	-- мяч должен реально ЛЕТЕТЬ НА игрока
+	local toward = (threat.approachSpeed > 2.0 and threat.dot > 0.2)
 	E.toward = toward
 
-	-- короткое опережение: бьём чуть заранее, но не за 40-60 студов
+	-- красное состояние (и мяч, и игрок)
+	local ballRed = ballIsRed(ball)
+	local charRed = charIsRed(char)
+	E.redB, E.redC = ballRed, charRed
+	local bothRed = ballRed and charRed
+	local now = tick()
+	if bothRed then E.redSeenAt = now end
+
+	-- решение: бьём когда мяч летит на тебя И оба красные; страховки, чтобы не сломать автопарри
+	local redLive = (now - (E.redSeenAt or 0)) < 4
+	local allow
+	if redLive then
+		allow = toward and (bothRed or threat.distance <= math.max(radius * 0.55, 6))
+	else
+		allow = toward and (threat.distance <= radius)   -- если красный не распознаётся — обычный радиус
+	end
+	if boosted then allow = true end
+	E.allow = allow
+
+	updateArm(ball, threat, radius)
+
+	if not allow then return end
+
 	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
 	local horizon = (Config.Horizon or 0.5) * (Config.Prediction or 0.07)
 	horizon = horizon + math.clamp((threat.speed - 150) * 0.00035, 0, 0.12)
@@ -1504,13 +1519,13 @@ task.spawn(function()
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
 		hudParry.Text = string.format("in %s | acts %d | press %d | R %d | spd %d", E.mode, E.actions, E.pressCount, math.floor(E.radius), math.floor(E.speed))
-		hudParry.TextColor3 = E.boosted and RingBoost or (E.hot and T.Good or (hasKeypress and T.Dim or T.Bad))
+		hudParry.TextColor3 = E.boosted and RingBoost or ((E.redB and E.redC) and RingRed or (E.hot and T.Good or (hasKeypress and T.Dim or T.Bad)))
 		hudAbility.Visible = Config.ShowAbility and E.boosted
 		if hudAbility.Visible then hudAbility.Text = "ABILITY >> " .. tostring(E.ability) end
 		hudDebug.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
-			hudDebug.Text = string.format("d %d | close %.0f | cross %.3f | toward %s | tgt %s",
-				math.floor(E.dist), E.closing, E.lead, tostring(E.toward), tostring(E.targeted))
+			hudDebug.Text = string.format("d %d | close %.0f | toward %s | red %s/%s | allow %s",
+				math.floor(E.dist), E.closing, tostring(E.toward), tostring(E.redB), tostring(E.redC), tostring(E.allow))
 		end
 		task.wait(0.25)
 	end
@@ -1790,8 +1805,8 @@ bind(RunService.RenderStepped, function()
 		ring.Adornee = root
 		ring.Radius = r
 		ring.InnerRadius = math.max(0.05, r * (1 - Config.RingThick))
-		ring.Color3 = E.boosted and RingBoost or (E.hot and RingHot or (RingColors[Config.RingColor] or RingColors.Purple))
-		ring.Transparency = (E.hot or E.boosted) and math.max(0.05, Config.RingOpacity - 0.15) or Config.RingOpacity
+		ring.Color3 = E.boosted and RingBoost or ((E.redB and E.redC) and RingRed or (E.hot and RingHot or (RingColors[Config.RingColor] or RingColors.Purple)))
+		ring.Transparency = (E.hot or E.boosted or (E.redB and E.redC)) and math.max(0.05, Config.RingOpacity - 0.15) or Config.RingOpacity
 		ring.Visible = true
 	else
 		ring.Visible = false
