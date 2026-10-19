@@ -488,6 +488,7 @@ local E = {
 	ability = "-", seenAbility = {}, seenCount = 0,
 	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
 	redB = false, redC = false, redSeenAt = 0, toward = false, allow = false,
+	unstable = false, lastRootPos = nil,
 }
 
 local function performParry()
@@ -568,7 +569,6 @@ local function sendAction(ball)
 	return true
 end
 
--- перевзвод: снова можно бить как только мяч ушёл / отвернулся
 local function updateArm(ball, threat, radius)
 	local now = tick()
 	if ball ~= E.pressBall then
@@ -577,7 +577,7 @@ local function updateArm(ball, threat, radius)
 	end
 	local gone = (threat.dot < -0.10 and threat.speed > 2)
 		or (threat.approachSpeed < -2.0)
-		or (threat.distance > radius * 1.2)
+		or (threat.distance > radius * 1.25)
 		or (threat.speed < 3)
 	if gone then
 		E.ballLeft = true
@@ -866,7 +866,7 @@ local function computeRadius(threat, pingSec)
 end
 
 local function step(dt)
-	if not Config.AutoParry or not inMatch() then E.boosted = false; E.redB = false; E.redC = false; return end
+	if not Config.AutoParry or not inMatch() then E.boosted = false; E.redB = false; E.redC = false; E.unstable = false; return end
 	local char = LP.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
@@ -878,8 +878,23 @@ local function step(dt)
 	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
 	E.closing = threat.approachSpeed
 
+	-- НЕСТАБИЛЬНОЕ ДВИЖЕНИЕ: рывок / прыжок / телепорт -> игнорируем направление
+	local rv = root.AssemblyLinearVelocity or Vector3.zero
+	local unstable = (rv.Magnitude > 22) or (math.abs(rv.Y) > 12)
+	local rp = root.Position
+	if E.lastRootPos and (rp - E.lastRootPos).Magnitude > 8 then unstable = true end
+	E.lastRootPos = rp
+	E.unstable = unstable
+
+	-- дистанция с ослабленным Y, чтобы прыжок не выкидывал мяч из радиуса
+	local dy = math.abs(rp.Y - ball.Position.Y)
+	local horiz = (Vector3.new(rp.X, 0, rp.Z) - Vector3.new(ball.Position.X, 0, ball.Position.Z)).Magnitude
+	local distW = math.sqrt(horiz * horiz + (dy * 0.3) * (dy * 0.3))
+	local effDist = unstable and math.min(threat.distance, distW) or threat.distance
+
 	local pingSec = getPing() / 1000
 	local radius = computeRadius(threat, pingSec)
+	if unstable then radius = math.min(radius * 1.15, Config.MaxRadius * 1.8) end
 
 	local boosted = false
 	if Config.AbilityGuard then boosted = detectBoost(threat) end
@@ -889,21 +904,20 @@ local function step(dt)
 	end
 
 	E.radius = radius
-	E.hot = threat.distance <= radius
+	E.hot = effDist <= radius
 
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
 	E.targeted = (tgt == true) or (tgt == nil and heur)
-	if Config.RequireTarget and not boosted then
+	if Config.RequireTarget and not boosted and not unstable then
 		if tgt == false then return end
 		if tgt == nil and not heur then return end
 	end
 
-	-- мяч должен реально ЛЕТЕТЬ НА игрока
-	local toward = (threat.approachSpeed > 2.0 and threat.dot > 0.2)
+	-- направление: при нестабильном движении не проверяем, бьём по дистанции
+	local toward = unstable or (threat.approachSpeed > 2.0 and threat.dot > 0.2)
 	E.toward = toward
 
-	-- красное состояние (и мяч, и игрок)
 	local ballRed = ballIsRed(ball)
 	local charRed = charIsRed(char)
 	E.redB, E.redC = ballRed, charRed
@@ -911,13 +925,14 @@ local function step(dt)
 	local now = tick()
 	if bothRed then E.redSeenAt = now end
 
-	-- решение: бьём когда мяч летит на тебя И оба красные; страховки, чтобы не сломать автопарри
 	local redLive = (now - (E.redSeenAt or 0)) < 4
 	local allow
-	if redLive then
-		allow = toward and (bothRed or threat.distance <= math.max(radius * 0.55, 6))
+	if unstable then
+		allow = (effDist <= radius)
+	elseif redLive then
+		allow = toward and (bothRed or effDist <= math.max(radius * 0.55, 6))
 	else
-		allow = toward and (threat.distance <= radius)   -- если красный не распознаётся — обычный радиус
+		allow = toward and (effDist <= radius)
 	end
 	if boosted then allow = true end
 	E.allow = allow
@@ -936,11 +951,11 @@ local function step(dt)
 
 	if Config.CrossTrigger then
 		local closing = math.max(threat.approachSpeed, threat.speed * 0.5, 1)
-		local tCross = (threat.distance - radius) / closing
+		local tCross = (effDist - radius) / closing
 		E.lead = tCross
 		if tCross <= transit and dirOk then sendAction(ball); return end
 	else
-		if threat.distance <= radius and dirOk then sendAction(ball); return end
+		if effDist <= radius and dirOk then sendAction(ball); return end
 	end
 
 	local futurePlayer = root.Position + root.AssemblyLinearVelocity * transit
@@ -1498,7 +1513,7 @@ local function applyFpsBoost(on)
 	else Lighting.GlobalShadows = true end
 end
 
-local hud = new("Frame", {Size=UDim2.new(0,285,0,88), Position=UDim2.new(0,12,0,12),
+local hud = new("Frame", {Size=UDim2.new(0,290,0,88), Position=UDim2.new(0,12,0,12),
 	BackgroundColor3=T.Bg, BackgroundTransparency=0.15, BorderSizePixel=0, Visible=Config.Hud, ZIndex=10}, gui)
 corner(hud,8); stroke(hud,T.Line)
 new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,5), BackgroundTransparency=1,
@@ -1524,8 +1539,8 @@ task.spawn(function()
 		if hudAbility.Visible then hudAbility.Text = "ABILITY >> " .. tostring(E.ability) end
 		hudDebug.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
-			hudDebug.Text = string.format("d %d | close %.0f | toward %s | red %s/%s | allow %s",
-				math.floor(E.dist), E.closing, tostring(E.toward), tostring(E.redB), tostring(E.redC), tostring(E.allow))
+			hudDebug.Text = string.format("d %d | close %.0f | unst %s | toward %s | red %s/%s",
+				math.floor(E.dist), E.closing, tostring(E.unstable), tostring(E.toward), tostring(E.redB), tostring(E.redC))
 		end
 		task.wait(0.25)
 	end
