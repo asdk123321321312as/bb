@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + speed-adaptive parry + smart one-tap + korblox + ability guard
+    keypress bypass + speed-adaptive radius + smart one-tap + korblox + ability guard
     menu: RightShift
 --]]
 
@@ -21,7 +21,7 @@ local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
 
-local CONFIG_VER = 6
+local CONFIG_VER = 7
 
 --=============================================================
 -- CONFIG
@@ -40,10 +40,10 @@ local Config = {
 	MinRepressGap = 0.06,
 
 	AutoRadius    = true,
-	LeadTime      = 0.11,
+	LeadTime      = 0.11,   -- радиус = скорость мяча * это значение
 	MinRadius     = 9,
-	MaxRadius     = 50,
-	BaseRadius    = 16,
+	MaxRadius     = 32,
+	BaseRadius    = 14,
 	CrossTrigger  = true,
 	PingComp      = true,
 	BallPredCap   = 22,
@@ -176,6 +176,11 @@ local function resetKorbloxConfig()
 	Config.KorbloxFullLeg = true
 	Config.KorbloxHideFoot= true
 	Config.KorbloxSide    = "Right"
+	-- радиус под скорость
+	Config.LeadTime  = 0.11
+	Config.MinRadius = 9
+	Config.MaxRadius = 32
+	Config.BaseRadius = 14
 end
 
 local function loadConfig()
@@ -849,19 +854,21 @@ local function detectBoost(threat)
 	return now < E.boostUntil
 end
 
--- тайминг зависит от скорости: быстрее мяч -> бьём заранее, медленнее -> позже
+--=============================================================
+-- RADIUS  (подстраивается под скорость мяча)
+--=============================================================
+-- чем быстрее летит мяч -> тем больше радиус (бьём заранее)
+-- медленный мяч -> маленький радиус (бьём позже, без фейков)
 local function computeRadius(threat, pingSec)
-	local net = pingSec * 0.5 + (1 / 60)
+	if not Config.AutoRadius then return Config.BaseRadius end
 	local spd = threat.speed
-	-- кривая опережения: растёт со скоростью, управляется Fast Boost
-	local curve = 1 + math.clamp((spd - 90) / 800, -0.30, 1.20) * math.clamp(Config.FastBoost, 0, 1)
-	local lead = Config.LeadTime * curve + (Config.PingComp and net or 0)
-	if Config.AutoRadius then
-		return math.clamp(spd * lead, Config.MinRadius, Config.MaxRadius)
+	local gain = math.clamp(Config.LeadTime, 0.03, 0.30)   -- студов радиуса на 1 ед. скорости
+	local r = spd * gain
+	if Config.PingComp then r = r + math.clamp(spd * (pingSec * 0.5), 0, 10) end
+	if Config.SpeedAssist and spd > 130 then
+		r = r + math.clamp((spd - 130) * 0.05, 0, 8) * math.clamp(Config.FastBoost, 0, 1)
 	end
-	local r = Config.BaseRadius * curve
-	if Config.PingComp then r = r + math.clamp(spd * net, 0, Config.BallPredCap) end
-	return r
+	return math.clamp(r, Config.MinRadius, Config.MaxRadius)
 end
 
 local function step(dt)
@@ -889,7 +896,6 @@ local function step(dt)
 	E.radius = radius
 	E.hot = threat.distance <= radius
 
-	-- бонус: если и мяч, и игрок красные — бьём сразу, иначе ждём скоростное окно
 	local ballRed = ballIsRed(ball)
 	local charRed = charIsRed(char)
 	E.redB, E.redC = ballRed, charRed
@@ -1540,11 +1546,11 @@ ca((button(cp, "Scan Game Abilities", function()
 	if #out > 0 then print("[" .. TITLE .. "] abilities: " .. table.concat(out, ", ")) end
 end)))
 
-ca(section(cp, "Adaptive Radius"))
-ca((toggle(cp, "Auto Radius (follow ball speed)", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
-ca((slider(cp, "Lead Time (s)", 0.03, 0.35, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
+ca(section(cp, "Radius (под скорость мяча)"))
+ca((toggle(cp, "Auto Radius", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
+ca((slider(cp, "Radius per Speed", 0.03, 0.30, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
 ca((slider(cp, "Min Radius", 4, 30, Config.MinRadius, 0, function(v) Config.MinRadius = v end)))
-ca((slider(cp, "Max Radius", 10, 90, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
+ca((slider(cp, "Max Radius", 10, 60, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
 ca((toggle(cp, "Cross Trigger (exact edge)", Config.CrossTrigger, function(v) Config.CrossTrigger = v end)))
 ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
 ca((slider(cp, "Fixed Radius (manual)", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
