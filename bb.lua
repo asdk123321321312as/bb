@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + speed-adaptive radius + smart one-tap + korblox + ability guard
+    keypress bypass + speed-adaptive radius + move-assist + korblox + ability guard
     menu: RightShift
 --]]
 
@@ -21,7 +21,7 @@ local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
 
-local CONFIG_VER = 7
+local CONFIG_VER = 8
 
 --=============================================================
 -- CONFIG
@@ -40,10 +40,11 @@ local Config = {
 	MinRepressGap = 0.06,
 
 	AutoRadius    = true,
-	LeadTime      = 0.11,   -- радиус = скорость мяча * это значение
+	LeadTime      = 0.11,
 	MinRadius     = 9,
 	MaxRadius     = 32,
 	BaseRadius    = 14,
+	MoveAssist    = 1.0,    -- запас радиуса при движении
 	CrossTrigger  = true,
 	PingComp      = true,
 	BallPredCap   = 22,
@@ -176,11 +177,11 @@ local function resetKorbloxConfig()
 	Config.KorbloxFullLeg = true
 	Config.KorbloxHideFoot= true
 	Config.KorbloxSide    = "Right"
-	-- радиус под скорость
 	Config.LeadTime  = 0.11
 	Config.MinRadius = 9
 	Config.MaxRadius = 32
 	Config.BaseRadius = 14
+	Config.MoveAssist = 1.0
 end
 
 local function loadConfig()
@@ -493,6 +494,7 @@ local E = {
 	ability = "-", seenAbility = {}, seenCount = 0,
 	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
 	redB = false, redC = false, redOk = false,
+	moving = false, rootSpeed = 0,
 }
 
 local function performParry()
@@ -573,21 +575,28 @@ local function sendAction(ball)
 	return true
 end
 
+-- перевзвод. при движении — только по реальному уходу мяча (без ложных повторных)
 local function updateArm(ball, threat, radius)
 	local now = tick()
 	if ball ~= E.pressBall then
 		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false
 		return
 	end
-	local gone = (threat.dot < -0.15 and threat.speed > 2)
-		or (threat.distance > radius * 1.35)
-		or (threat.speed < 3)
+	local strict = E.moving
+	local gone
+	if strict then
+		gone = (threat.distance > radius * 1.5) or (threat.speed < 3)
+	else
+		gone = (threat.dot < -0.15 and threat.speed > 2)
+			or (threat.distance > radius * 1.35)
+			or (threat.speed < 3)
+	end
 	if gone then
 		E.ballLeft = true
 		E.pressCount = 0
 	end
-	E.emergency = (threat.distance < radius * 0.55) and (now - (E.pressAt or 0) > 0.10)
-	if now - (E.pressAt or 0) > 0.30 then
+	E.emergency = (not strict) and (threat.distance < radius * 0.55) and (now - (E.pressAt or 0) > 0.10)
+	if now - (E.pressAt or 0) > (strict and 0.30 or 0.30) then
 		E.pressCount = 0
 		E.ballLeft = true
 	end
@@ -687,7 +696,7 @@ local function computeThreat(ball, root)
 end
 
 --=============================================================
--- RED STATE  (бонусный ранний триггер)
+-- RED STATE
 --=============================================================
 local RED_ATTRS = {"Red","red","IsRed","isRed","Stun","stun","Stunned","stunned","Threat","threat","Targeted","targeted","Hit","hit"}
 
@@ -855,24 +864,26 @@ local function detectBoost(threat)
 end
 
 --=============================================================
--- RADIUS  (подстраивается под скорость мяча)
+-- RADIUS  (под скорость мяча + запас на движение)
 --=============================================================
--- чем быстрее летит мяч -> тем больше радиус (бьём заранее)
--- медленный мяч -> маленький радиус (бьём позже, без фейков)
-local function computeRadius(threat, pingSec)
+local function computeRadius(threat, pingSec, moveSpeed)
 	if not Config.AutoRadius then return Config.BaseRadius end
 	local spd = threat.speed
-	local gain = math.clamp(Config.LeadTime, 0.03, 0.30)   -- студов радиуса на 1 ед. скорости
+	local gain = math.clamp(Config.LeadTime, 0.03, 0.30)
 	local r = spd * gain
 	if Config.PingComp then r = r + math.clamp(spd * (pingSec * 0.5), 0, 10) end
 	if Config.SpeedAssist and spd > 130 then
 		r = r + math.clamp((spd - 130) * 0.05, 0, 8) * math.clamp(Config.FastBoost, 0, 1)
 	end
-	return math.clamp(r, Config.MinRadius, Config.MaxRadius)
+	-- при движении добавляем запас, чтобы успеть отбить на ходу
+	if moveSpeed > 8 then
+		r = r + math.clamp((moveSpeed - 8) * 0.10, 0, 8) * math.clamp(Config.MoveAssist, 0, 2)
+	end
+	return math.clamp(r, Config.MinRadius, Config.MaxRadius * 1.4)
 end
 
 local function step(dt)
-	if not Config.AutoParry or not inMatch() then E.boosted = false; E.redB = false; E.redC = false; E.redOk = false; return end
+	if not Config.AutoParry or not inMatch() then E.boosted = false; E.redB = false; E.redC = false; E.redOk = false; E.moving = false; return end
 	local char = LP.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
@@ -883,8 +894,14 @@ local function step(dt)
 
 	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
 
+	local rv = root.AssemblyLinearVelocity or Vector3.zero
+	local moveSpeed = rv.Magnitude
+	local moving = moveSpeed > 8
+	E.moving = moving
+	E.rootSpeed = moveSpeed
+
 	local pingSec = getPing() / 1000
-	local radius = computeRadius(threat, pingSec)
+	local radius = computeRadius(threat, pingSec, moveSpeed)
 
 	local boosted = false
 	if Config.AbilityGuard then boosted = detectBoost(threat) end
@@ -907,7 +924,7 @@ local function step(dt)
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
 	E.targeted = (tgt == true) or (tgt == nil and heur)
-	if Config.RequireTarget and not boosted then
+	if Config.RequireTarget and not boosted and not moving then
 		if tgt == false then return end
 		if tgt == nil and not heur then return end
 	end
@@ -919,8 +936,12 @@ local function step(dt)
 	horizon = horizon + math.clamp((threat.speed - 150) * 0.00035, 0, 0.14)
 	if boosted then horizon = horizon + 0.10 end
 	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
+	if moving then transit = transit + 0.02 end
 
-	local dirOk = threat.dot > 0.05 or threat.approachSpeed > -5
+	-- при движении не проверяем направление так строго
+	local dirOk
+	if moving then dirOk = (threat.approachSpeed > -8)
+	else dirOk = threat.dot > 0.05 or threat.approachSpeed > -5 end
 	if boosted then dirOk = true end
 
 	if Config.CrossTrigger then
@@ -1507,14 +1528,14 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("in %s | acts %d | press %d | R %d | spd %d", E.mode, E.actions, E.pressCount, math.floor(E.radius), math.floor(E.speed))
+		hudParry.Text = string.format("in %s | acts %d | press %d | R %d | spd %d | mv %d", E.mode, E.actions, E.pressCount, math.floor(E.radius), math.floor(E.speed), math.floor(E.rootSpeed))
 		hudParry.TextColor3 = E.boosted and RingBoost or ((E.redB and E.redC) and RingRed or (E.hot and T.Good or (hasKeypress and T.Dim or T.Bad)))
 		hudAbility.Visible = Config.ShowAbility and E.boosted
 		if hudAbility.Visible then hudAbility.Text = "ABILITY >> " .. tostring(E.ability) end
 		hudDebug.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
-			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | red %s/%s | left %s",
-				math.floor(E.dist), E.lead, tostring(E.targeted), tostring(E.redB), tostring(E.redC), tostring(E.ballLeft))
+			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | red %s/%s | move %s",
+				math.floor(E.dist), E.lead, tostring(E.targeted), tostring(E.redB), tostring(E.redC), tostring(E.moving))
 		end
 		task.wait(0.25)
 	end
@@ -1546,11 +1567,12 @@ ca((button(cp, "Scan Game Abilities", function()
 	if #out > 0 then print("[" .. TITLE .. "] abilities: " .. table.concat(out, ", ")) end
 end)))
 
-ca(section(cp, "Radius (под скорость мяча)"))
+ca(section(cp, "Radius (под скорость + движение)"))
 ca((toggle(cp, "Auto Radius", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
 ca((slider(cp, "Radius per Speed", 0.03, 0.30, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
 ca((slider(cp, "Min Radius", 4, 30, Config.MinRadius, 0, function(v) Config.MinRadius = v end)))
 ca((slider(cp, "Max Radius", 10, 60, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
+ca((slider(cp, "Move Assist (запас при движении)", 0, 2, Config.MoveAssist, 2, function(v) Config.MoveAssist = v end)))
 ca((toggle(cp, "Cross Trigger (exact edge)", Config.CrossTrigger, function(v) Config.CrossTrigger = v end)))
 ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
 ca((slider(cp, "Fixed Radius (manual)", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
