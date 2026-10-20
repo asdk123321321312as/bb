@@ -1,6 +1,6 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + speed-adaptive radius + move-assist + korblox + ability guard
+    keypress bypass + speed-adaptive radius + move-assist + close-range + korblox
     menu: RightShift
 --]]
 
@@ -21,7 +21,7 @@ local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
 
-local CONFIG_VER = 8
+local CONFIG_VER = 9
 
 --=============================================================
 -- CONFIG
@@ -36,15 +36,15 @@ local Config = {
 	Horizon       = 0.5,
 
 	SmartTap      = true,
-	ExtraPresses  = 1,
-	MinRepressGap = 0.06,
+	ExtraPresses  = 0,      -- 0 = строго 1 удар на подход
+	MinRepressGap = 0.04,
 
 	AutoRadius    = true,
-	LeadTime      = 0.11,
+	LeadTime      = 0.10,
 	MinRadius     = 9,
-	MaxRadius     = 32,
+	MaxRadius     = 30,
 	BaseRadius    = 14,
-	MoveAssist    = 1.0,    -- запас радиуса при движении
+	MoveAssist    = 1.0,
 	CrossTrigger  = true,
 	PingComp      = true,
 	BallPredCap   = 22,
@@ -168,7 +168,7 @@ local function saveConfig()
 	pcall(function() writefile(FILE, HttpService:JSONEncode(out)) end)
 end
 
-local function resetKorbloxConfig()
+local function resetTuning()
 	Config.KorbloxMesh    = "rbxassetid://169177037"
 	Config.KorbloxTexture = ""
 	Config.KorbloxThin    = 0.55
@@ -177,11 +177,13 @@ local function resetKorbloxConfig()
 	Config.KorbloxFullLeg = true
 	Config.KorbloxHideFoot= true
 	Config.KorbloxSide    = "Right"
-	Config.LeadTime  = 0.11
+	Config.LeadTime  = 0.10
 	Config.MinRadius = 9
-	Config.MaxRadius = 32
+	Config.MaxRadius = 30
 	Config.BaseRadius = 14
 	Config.MoveAssist = 1.0
+	Config.ExtraPresses = 0
+	Config.MinRepressGap = 0.04
 end
 
 local function loadConfig()
@@ -196,7 +198,7 @@ local function loadConfig()
 			local d = deser(v); if d ~= nil then Config[k] = d end
 		end
 	end
-	if ver < CONFIG_VER then resetKorbloxConfig() end
+	if ver < CONFIG_VER then resetTuning() end
 end
 local sq = false
 local function queueSave()
@@ -494,7 +496,7 @@ local E = {
 	ability = "-", seenAbility = {}, seenCount = 0,
 	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
 	redB = false, redC = false, redOk = false,
-	moving = false, rootSpeed = 0,
+	moving = false, rootSpeed = 0, closeNow = false, prevDot = nil,
 }
 
 local function performParry()
@@ -553,6 +555,9 @@ local function canPress(ball, now)
 	local gap = math.clamp(Config.MinRepressGap, 0.02, 0.5)
 	if now - (E.pressAt or 0) < gap then return false end
 
+	-- ближний бой: мяч вплотную и летит на нас -> быстрый переклик
+	if E.closeNow then return true end
+
 	if not E.ballLeft and E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) and not E.emergency then
 		return false
 	end
@@ -575,28 +580,22 @@ local function sendAction(ball)
 	return true
 end
 
--- перевзвод. при движении — только по реальному уходу мяча (без ложных повторных)
+-- перевзвод. мяч отвернулся/ушёл -> мгновенно (воллей, резкий бросок)
 local function updateArm(ball, threat, radius)
 	local now = tick()
 	if ball ~= E.pressBall then
 		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false
 		return
 	end
-	local strict = E.moving
-	local gone
-	if strict then
-		gone = (threat.distance > radius * 1.5) or (threat.speed < 3)
-	else
-		gone = (threat.dot < -0.15 and threat.speed > 2)
-			or (threat.distance > radius * 1.35)
-			or (threat.speed < 3)
-	end
+	local gone = (threat.dot < -0.20 and threat.speed > 2)
+		or (threat.distance > radius * 1.4)
+		or (threat.speed < 3)
 	if gone then
 		E.ballLeft = true
 		E.pressCount = 0
 	end
-	E.emergency = (not strict) and (threat.distance < radius * 0.55) and (now - (E.pressAt or 0) > 0.10)
-	if now - (E.pressAt or 0) > (strict and 0.30 or 0.30) then
+	E.emergency = (threat.distance < radius * 0.5) and (now - (E.pressAt or 0) > 0.05)
+	if now - (E.pressAt or 0) > 0.35 then
 		E.pressCount = 0
 		E.ballLeft = true
 	end
@@ -875,7 +874,6 @@ local function computeRadius(threat, pingSec, moveSpeed)
 	if Config.SpeedAssist and spd > 130 then
 		r = r + math.clamp((spd - 130) * 0.05, 0, 8) * math.clamp(Config.FastBoost, 0, 1)
 	end
-	-- при движении добавляем запас, чтобы успеть отбить на ходу
 	if moveSpeed > 8 then
 		r = r + math.clamp((moveSpeed - 8) * 0.10, 0, 8) * math.clamp(Config.MoveAssist, 0, 2)
 	end
@@ -913,6 +911,12 @@ local function step(dt)
 	E.radius = radius
 	E.hot = threat.distance <= radius
 
+	-- резкий разворот мяча (противник забрал/бросил) -> сброс замка
+	if E.prevDot and E.prevDot > 0.25 and threat.dot < -0.15 then
+		E.ballLeft = true; E.pressCount = 0; E.emergency = false
+	end
+	E.prevDot = threat.dot
+
 	local ballRed = ballIsRed(ball)
 	local charRed = charIsRed(char)
 	E.redB, E.redC = ballRed, charRed
@@ -920,6 +924,10 @@ local function step(dt)
 	E.redOk = redOk
 
 	updateArm(ball, threat, radius)
+
+	-- ближний бой: мяч вплотную и летит на нас -> мгновенный переклик
+	E.closeNow = (threat.distance <= radius * 0.55) and (threat.approachSpeed > 0)
+		and (tick() - (E.pressAt or 0) > 0.08)
 
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
@@ -938,7 +946,6 @@ local function step(dt)
 	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
 	if moving then transit = transit + 0.02 end
 
-	-- при движении не проверяем направление так строго
 	local dirOk
 	if moving then dirOk = (threat.approachSpeed > -8)
 	else dirOk = threat.dot > 0.05 or threat.approachSpeed > -5 end
@@ -1534,8 +1541,8 @@ task.spawn(function()
 		if hudAbility.Visible then hudAbility.Text = "ABILITY >> " .. tostring(E.ability) end
 		hudDebug.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
-			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | red %s/%s | move %s",
-				math.floor(E.dist), E.lead, tostring(E.targeted), tostring(E.redB), tostring(E.redC), tostring(E.moving))
+			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | close %s | left %s",
+				math.floor(E.dist), E.lead, tostring(E.targeted), tostring(E.closeNow), tostring(E.ballLeft))
 		end
 		task.wait(0.25)
 	end
@@ -1572,7 +1579,7 @@ ca((toggle(cp, "Auto Radius", Config.AutoRadius, function(v) Config.AutoRadius =
 ca((slider(cp, "Radius per Speed", 0.03, 0.30, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
 ca((slider(cp, "Min Radius", 4, 30, Config.MinRadius, 0, function(v) Config.MinRadius = v end)))
 ca((slider(cp, "Max Radius", 10, 60, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
-ca((slider(cp, "Move Assist (запас при движении)", 0, 2, Config.MoveAssist, 2, function(v) Config.MoveAssist = v end)))
+ca((slider(cp, "Move Assist", 0, 2, Config.MoveAssist, 2, function(v) Config.MoveAssist = v end)))
 ca((toggle(cp, "Cross Trigger (exact edge)", Config.CrossTrigger, function(v) Config.CrossTrigger = v end)))
 ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
 ca((slider(cp, "Fixed Radius (manual)", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
@@ -1598,16 +1605,16 @@ local bp, ba = newTab("Bypass")
 ba(section(bp, "Input (BAC bypass)"))
 ba((button(bp, "MAX STEALTH", function()
 	Config.InputMode = "Keypress"; Config.ActionsPerSec = 45; Config.BatchMode = "Normal"
-	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.13
-	Config.SpeedAssist = true; Config.AbilityGuard = true; Config.SmartTap = true; Config.ExtraPresses = 1
+	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.12
+	Config.SpeedAssist = true; Config.AbilityGuard = true; Config.SmartTap = true; Config.ExtraPresses = 0
 	Config.Headless = false; Config.Particles = false; Config.BallRecolor = false
 	notify("stealth armed", T.Good)
 end)))
 ba((button(bp, "MAX SPEED", function()
 	Config.InputMode = "Keypress"; Config.ActionsPerSec = 90; Config.BatchMode = "Extremely Fast"
-	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.11
+	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.10
 	Config.SpeedAssist = true; Config.FastBoost = 0.8; Config.AbilityGuard = true; Config.BoostMult = 2.0
-	Config.SmartTap = true; Config.ExtraPresses = 1
+	Config.SmartTap = true; Config.ExtraPresses = 0
 	notify("speed armed", T.Good)
 end)))
 ba((button(bp, "Show Input Backend", function()
@@ -1679,8 +1686,8 @@ va((button(vp, "Try Real Bundle Leg", function() applyRealBundleLeg() end)))
 va((button(vp, "Verify Mesh", function() verifyKorbloxMesh() end)))
 va((button(vp, "Korblox: Reapply", function() applyKorblox(); notify("korblox reapplied", T.Good) end)))
 va((button(vp, "Korblox: Reset Defaults", function()
-	resetKorbloxConfig(); applyKorblox(); saveConfig()
-	notify("korblox reset to working defaults", T.Good)
+	resetTuning(); applyKorblox(); saveConfig()
+	notify("reset to defaults", T.Good)
 end)))
 va((button(vp, "Korblox: Remove", function() restoreKorblox(); notify("korblox removed", T.Good) end)))
 
