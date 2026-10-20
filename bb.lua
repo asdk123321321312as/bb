@@ -1,7 +1,7 @@
 --[[
     𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅  |  BLADE BALL
-    keypress bypass + red+red+dist parry + one-parry + korblox
-    menu: RightShift   |   one-parry toggle key: H
+    keypress bypass + speed-adaptive parry + smart one-tap + korblox + ability guard
+    menu: RightShift
 --]]
 
 local cloneref = cloneref or function(o) return o end
@@ -21,7 +21,7 @@ local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
 
-local CONFIG_VER = 7
+local CONFIG_VER = 6
 
 --=============================================================
 -- CONFIG
@@ -30,36 +30,31 @@ local Config = {
 	AutoParry     = true,
 	InputMode     = "Auto",
 	ParryKey      = "F",
-	ActionsPerSec = 120,
+	ActionsPerSec = 60,
 	BatchMode     = "Extremely Fast",
 	Prediction    = 0.07,
 	Horizon       = 0.5,
 
 	SmartTap      = true,
 	ExtraPresses  = 1,
-	MinRepressGap = 0.05,
-
-	-- один удар на подход (вкл/выкл кнопкой)
-	OneParry      = true,
-	OneParryKey   = Enum.KeyCode.H,
+	MinRepressGap = 0.06,
 
 	AutoRadius    = true,
-	OptimalRadius = 13,     -- основной рабочий радиус (маленький, без фейков)
-	MinRadius     = 8,
-	MaxRadius     = 26,
-	BaseRadius    = 13,
 	LeadTime      = 0.11,
+	MinRadius     = 9,
+	MaxRadius     = 50,
+	BaseRadius    = 16,
 	CrossTrigger  = true,
 	PingComp      = true,
-	BallPredCap   = 18,
+	BallPredCap   = 22,
 
 	SpeedAssist   = true,
-	FastBoost     = 0.5,
+	FastBoost     = 0.6,
 
 	AbilityGuard  = true,
 	BoostDetect   = true,
-	BoostMult     = 1.5,
-	BoostHold     = 0.6,
+	BoostMult     = 1.7,
+	BoostHold     = 0.7,
 	ShowAbility   = true,
 
 	RequireTarget = true,
@@ -125,7 +120,7 @@ local Config = {
 	MenuKey       = Enum.KeyCode.RightShift,
 }
 
-local KeyCodes = {F = 0x46, E = 0x45, Q = 0x51, R = 0x52, V = 0x56, Space = 0x20, C = 0x43, H = 0x48}
+local KeyCodes = {F = 0x46, E = 0x45, Q = 0x51, R = 0x52, V = 0x56, Space = 0x20, C = 0x43}
 local RingColors = {
 	Purple = Color3.fromRGB(190, 140, 255),
 	White  = Color3.fromRGB(255, 255, 255),
@@ -487,13 +482,12 @@ local hasMouse    = pcall(function() return mouse1click end)
 local E = {
 	lastAction = 0, actions = 0, lastBall = nil, lastTime = 0,
 	lastVel = Vector3.zero, accel = Vector3.zero,
-	dist = 0, speed = 0, eta = 0, radius = 13, lead = 0, closing = 0,
+	dist = 0, speed = 0, eta = 0, radius = 16, lead = 0,
 	targeted = false, hot = false, mode = "-",
 	prevSpeed = nil, prevSpeedT = 0, boostUntil = 0, boosted = false,
 	ability = "-", seenAbility = {}, seenCount = 0,
 	pressBall = nil, pressCount = 0, pressAt = 0, ballLeft = true, emergency = false,
-	redB = false, redC = false, redSeenAt = 0, toward = false, allow = false,
-	unstable = false, lastRootPos = nil, onePressed = false,
+	redB = false, redC = false, redOk = false,
 }
 
 local function performParry()
@@ -509,13 +503,13 @@ local function performParry()
 	if Config.InputMode == "Keypress" then
 		if hasKeypress then
 			pcall(function() keypress(key) end)
-			task.delay(0.006, function() pcall(function() keyrelease(key) end) end)
+			task.delay(0.008, function() pcall(function() keyrelease(key) end) end)
 		end
 		return "key"
 	end
 	if hasKeypress then
 		pcall(function() keypress(key) end)
-		task.delay(0.006, function() pcall(function() keyrelease(key) end) end)
+		task.delay(0.008, function() pcall(function() keyrelease(key) end) end)
 		return "key"
 	elseif hasMouse then
 		pcall(mouse1click)
@@ -528,30 +522,21 @@ local function performParry()
 end
 
 local function actionCooldown()
-	local rate = math.clamp(Config.ActionsPerSec, 10, 240)
+	local rate = math.clamp(Config.ActionsPerSec, 10, 120)
 	local cd = 1 / rate
-	if Config.BatchMode == "Safe" then cd = math.max(0.045, cd)
-	elseif Config.BatchMode == "Normal" then cd = math.max(0.024, cd)
-	elseif Config.BatchMode == "Fast" then cd = math.max(0.012, cd)
-	elseif Config.BatchMode == "Extremely Fast" then cd = math.max(0.006, cd) end
+	if Config.BatchMode == "Safe" then cd = math.max(0.060, cd)
+	elseif Config.BatchMode == "Normal" then cd = math.max(0.032, cd)
+	elseif Config.BatchMode == "Fast" then cd = math.max(0.018, cd)
+	elseif Config.BatchMode == "Extremely Fast" then cd = math.max(0.010, cd) end
 	if Config.SpeedAssist and E.speed > 120 then
 		cd = cd * (1 - 0.6 * math.clamp(Config.FastBoost, 0, 1))
 	end
 	if E.boosted then cd = cd * 0.5 end
-	return math.max(0.005, cd + math.random() * 0.0015)
+	return math.max(0.008, cd + (math.random(-1, 2) / 1000))
 end
 
 local function canPress(ball, now)
 	if now - E.lastAction < actionCooldown() then return false end
-
-	if Config.OneParry then
-		if ball ~= E.pressBall then
-			E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.onePressed = false; E.emergency = false
-		end
-		if E.onePressed then return false end
-		return true
-	end
-
 	if not Config.SmartTap then return true end
 
 	if ball ~= E.pressBall then
@@ -570,11 +555,9 @@ end
 local function sendAction(ball)
 	local now = tick()
 	if not canPress(ball, now) then return false end
-	E.pressAt = now
-	if Config.OneParry then
-		E.onePressed = true
-	elseif Config.SmartTap then
+	if Config.SmartTap then
 		E.pressCount += 1
+		E.pressAt = now
 		if E.pressCount > math.clamp(Config.ExtraPresses, 0, 5) then E.ballLeft = false end
 	end
 	E.lastAction = now
@@ -585,40 +568,23 @@ local function sendAction(ball)
 	return true
 end
 
--- перевзвод. при движении / one-parry — только по реальному уходу мяча
 local function updateArm(ball, threat, radius)
 	local now = tick()
 	if ball ~= E.pressBall then
-		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false; E.onePressed = false
+		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false
 		return
 	end
-
-	local moving = (E.rootSpeed or 0) > 8
-	local strict = Config.OneParry or E.unstable or moving
-	local gone
-	if strict then
-		gone = (threat.distance > radius * 1.5) or (threat.speed < 3)
-	else
-		gone = (threat.dot < -0.10 and threat.speed > 2)
-			or (threat.approachSpeed < -2.0)
-			or (threat.distance > radius * 1.25)
-			or (threat.speed < 3)
-	end
+	local gone = (threat.dot < -0.15 and threat.speed > 2)
+		or (threat.distance > radius * 1.35)
+		or (threat.speed < 3)
 	if gone then
 		E.ballLeft = true
 		E.pressCount = 0
-		E.onePressed = false
 	end
-
-	if Config.OneParry then
-		E.emergency = false
-	else
-		E.emergency = (threat.distance < radius * 0.5) and (now - (E.pressAt or 0) > 0.06)
-		local to = strict and 0.28 or 0.16
-		if now - (E.pressAt or 0) > to then
-			E.pressCount = 0
-			E.ballLeft = true
-		end
+	E.emergency = (threat.distance < radius * 0.55) and (now - (E.pressAt or 0) > 0.10)
+	if now - (E.pressAt or 0) > 0.30 then
+		E.pressCount = 0
+		E.ballLeft = true
 	end
 end
 
@@ -716,7 +682,7 @@ local function computeThreat(ball, root)
 end
 
 --=============================================================
--- RED STATE (приоритетный сигнал)
+-- RED STATE  (бонусный ранний триггер)
 --=============================================================
 local RED_ATTRS = {"Red","red","IsRed","isRed","Stun","stun","Stunned","stunned","Threat","threat","Targeted","targeted","Hit","hit"}
 
@@ -883,21 +849,23 @@ local function detectBoost(threat)
 	return now < E.boostUntil
 end
 
--- ОПТИМАЛЬНЫЙ радиус: маленький, чуть шире только на очень быстром мяче
+-- тайминг зависит от скорости: быстрее мяч -> бьём заранее, медленнее -> позже
 local function computeRadius(threat, pingSec)
+	local net = pingSec * 0.5 + (1 / 60)
 	local spd = threat.speed
-	if not Config.AutoRadius then return Config.BaseRadius end
-	local r = Config.OptimalRadius
-	r = r + math.clamp((spd - 110) * 0.03, 0, 7)                       -- + на высокой скорости
-	if Config.PingComp then r = r + math.clamp(spd * (pingSec * 0.5), 0, 9) end
-	if Config.SpeedAssist and spd > 130 then
-		r = r + math.clamp((spd - 130) * 0.02, 0, 5) * math.clamp(Config.FastBoost, 0, 1)
+	-- кривая опережения: растёт со скоростью, управляется Fast Boost
+	local curve = 1 + math.clamp((spd - 90) / 800, -0.30, 1.20) * math.clamp(Config.FastBoost, 0, 1)
+	local lead = Config.LeadTime * curve + (Config.PingComp and net or 0)
+	if Config.AutoRadius then
+		return math.clamp(spd * lead, Config.MinRadius, Config.MaxRadius)
 	end
-	return math.clamp(r, Config.MinRadius, Config.MaxRadius)
+	local r = Config.BaseRadius * curve
+	if Config.PingComp then r = r + math.clamp(spd * net, 0, Config.BallPredCap) end
+	return r
 end
 
 local function step(dt)
-	if not Config.AutoParry or not inMatch() then E.boosted = false; E.redB = false; E.redC = false; E.unstable = false; return end
+	if not Config.AutoParry or not inMatch() then E.boosted = false; E.redB = false; E.redC = false; E.redOk = false; return end
 	local char = LP.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	if not root then return end
@@ -907,24 +875,9 @@ local function step(dt)
 	if not threat then return end
 
 	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
-	E.closing = threat.approachSpeed
-
-	local rv = root.AssemblyLinearVelocity or Vector3.zero
-	E.rootSpeed = rv.Magnitude
-	local unstable = (rv.Magnitude > 22) or (math.abs(rv.Y) > 12)
-	local rp = root.Position
-	if E.lastRootPos and (rp - E.lastRootPos).Magnitude > 8 then unstable = true end
-	E.lastRootPos = rp
-	E.unstable = unstable
-
-	local dy = math.abs(rp.Y - ball.Position.Y)
-	local horiz = (Vector3.new(rp.X, 0, rp.Z) - Vector3.new(ball.Position.X, 0, ball.Position.Z)).Magnitude
-	local distW = math.sqrt(horiz * horiz + (dy * 0.3) * (dy * 0.3))
-	local effDist = unstable and math.min(threat.distance, distW) or threat.distance
 
 	local pingSec = getPing() / 1000
 	local radius = computeRadius(threat, pingSec)
-	if unstable then radius = math.min(radius * 1.15, Config.MaxRadius * 1.6) end
 
 	local boosted = false
 	if Config.AbilityGuard then boosted = detectBoost(threat) end
@@ -934,57 +887,43 @@ local function step(dt)
 	end
 
 	E.radius = radius
-	E.hot = effDist <= radius
+	E.hot = threat.distance <= radius
+
+	-- бонус: если и мяч, и игрок красные — бьём сразу, иначе ждём скоростное окно
+	local ballRed = ballIsRed(ball)
+	local charRed = charIsRed(char)
+	E.redB, E.redC = ballRed, charRed
+	local redOk = (ballRed and charRed) or (threat.distance <= radius)
+	E.redOk = redOk
+
+	updateArm(ball, threat, radius)
 
 	local tgt = isTargeted(ball)
 	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
 	E.targeted = (tgt == true) or (tgt == nil and heur)
-	if Config.RequireTarget and not boosted and not unstable then
+	if Config.RequireTarget and not boosted then
 		if tgt == false then return end
 		if tgt == nil and not heur then return end
 	end
 
-	local toward = unstable or (threat.approachSpeed > 2.0 and threat.dot > 0.2)
-	E.toward = toward
-
-	local ballRed = ballIsRed(ball)
-	local charRed = charIsRed(char)
-	E.redB, E.redC = ballRed, charRed
-	local bothRed = ballRed and charRed
-	local now = tick()
-	if bothRed then E.redSeenAt = now end
-
-	-- ПРИОРИТЕТ: мяч красный + игрок красный + дистанция в радиусе.
-	-- если мяч уже совсем вплотную — бьём даже без красного (страховка)
-	local redLive = (now - (E.redSeenAt or 0)) < 4
-	local allow
-	if redLive then
-		allow = toward and ( (bothRed and effDist <= radius) or effDist <= radius * 0.6 )
-	else
-		allow = toward and (effDist <= radius)
-	end
-	if boosted then allow = true end
-	E.allow = allow
-
-	updateArm(ball, threat, radius)
-
-	if not allow then return end
+	if not redOk then return end
 
 	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
 	local horizon = (Config.Horizon or 0.5) * (Config.Prediction or 0.07)
-	horizon = horizon + math.clamp((threat.speed - 150) * 0.00035, 0, 0.10)
-	if boosted then horizon = horizon + 0.05 end
-	local transit = math.clamp(pingSec * 0.5 + dtStep * 0.5 + (1 / 90) + horizon * 0.4, 0.015, 0.09)
+	horizon = horizon + math.clamp((threat.speed - 150) * 0.00035, 0, 0.14)
+	if boosted then horizon = horizon + 0.10 end
+	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
 
-	local dirOk = toward
+	local dirOk = threat.dot > 0.05 or threat.approachSpeed > -5
+	if boosted then dirOk = true end
 
 	if Config.CrossTrigger then
 		local closing = math.max(threat.approachSpeed, threat.speed * 0.5, 1)
-		local tCross = (effDist - radius) / closing
+		local tCross = (threat.distance - radius) / closing
 		E.lead = tCross
 		if tCross <= transit and dirOk then sendAction(ball); return end
 	else
-		if effDist <= radius and dirOk then sendAction(ball); return end
+		if threat.distance <= radius and dirOk then sendAction(ball); return end
 	end
 
 	local futurePlayer = root.Position + root.AssemblyLinearVelocity * transit
@@ -1000,7 +939,7 @@ bind(RunService.Heartbeat, function()
 		if root then
 			local d = (E.lastBall.Position - root.Position).Magnitude
 			local v = E.lastBall.AssemblyLinearVelocity
-			if d > 28 and v.Magnitude > 1 and v.Unit:Dot((root.Position - E.lastBall.Position).Unit) < -0.15 then
+			if d > 32 and v.Magnitude > 1 and v.Unit:Dot((root.Position - E.lastBall.Position).Unit) < -0.2 then
 				E.released = true
 			end
 		end
@@ -1542,7 +1481,7 @@ local function applyFpsBoost(on)
 	else Lighting.GlobalShadows = true end
 end
 
-local hud = new("Frame", {Size=UDim2.new(0,295,0,88), Position=UDim2.new(0,12,0,12),
+local hud = new("Frame", {Size=UDim2.new(0,275,0,88), Position=UDim2.new(0,12,0,12),
 	BackgroundColor3=T.Bg, BackgroundTransparency=0.15, BorderSizePixel=0, Visible=Config.Hud, ZIndex=10}, gui)
 corner(hud,8); stroke(hud,T.Line)
 new("TextLabel", {Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,5), BackgroundTransparency=1,
@@ -1562,15 +1501,14 @@ task.spawn(function()
 		local ping = math.floor(getPing())
 		hudStats.Text = string.format("FPS: %d  |  PING: %d ms", fps, ping)
 		hudStats.TextColor3 = ping < 80 and T.Good or (ping < 160 and T.Dim or T.Bad)
-		hudParry.Text = string.format("in %s | 1x %s | acts %d | press %d | R %d | spd %d",
-			E.mode, Config.OneParry and "ON" or "off", E.actions, E.pressCount, math.floor(E.radius), math.floor(E.speed))
+		hudParry.Text = string.format("in %s | acts %d | press %d | R %d | spd %d", E.mode, E.actions, E.pressCount, math.floor(E.radius), math.floor(E.speed))
 		hudParry.TextColor3 = E.boosted and RingBoost or ((E.redB and E.redC) and RingRed or (E.hot and T.Good or (hasKeypress and T.Dim or T.Bad)))
 		hudAbility.Visible = Config.ShowAbility and E.boosted
 		if hudAbility.Visible then hudAbility.Text = "ABILITY >> " .. tostring(E.ability) end
 		hudDebug.Visible = Config.Debug and Config.Hud
 		if Config.Debug then
-			hudDebug.Text = string.format("d %d | close %.0f | unst %s | toward %s | red %s/%s",
-				math.floor(E.dist), E.closing, tostring(E.unstable), tostring(E.toward), tostring(E.redB), tostring(E.redC))
+			hudDebug.Text = string.format("d %d | cross %.3f | tgt %s | red %s/%s | left %s",
+				math.floor(E.dist), E.lead, tostring(E.targeted), tostring(E.redB), tostring(E.redC), tostring(E.ballLeft))
 		end
 		task.wait(0.25)
 	end
@@ -1585,24 +1523,6 @@ ca((toggle(cp, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v 
 ca((dropdown(cp, "Input Mode", {"Auto", "Keypress", "Mouse", "Remote"}, Config.InputMode, function(v) Config.InputMode = v end)))
 ca((dropdown(cp, "Parry Key", {"F", "E", "Q", "R", "V", "C", "Space"}, Config.ParryKey, function(v) Config.ParryKey = v end)))
 ca((toggle(cp, "Require Ball Targeting Me", Config.RequireTarget, function(v) Config.RequireTarget = v end)))
-
-ca(section(cp, "One Parry (один удар)"))
-ca((toggle(cp, "One Parry Only", Config.OneParry, function(v)
-	Config.OneParry = v
-	notify("One Parry: " .. (v and "ON" or "OFF"), v and T.Good or T.Dim)
-end)))
-local opKeyBtn
-opKeyBtn = ca((button(cp, "One Parry Key: "..Config.OneParryKey.Name, function()
-	local c
-	c = UserInputService.InputBegan:Connect(function(i, gp)
-		if gp then return end
-		if i.UserInputType == Enum.UserInputType.Keyboard then
-			Config.OneParryKey = i.KeyCode
-			opKeyBtn.Text = "One Parry Key: "..i.KeyCode.Name
-			c:Disconnect(); queueSave()
-		end
-	end)
-end)))
 
 ca(section(cp, "Anti Double-Hit"))
 ca((toggle(cp, "Smart One-Tap (no false clicks)", Config.SmartTap, function(v) Config.SmartTap = v end)))
@@ -1620,14 +1540,14 @@ ca((button(cp, "Scan Game Abilities", function()
 	if #out > 0 then print("[" .. TITLE .. "] abilities: " .. table.concat(out, ", ")) end
 end)))
 
-ca(section(cp, "Radius (оптимальный)"))
-ca((toggle(cp, "Auto Radius", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
-ca((slider(cp, "Optimal Radius", 6, 30, Config.OptimalRadius, 0, function(v) Config.OptimalRadius = v end)))
+ca(section(cp, "Adaptive Radius"))
+ca((toggle(cp, "Auto Radius (follow ball speed)", Config.AutoRadius, function(v) Config.AutoRadius = v end)))
+ca((slider(cp, "Lead Time (s)", 0.03, 0.35, Config.LeadTime, 3, function(v) Config.LeadTime = v end)))
 ca((slider(cp, "Min Radius", 4, 30, Config.MinRadius, 0, function(v) Config.MinRadius = v end)))
-ca((slider(cp, "Max Radius", 10, 40, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
+ca((slider(cp, "Max Radius", 10, 90, Config.MaxRadius, 0, function(v) Config.MaxRadius = v end)))
 ca((toggle(cp, "Cross Trigger (exact edge)", Config.CrossTrigger, function(v) Config.CrossTrigger = v end)))
 ca((toggle(cp, "Ping Compensation", Config.PingComp, function(v) Config.PingComp = v end)))
-ca((slider(cp, "Fixed Radius (manual)", 4, 40, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
+ca((slider(cp, "Fixed Radius (manual)", 4, 60, Config.BaseRadius, 0, function(v) Config.BaseRadius = v end)))
 
 ca(section(cp, "Parry Circle"))
 ca((toggle(cp, "Show Circle", Config.ParryRing, function(v) Config.ParryRing = v end)))
@@ -1638,7 +1558,7 @@ ca((slider(cp, "Circle Opacity", 0, 0.9, Config.RingOpacity, 2, function(v) Conf
 ca(section(cp, "Reaction Speed"))
 ca((toggle(cp, "Speed Assist (fast ball)", Config.SpeedAssist, function(v) Config.SpeedAssist = v end)))
 ca((slider(cp, "Fast Boost", 0, 1, Config.FastBoost, 2, function(v) Config.FastBoost = v end)))
-ca((slider(cp, "Actions / sec", 10, 240, Config.ActionsPerSec, 0, function(v) Config.ActionsPerSec = v end)))
+ca((slider(cp, "Actions / sec", 10, 120, Config.ActionsPerSec, 0, function(v) Config.ActionsPerSec = v end)))
 ca((dropdown(cp, "Batch Mode", {"Extremely Fast", "Fast", "Normal", "Safe"}, Config.BatchMode, function(v) Config.BatchMode = v end)))
 ca((button(cp, "Test Parry", function()
 	E.lastAction = 0
@@ -1649,17 +1569,17 @@ end)))
 local bp, ba = newTab("Bypass")
 ba(section(bp, "Input (BAC bypass)"))
 ba((button(bp, "MAX STEALTH", function()
-	Config.InputMode = "Keypress"; Config.ActionsPerSec = 60; Config.BatchMode = "Normal"
-	Config.RequireTarget = true; Config.AutoRadius = true; Config.OptimalRadius = 13
-	Config.SpeedAssist = true; Config.AbilityGuard = true; Config.SmartTap = true; Config.OneParry = true
+	Config.InputMode = "Keypress"; Config.ActionsPerSec = 45; Config.BatchMode = "Normal"
+	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.13
+	Config.SpeedAssist = true; Config.AbilityGuard = true; Config.SmartTap = true; Config.ExtraPresses = 1
 	Config.Headless = false; Config.Particles = false; Config.BallRecolor = false
 	notify("stealth armed", T.Good)
 end)))
 ba((button(bp, "MAX SPEED", function()
-	Config.InputMode = "Keypress"; Config.ActionsPerSec = 180; Config.BatchMode = "Extremely Fast"
-	Config.RequireTarget = true; Config.AutoRadius = true; Config.OptimalRadius = 14
-	Config.SpeedAssist = true; Config.FastBoost = 0.8; Config.AbilityGuard = true; Config.BoostMult = 1.8
-	Config.SmartTap = true; Config.OneParry = true
+	Config.InputMode = "Keypress"; Config.ActionsPerSec = 90; Config.BatchMode = "Extremely Fast"
+	Config.RequireTarget = true; Config.AutoRadius = true; Config.LeadTime = 0.11
+	Config.SpeedAssist = true; Config.FastBoost = 0.8; Config.AbilityGuard = true; Config.BoostMult = 2.0
+	Config.SmartTap = true; Config.ExtraPresses = 1
 	notify("speed armed", T.Good)
 end)))
 ba((button(bp, "Show Input Backend", function()
@@ -1809,7 +1729,7 @@ ma((button(mp, "Unload Script", function()
 end)))
 
 --=============================================================
--- OPEN / CLOSE + KEYBINDS
+-- OPEN / CLOSE + LOOPS
 --=============================================================
 local function setMenu(o) Config.MenuOpen = o; window.Visible = o; queueSave() end
 closeBtn.MouseButton1Click:Connect(function() setMenu(false) end)
@@ -1817,11 +1737,6 @@ minBtn.MouseButton1Click:Connect(function() setMenu(false) end)
 bind(UserInputService.InputBegan, function(i, gp)
 	if gp then return end
 	if i.KeyCode == Config.MenuKey then setMenu(not window.Visible) end
-	if i.KeyCode == Config.OneParryKey then
-		Config.OneParry = not Config.OneParry
-		notify("One Parry: " .. (Config.OneParry and "ON" or "OFF"), Config.OneParry and T.Good or T.Dim)
-		queueSave()
-	end
 end)
 
 local fb = new("TextButton", {Size=UDim2.new(0,36,0,36), Position=UDim2.new(0,12,0,110),
@@ -1903,6 +1818,6 @@ task.spawn(function()
 	if Config.SpeedBoost then pcall(applySpeed) end
 	if Config.SkyParticles then pcall(updateSkyFx) end
 	if Config.FpsBoost then pcall(applyFpsBoost, true) end
-	notify(TITLE .. " loaded | 1x key: " .. Config.OneParryKey.Name .. " | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
-	print("[" .. TITLE .. "] loaded | OneParryKey=" .. Config.OneParryKey.Name .. " keypress=" .. tostring(hasKeypress))
+	notify(TITLE .. " loaded | abilities: " .. #discovered .. " | input: " .. (hasKeypress and "keypress" or (hasMouse and "mouse" or "remote")), T.Good)
+	print("[" .. TITLE .. "] discovered abilities=" .. #discovered .. " keypress=" .. tostring(hasKeypress))
 end)
