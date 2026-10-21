@@ -1,5 +1,5 @@
 --=============================================================
---   𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅   |   blade ball   |   bypass build
+--   ScriptSleep   |   blade ball   |   bypass build
 --   autoparry: keypress(0x46)  |  фикс: не бить на чужое отбитие
 --=============================================================
 
@@ -705,6 +705,7 @@ local function canPress(ball, now)
 
 	if ball ~= E.pressBall then
 		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false; E.leftSeen = nil
+		E.prevVel = nil
 	end
 
 	local gap = math.clamp(Config.MinRepressGap, 0.02, 0.5)
@@ -737,16 +738,20 @@ local function updateArm(ball, threat, radius)
 	local now = tick()
 	if ball ~= E.pressBall then
 		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false; E.leftSeen = nil
+		E.revAt = -99
 		return
 	end
 
+	-- мяч уходит (после своего или ЧУЖОГО отбития) -> помечаем момент
 	local receding = (threat.approachSpeed < -1.5) or (threat.distance > radius * 1.35)
 	if receding then E.leftSeen = now end
 
+	-- мяч успел уйти и снова сближается -> полный перевзвод
 	if E.leftSeen and (now - E.leftSeen) > 0.06 and threat.approachSpeed > 0.5 and threat.dot > 0.25 then
 		E.pressCount = 0; E.ballLeft = true; E.leftSeen = nil
 	end
 
+	-- предохранитель: долго не жали и мяч рядом -> сброс
 	if (now - (E.pressAt or 0) > 0.35) and threat.distance <= radius * 1.2 then
 		E.pressCount = 0; E.ballLeft = true
 	end
@@ -945,7 +950,6 @@ local function step(dt)
 	--=========================================================
 	-- АНТИ-ЧУЖОЕ-ОТБИТИЕ: не бить, если мяч уходит
 	--=========================================================
-	local ballDir = (rootPos - ball.Position)
 
 	-- ловим резкий разворот мяча (другой игрок отбил / мяч перенацелен)
 	if E.prevVel and E.prevVel.Magnitude > 1 and threat.velocity.Magnitude > 1 then
@@ -956,6 +960,8 @@ local function step(dt)
 	E.prevVel = threat.velocity
 
 	local revLock = (now - (E.revAt or -99)) < math.clamp(Config.RevLock or 0.12, 0.04, 0.30)
+
+	-- в окне разворота бьём ТОЛЬКО если мяч реально сближается и летит в нас
 	local strictClose = (threat.approachSpeed > 1.0) and (threat.dot > 0.35)
 
 	local baseDirOk
@@ -971,12 +977,16 @@ local function step(dt)
 
 	local closing
 	if revLock then
-		closing = math.max(threat.approachSpeed, 0)
+		closing = math.max(threat.approachSpeed, 0)          -- без подстановки speed*0.5
 	else
 		closing = math.max(threat.approachSpeed, threat.ballClosing * 0.5, 0.5)
 	end
 
+	-- обновляем состояние перевзвода ДО проверки нажатия
+	updateArm(ball, threat, radius)
+
 	local fire = false
+
 	if Config.CrossTrigger then
 		local tCross = (threat.distance - radius) / math.max(closing, 0.5)
 		E.lead = tCross
@@ -986,8 +996,6 @@ local function step(dt)
 		fire = (threat.distance <= radius) and dirOk
 		if revLock then fire = fire and strictClose end
 	end
-
-	updateArm(ball, threat, radius)
 
 	if fire then
 		sendAction(ball)
