@@ -18,7 +18,7 @@ local cloneref = cloneref or function(o) return o end
 
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local TITLE  = "𝒮𝒸𝓇𝒾𝓅𝓉𝒮𝓁𝑒𝑒𝓅"
+local TITLE  = "ScriptSleep"
 
 local CONFIG_VER = 10
 local CONFIG_FILE = "ScriptSleep_BladeBall.json"
