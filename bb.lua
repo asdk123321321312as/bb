@@ -1,6 +1,7 @@
 --=============================================================
 --   ScriptSleep   |   blade ball   |   bypass build
---   autoparry: keypress(0x46)  |  фикс: не бить на чужое отбитие
+--   autoparry: keypress(0x46)
+--   v11: тайминг по tti, плавное меню, korblox r6/r15, headless
 --=============================================================
 
 local Players           = game:GetService("Players")
@@ -20,7 +21,7 @@ local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local TITLE  = "ScriptSleep"
 
-local CONFIG_VER = 10
+local CONFIG_VER = 11
 local CONFIG_FILE = "ScriptSleep_BladeBall.json"
 
 --=============================================================
@@ -39,21 +40,18 @@ local Config = {
 	OneParry      = false,
 	OneParryKey   = "H",
 
-	-- radius
+	-- timing / radius
 	AutoRadius    = true,
-	LeadTime      = 0.11,
+	LeadTime      = 0.10,
 	MinRadius     = 8,
-	MaxRadius     = 30,
+	MaxRadius     = 34,
 	BaseRadius    = 16,
 	PingComp      = true,
 	BallPredCap   = 10,
 
 	-- gates
 	RevLock       = 0.12,
-	CrossTrigger  = true,
 	RequireTarget = false,
-	Horizon       = 0.45,
-	Prediction    = 0.08,
 	UnstableVel   = 22,
 	UnstableTP    = 6,
 
@@ -73,11 +71,13 @@ local Config = {
 	SkyParticles  = false,
 	ParticleRate  = 60,
 
-	-- korblox
+	-- body
 	Korblox       = false,
 	KorbloxMesh   = 139607718,
 	KorbloxSide   = "Right",
 	KorbloxColor  = "Black",
+	KorbloxMethod = "Auto",
+	Headless      = false,
 
 	-- abilities
 	AutoAbility   = false,
@@ -90,18 +90,11 @@ local Config = {
 	-- misc
 	HUD           = true,
 	MenuKey       = "RightShift",
+	MenuOffsetY   = 82,
 }
 
 local KEY_DEFAULT = {}
 for k, v in pairs(Config) do KEY_DEFAULT[k] = v end
-
-local KorbloxPresets = {
-	["Korblox Deathspeaker"] = 139607718,
-	["Korblox Classic"]      = 169177037,
-	["Korblox New"]          = 12318225123,
-	["Korblox Alt"]          = 12199981077,
-	["Korblox Bone"]         = 135080259,
-}
 
 local KORBLOX_COLORS = {
 	Black     = Color3.fromRGB(17, 17, 17),
@@ -139,10 +132,11 @@ local function loadConfig()
 		Config.RevLock       = 0.12
 		Config.MinRepressGap = 0.04
 		Config.ExtraPresses  = 0
-		Config.MaxRadius     = 30
-		Config.LeadTime      = 0.11
+		Config.MaxRadius     = 34
+		Config.LeadTime      = 0.10
 		Config.SmartTap      = true
 		Config.AutoRadius    = true
+		Config.KorbloxMethod = "Auto"
 	end
 end
 loadConfig()
@@ -201,18 +195,46 @@ local espFolder = new("Folder", { Name = "ESP" }, gui)
 
 local W, H = 580, 400
 
-local main = new("Frame", {
+-- CanvasGroup: даёт плавное появление/затухание всего меню разом
+local main = new("CanvasGroup", {
 	Name = "Main",
 	Size = UDim2.new(0, W, 0, H),
-	Position = UDim2.new(0.5, -W / 2, 0.5, -H / 2),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, Config.MenuOffsetY or 82),
 	BackgroundColor3 = T.Bg,
 	BorderSizePixel = 0,
 	ClipsDescendants = true,
+	GroupTransparency = 0,
 }, gui)
 corner(main, 10)
 stroke(main, T.Line, 1)
 
--- drag
+local MENU_OPEN = true
+
+local function setMenu(open)
+	MENU_OPEN = open
+	if open then
+		main.Visible = true
+		main.GroupTransparency = 1
+		main.Size = UDim2.new(0, W * 0.88, 0, H * 0.88)
+		TweenService:Create(main, TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			Size = UDim2.new(0, W, 0, H),
+			GroupTransparency = 0,
+		}):Play()
+	else
+		local tw = TweenService:Create(main, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+			Size = UDim2.new(0, W * 0.9, 0, H * 0.9),
+			GroupTransparency = 1,
+		})
+		tw:Play()
+		tw.Completed:Connect(function()
+			if not MENU_OPEN then main.Visible = false end
+		end)
+	end
+end
+
+-- плавный драг
+local dragTarget = nil
 do
 	local dragging, startPos, startMouse = false, nil, nil
 	local dragBar = new("Frame", {
@@ -222,13 +244,13 @@ do
 		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			startMouse = i.Position
-			startPos = main.Position
+			startPos = dragTarget or main.Position
 		end
 	end)
 	UserInputService.InputChanged:Connect(function(i)
 		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
 			local d = i.Position - startMouse
-			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+			dragTarget = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
 		end
 	end)
 	UserInputService.InputEnded:Connect(function(i)
@@ -292,10 +314,18 @@ local function makePage()
 end
 
 local function selectTab(name)
-	for n, p in pairs(pages) do p.Visible = (n == name) end
+	for n, p in pairs(pages) do
+		p.Visible = (n == name)
+		if n == name then
+			p.Position = UDim2.new(0, 14, 0, 0)
+			TweenService:Create(p, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				Position = UDim2.new(0, 0, 0, 0),
+			}):Play()
+		end
+	end
 	for n, b in pairs(tabBtns) do
-		TweenService:Create(b.btn, TweenInfo.new(0.12), { TextColor3 = (n == name) and T.Text or T.Dim }):Play()
-		TweenService:Create(b.ind, TweenInfo.new(0.12), {
+		TweenService:Create(b.btn, TweenInfo.new(0.14), { TextColor3 = (n == name) and T.Text or T.Dim }):Play()
+		TweenService:Create(b.ind, TweenInfo.new(0.14), {
 			Size = (n == name) and UDim2.new(0, 2, 0, 16) or UDim2.new(0, 2, 0, 0),
 		}):Play()
 	end
@@ -357,11 +387,11 @@ local function toggle(page, text, key, onChange)
 	corner(knob, 7)
 	local function refresh()
 		local on = Config[key] and true or false
-		TweenService:Create(knob, TweenInfo.new(0.12), {
+		TweenService:Create(knob, TweenInfo.new(0.14), {
 			Position = on and UDim2.new(0, 20, 0.5, -7) or UDim2.new(0, 2, 0.5, -7),
 			BackgroundColor3 = on and T.Accent or T.Dim,
 		}):Play()
-		TweenService:Create(sw, TweenInfo.new(0.12), { BackgroundColor3 = on and T.AccentD or T.Line }):Play()
+		TweenService:Create(sw, TweenInfo.new(0.14), { BackgroundColor3 = on and T.AccentD or T.Line }):Play()
 	end
 	local btn = new("TextButton", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "" }, row)
 	btn.MouseButton1Click:Connect(function()
@@ -487,8 +517,8 @@ local function button(page, text, cb)
 		Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
 		Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = T.Text, Text = text, AutoButtonColor = false,
 	}, row)
-	btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), { TextColor3 = T.Accent }):Play() end)
-	btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), { TextColor3 = T.Text }):Play() end)
+	btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.12), { TextColor3 = T.Accent }):Play() end)
+	btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.12), { TextColor3 = T.Text }):Play() end)
 	btn.MouseButton1Click:Connect(function() pcall(cb) end)
 	return btn
 end
@@ -518,9 +548,9 @@ toggle(pCombat, "Require Target", "RequireTarget")
 toggle(pCombat, "Ring", "Ring")
 dropdown(pCombat, "Ring Color", "RingColor", { "White", "Green", "Red", "Cyan", "Yellow" })
 
-section(pCombat, "radius (адаптивный под скорость мяча)")
-toggle(pCombat, "Auto Radius", "AutoRadius")
+section(pCombat, "тайминг (время до контакта)")
 slider(pCombat, "Lead Time", "LeadTime", 0.04, 0.30, 0.005, "s")
+toggle(pCombat, "Auto Radius", "AutoRadius")
 slider(pCombat, "Min Radius", "MinRadius", 4, 25, 1, "")
 slider(pCombat, "Max Radius", "MaxRadius", 10, 60, 1, "")
 
@@ -545,22 +575,26 @@ slider(pVisuals, "Field of View", "FOV", 50, 120, 1, "")
 toggle(pVisuals, "Sky Particles", "SkyParticles")
 slider(pVisuals, "Particle Rate", "ParticleRate", 10, 200, 5, "")
 
-local pKorblox = addTab("Korblox")
-section(pKorblox, "korblox leg")
-toggle(pKorblox, "Enable Korblox", "Korblox")
-dropdown(pKorblox, "Side", "KorbloxSide", { "Right", "Left" })
-dropdown(pKorblox, "Preset", "KorbloxMesh", { 139607718, 169177037, 12318225123, 12199981077, 135080259 })
-dropdown(pKorblox, "Color", "KorbloxColor", { "Black", "Dark", "Gray", "BoneWhite", "Teal" })
-button(pKorblox, "Apply now", function() applyKorblox() end)
-button(pKorblox, "Reset Korblox", function()
+local pBody = addTab("Body")
+section(pBody, "korblox leg")
+toggle(pBody, "Enable Korblox", "Korblox", function() pcall(applyKorblox, true) end)
+dropdown(pBody, "Side", "KorbloxSide", { "Right", "Left" }, function() pcall(applyKorblox, true) end)
+dropdown(pBody, "Preset", "KorbloxMesh", { 139607718, 169177037, 12318225123, 12199981077, 135080259 }, function() pcall(applyKorblox, true) end)
+dropdown(pBody, "Color", "KorbloxColor", { "Black", "Dark", "Gray", "BoneWhite", "Teal" }, function() pcall(applyKorblox, true) end)
+dropdown(pBody, "Method", "KorbloxMethod", { "Auto", "Mesh", "Description" }, function() pcall(applyKorblox, true) end)
+button(pBody, "Apply now", function() applyKorblox(true) end)
+button(pBody, "Reset Korblox", function()
 	Config.KorbloxMesh = 139607718
 	Config.KorbloxColor = "Black"
 	Config.KorbloxSide = "Right"
+	Config.KorbloxMethod = "Auto"
 	for _, r in ipairs(refreshers) do pcall(r) end
 	saveConfig()
-	applyKorblox()
+	applyKorblox(true)
 end)
-label(pKorblox, "Если нога не появилась — нажми Apply now ещё раз (игра перезаписывает описания).")
+section(pBody, "headless")
+toggle(pBody, "Headless", "Headless", function(v) pcall(applyHeadless, v) end)
+label(pBody, "Headless прячет голову и головные аксессуары. Korblox: если не появился — нажми Apply now, метод Auto пробует оба способа.")
 
 local pAbil = addTab("Abilities")
 section(pAbil, "ability")
@@ -576,10 +610,16 @@ local pMisc = addTab("Misc")
 section(pMisc, "interface")
 toggle(pMisc, "HUD", "HUD")
 keybind(pMisc, "Menu Key", "MenuKey")
+slider(pMisc, "Menu Offset Y", "MenuOffsetY", 0, 300, 2, "px", function(v)
+	main.Position = UDim2.new(0.5, 0, 0.5, v)
+	dragTarget = main.Position
+end)
 button(pMisc, "Reset all settings", function()
 	for k, v in pairs(KEY_DEFAULT) do Config[k] = v end
 	for _, r in ipairs(refreshers) do pcall(r) end
 	saveConfig()
+	main.Position = UDim2.new(0.5, 0, 0.5, Config.MenuOffsetY)
+	dragTarget = main.Position
 end)
 button(pMisc, "Unload", function() gui:Destroy() end)
 label(pMisc, "H — вкл/выкл One Parry Per Ball прямо в игре.")
@@ -589,7 +629,7 @@ selectTab("Combat")
 -- кнопка-шарик для открытия меню
 local orb = new("TextButton", {
 	Size = UDim2.new(0, 34, 0, 34),
-	Position = UDim2.new(0, 12, 0, 96),
+	Position = UDim2.new(0, 12, 0, 132),
 	BackgroundColor3 = T.Bg,
 	Text = "V",
 	Font = Enum.Font.GothamBold,
@@ -599,7 +639,7 @@ local orb = new("TextButton", {
 }, gui)
 corner(orb, 17)
 stroke(orb, T.Line, 1)
-orb.MouseButton1Click:Connect(function() main.Visible = not main.Visible end)
+orb.MouseButton1Click:Connect(function() setMenu(not MENU_OPEN) end)
 
 --=============================================================
 -- REMOTE + INPUT
@@ -640,7 +680,7 @@ local KeyCodes = {
 local E = {
 	lastAction = 0, actions = 0,
 	lastTime = 0, lastVel = Vector3.zero,
-	dist = 0, speed = 0, eta = 0, radius = 0,
+	dist = 0, speed = 0, eta = 0, radius = 0, tti = 0,
 	targeted = false, mode = "-", hot = false,
 	pressBall = nil, pressCount = 0, pressAt = 0,
 	ballLeft = true, emergency = false, closeNow = false,
@@ -742,16 +782,13 @@ local function updateArm(ball, threat, radius)
 		return
 	end
 
-	-- мяч уходит (после своего или ЧУЖОГО отбития) -> помечаем момент
 	local receding = (threat.approachSpeed < -1.5) or (threat.distance > radius * 1.35)
 	if receding then E.leftSeen = now end
 
-	-- мяч успел уйти и снова сближается -> полный перевзвод
 	if E.leftSeen and (now - E.leftSeen) > 0.06 and threat.approachSpeed > 0.5 and threat.dot > 0.25 then
 		E.pressCount = 0; E.ballLeft = true; E.leftSeen = nil
 	end
 
-	-- предохранитель: долго не жали и мяч рядом -> сброс
 	if (now - (E.pressAt or 0) > 0.35) and threat.distance <= radius * 1.2 then
 		E.pressCount = 0; E.ballLeft = true
 	end
@@ -850,7 +887,6 @@ local function computeThreat(ball, root)
 	local approachSpeed = (velocity - rootVel):Dot(dirToPlayer)
 	local ballClosing = velocity:Dot(dirToPlayer)
 
-	-- реакция на рывок/ускорение мяча (способности)
 	if Config.Reaction and accel.Magnitude > 400 then
 		E.boosted = true; E.boostAt = now
 	end
@@ -863,17 +899,13 @@ local function computeThreat(ball, root)
 	}
 end
 
-local function computeRadius(threat, pingSec)
+-- лид = сколько секунд до контакта должен остаться в момент нажатия
+local function computeLead(pingSec)
 	local net = pingSec * 0.5 + (1 / 60)
-	if Config.AutoRadius then
-		local lead = Config.LeadTime + (Config.PingComp and net or 0)
-		if E.boosted then lead = lead * 1.3 end
-		return math.clamp(threat.speed * lead, Config.MinRadius, Config.MaxRadius)
-	end
-	local r = Config.BaseRadius
-	if Config.PingComp then r = r + math.clamp(threat.speed * net, 0, Config.BallPredCap) end
-	if E.boosted then r = r * 1.3 end
-	return r
+	local lead = Config.LeadTime + (Config.PingComp and net or 0)
+	if E.boosted then lead = lead * 1.3 end
+	if E.unstable then lead = lead * 1.15 end
+	return lead
 end
 
 --=============================================================
@@ -915,7 +947,7 @@ local function step(dt)
 
 	local now = tick()
 
-	-- детект нестабильного движения (рывок/прыжок/телепорт)
+	-- нестабильное движение (рывок/прыжок/телепорт)
 	local rootPos = root.Position
 	local rootVel = root.AssemblyLinearVelocity
 	local moved = (rootPos - (E.lastRootPos or rootPos)).Magnitude
@@ -929,7 +961,15 @@ local function step(dt)
 	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
 
 	local pingSec = getPing() / 1000
-	local radius = computeRadius(threat, pingSec)
+	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
+	local lead = computeLead(pingSec)
+
+	local radius
+	if Config.AutoRadius then
+		radius = math.clamp(threat.speed * lead, Config.MinRadius, Config.MaxRadius)
+	else
+		radius = Config.BaseRadius + (Config.PingComp and math.clamp(threat.speed * (pingSec * 0.5 + 1 / 60), 0, Config.BallPredCap) or 0)
+	end
 	E.radius = radius
 	E.hot = threat.distance <= radius
 
@@ -942,16 +982,11 @@ local function step(dt)
 		if tgt == nil and not heur then return end
 	end
 
-	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
-	local horizon = (Config.Horizon or 0.45) * (Config.Prediction or 0.08)
-	horizon = horizon + math.clamp((threat.speed - 150) * 0.0003, 0, 0.12)
-	local transit = pingSec * 0.5 + dtStep * 0.5 + (1 / 60) + horizon
-
 	--=========================================================
-	-- АНТИ-ЧУЖОЕ-ОТБИТИЕ: не бить, если мяч уходит
+	-- ТРИГГЕР ПО ВРЕМЕНИ ДО КОНТАКТА (устойчив к пропуску кадров)
 	--=========================================================
 
-	-- ловим резкий разворот мяча (другой игрок отбил / мяч перенацелен)
+	-- ловим резкий разворот мяча (другой игрок отбил / перенацел)
 	if E.prevVel and E.prevVel.Magnitude > 1 and threat.velocity.Magnitude > 1 then
 		if E.prevVel.Unit:Dot(threat.velocity.Unit) < 0.35 then
 			E.revAt = now
@@ -960,8 +995,6 @@ local function step(dt)
 	E.prevVel = threat.velocity
 
 	local revLock = (now - (E.revAt or -99)) < math.clamp(Config.RevLock or 0.12, 0.04, 0.30)
-
-	-- в окне разворота бьём ТОЛЬКО если мяч реально сближается и летит в нас
 	local strictClose = (threat.approachSpeed > 1.0) and (threat.dot > 0.35)
 
 	local baseDirOk
@@ -971,31 +1004,20 @@ local function step(dt)
 		baseDirOk = (threat.dot > 0.12) and (threat.approachSpeed > 0.5)
 	end
 
-	-- игра прямо говорит, что цель не мы -> требуем явного сближения
 	local tgtBlock = revLock and (tgt == false) and not (threat.approachSpeed > 2 and threat.dot > 0.5)
 	local dirOk = baseDirOk and (not tgtBlock)
 
-	local closing
-	if revLock then
-		closing = math.max(threat.approachSpeed, 0)          -- без подстановки speed*0.5
-	else
-		closing = math.max(threat.approachSpeed, threat.ballClosing * 0.5, 0.5)
-	end
+	local closing = math.max(threat.approachSpeed, threat.ballClosing * 0.5, 0.5)
+	if revLock then closing = math.max(threat.approachSpeed, 0.5) end
 
-	-- обновляем состояние перевзвода ДО проверки нажатия
+	local tti = threat.distance / math.max(closing, 0.5)
+	E.tti = tti
+
 	updateArm(ball, threat, radius)
 
-	local fire = false
-
-	if Config.CrossTrigger then
-		local tCross = (threat.distance - radius) / math.max(closing, 0.5)
-		E.lead = tCross
-		fire = (tCross <= transit) and (tCross > -0.05) and dirOk
-		if revLock then fire = fire and strictClose and (threat.distance <= radius * 1.15) end
-	else
-		fire = (threat.distance <= radius) and dirOk
-		if revLock then fire = fire and strictClose end
-	end
+	local fire = (tti <= lead) or (threat.distance <= radius * 0.9)
+	if fire then fire = fire and dirOk end
+	if revLock then fire = fire and strictClose end
 
 	if fire then
 		sendAction(ball)
@@ -1004,11 +1026,11 @@ local function step(dt)
 
 	-- подстраховка: предсказанный контакт внутри круга
 	if dirOk and (not revLock or strictClose) then
-		local futurePlayer = rootPos + rootVel * transit
-		local curveComp = 0.5 * threat.accel * (transit * transit)
+		local futurePlayer = rootPos + rootVel * lead
+		local curveComp = 0.5 * threat.accel * (lead * lead)
 		if curveComp.Magnitude > 15 then curveComp = curveComp.Unit * 15 end
-		local futureBall = ball.Position + threat.velocity * transit + curveComp
-		if (futurePlayer - futureBall).Magnitude <= radius * (revLock and 0.9 or 1) then
+		local futureBall = ball.Position + threat.velocity * lead + curveComp
+		if (futurePlayer - futureBall).Magnitude <= radius * 0.75 then
 			sendAction(ball)
 		end
 	end
@@ -1139,10 +1161,38 @@ local function updateEsp()
 end
 
 --=============================================================
--- KORBLOX
+-- BODY: KORBLOX + HEADLESS
 --=============================================================
 local korbloxBusy = false
-function applyKorblox()
+
+local function legPartNames(side)
+	if side == "Right" then
+		return { "RightUpperLeg", "RightLowerLeg", "RightFoot", "Right Leg" }
+	end
+	return { "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "Left Leg" }
+end
+
+local function lowerLegName(side)
+	return (side == "Right") and "RightLowerLeg" or "LeftLowerLeg"
+end
+
+local function dressLeg(part, withMesh)
+	if not part or not part.Parent then return end
+	local col = KORBLOX_COLORS[Config.KorbloxColor] or KORBLOX_COLORS.Black
+	pcall(function() part.Color = col end)
+	if not withMesh then return end
+	local id = "rbxassetid://" .. tostring(Config.KorbloxMesh)
+	if part:IsA("MeshPart") then
+		if part.MeshId ~= id then pcall(function() part.MeshId = id end) end
+		pcall(function() if part.TextureID ~= "" then part.TextureID = "" end end)
+	else
+		local m = part:FindFirstChild("ScriptSleepKorblox")
+		if not m then m = new("SpecialMesh", { Name = "ScriptSleepKorblox" }, part) end
+		if m.MeshId ~= id then pcall(function() m.MeshId = id end) end
+	end
+end
+
+function applyKorblox(full)
 	if not Config.Korblox or korbloxBusy then return end
 	local char = LP.Character
 	if not char then return end
@@ -1151,32 +1201,83 @@ function applyKorblox()
 	korbloxBusy = true
 
 	local side = Config.KorbloxSide
-	local meshId = Config.KorbloxMesh
+	local r15  = (hum.RigType == Enum.HumanoidRigType.R15)
+	local method = Config.KorbloxMethod or "Auto"
 
-	pcall(function()
-		local desc = hum:GetAppliedDescription()
-		if side == "Right" then desc.RightLeg = meshId else desc.LeftLeg = meshId end
-		hum:ApplyDescription(desc)
-	end)
-
-	task.wait(0.1)
-
-	local partName = (side == "Right") and "Right Leg" or "Left Leg"
-	local leg = char:FindFirstChild(partName)
-	if leg then
-		pcall(function()
-			if leg:IsA("MeshPart") then leg.MeshId = "rbxassetid://" .. tostring(meshId) end
-		end)
-		local col = KORBLOX_COLORS[Config.KorbloxColor] or KORBLOX_COLORS.Black
-		pcall(function() leg.Color = col end)
-		local acc = char:FindFirstChild("KorbloxLeg")
-		if not acc then
-			acc = new("Folder", { Name = "KorbloxLeg" }, char)
+	-- 1) описание (правильные пропорции ноги). Только полное применение.
+	local descDone = false
+	if full and (method == "Auto" or method == "Description") then
+		local ok, desc = pcall(function() return hum:GetAppliedDescription() end)
+		if ok and desc then
+			pcall(function()
+				if side == "Right" then desc.RightLeg = tonumber(Config.KorbloxMesh)
+				else desc.LeftLeg = tonumber(Config.KorbloxMesh) end
+				hum:ApplyDescription(desc)
+			end)
+			descDone = true
+			task.wait(0.08)
 		end
-		acc:SetAttribute("mesh", meshId)
 	end
 
+	local wantId = tostring(Config.KorbloxMesh)
+	local useMesh = (method == "Mesh") or (not descDone)
+
+	-- 2) прямой меш + покраска
+	if r15 then
+		-- в R15 меш ставим на голень, остальное только красим
+		for _, n in ipairs(legPartNames(side)) do
+			local p = char:FindFirstChild(n)
+			if p then dressLeg(p, useMesh and (n == lowerLegName(side))) end
+		end
+		if not char:FindFirstChild(lowerLegName(side)) then
+			-- кастомные имена частей
+			local want = (side == "Right") and "right" or "left"
+			for _, d in ipairs(char:GetDescendants()) do
+				local nm = d.Name:lower()
+				if d:IsA("BasePart") and nm:find(want, 1, true) and nm:find("leg", 1, true) then
+					dressLeg(d, useMesh)
+				end
+			end
+		end
+	else
+		-- R6: одна часть ноги
+		local p = char:FindFirstChild((side == "Right") and "Right Leg" or "Left Leg")
+		if p then
+			dressLeg(p, true)
+		else
+			for _, d in ipairs(char:GetDescendants()) do
+				local nm = d.Name:lower()
+				if d:IsA("BasePart") and nm:find((side == "Right") and "right" or "left", 1, true) and nm:find("leg", 1, true) then
+					dressLeg(d, true)
+				end
+			end
+		end
+	end
+
+	local acc = char:FindFirstChild("KorbloxLeg") or new("Folder", { Name = "KorbloxLeg" }, char)
+	acc:SetAttribute("mesh", wantId)
 	korbloxBusy = false
+end
+
+function applyHeadless(on)
+	local char = LP.Character
+	if not char then return end
+	local t = on and 1 or 0
+	local head = char:FindFirstChild("Head")
+	if head then
+		pcall(function() head.Transparency = t end)
+		for _, d in ipairs(head:GetChildren()) do
+			if d:IsA("Decal") then pcall(function() d.Transparency = t end) end
+		end
+	end
+	for _, a in ipairs(char:GetChildren()) do
+		local isHeadAcc = a:IsA("Hat")
+			or (a:IsA("Accessory") and (a.AccessoryType == Enum.AccessoryType.Hat or a.AccessoryType == Enum.AccessoryType.Hair))
+		if isHeadAcc then
+			local h = a:FindFirstChild("Handle")
+			if h then pcall(function() h.Transparency = t end) end
+		end
+	end
 end
 
 --=============================================================
@@ -1212,7 +1313,7 @@ local fpsAcc, fpsFrames = 0, 0
 
 local hud = new("Frame", {
 	Size = UDim2.new(0, 200, 0, 54),
-	Position = UDim2.new(0, 12, 0, 12),
+	Position = UDim2.new(0, 12, 0, 58),
 	BackgroundColor3 = T.Bg,
 	BackgroundTransparency = 0.25,
 	BorderSizePixel = 0,
@@ -1234,6 +1335,11 @@ local hudInfo = new("TextLabel", {
 RunService.RenderStepped:Connect(function(dt)
 	fpsAcc += dt; fpsFrames += 1
 	pcall(step, dt)
+
+	-- плавный догон меню за курсором
+	if dragTarget then
+		main.Position = main.Position:Lerp(dragTarget, 0.30)
+	end
 
 	-- ring
 	local char = LP.Character
@@ -1279,7 +1385,7 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 end)
 
--- HUD + ESP + korblox + ability
+-- HUD + ESP + ability
 task.spawn(function()
 	local lastAbility = 0
 	while true do
@@ -1288,10 +1394,10 @@ task.spawn(function()
 			if Config.HUD then
 				hud.Visible = true
 				if fpsAcc >= 0.5 then
-					hudInfo.Text = string.format("fps %d | ping %d | dist %d | spd %d\nr %d | mode %s | %s%s",
+					hudInfo.Text = string.format("fps %d | ping %d | dist %d | spd %d\nr %d | tti %.2f | %s%s",
 						math.floor(fpsFrames / fpsAcc), math.floor(getPing()),
 						math.floor(E.dist), math.floor(E.speed), math.floor(E.radius or 0),
-						tostring(E.mode), Config.AutoParry and "on" or "off",
+						E.tti or 0, tostring(E.mode), Config.AutoParry and "on" or "off",
 						Config.OneParry and " | one" or "")
 					fpsAcc, fpsFrames = 0, 0
 				end
@@ -1309,15 +1415,31 @@ task.spawn(function()
 	end
 end)
 
--- korblox watcher
+-- body watcher: korblox + headless (без спама ApplyDescription)
 task.spawn(function()
 	local lastChar
 	while true do
-		task.wait(0.5)
+		task.wait(0.4)
 		local char = LP.Character
-		if Config.Korblox and char and char ~= lastChar then
+		if char and char ~= lastChar then
 			lastChar = char
-			pcall(applyKorblox)
+			if Config.Korblox then pcall(applyKorblox, true) end
+			if Config.Headless then pcall(applyHeadless, true) end
+		elseif char then
+			if Config.Korblox and not korbloxBusy then
+				local side = Config.KorbloxSide
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				local r15 = hum and hum.RigType == Enum.HumanoidRigType.R15
+				if r15 then
+					for _, n in ipairs(legPartNames(side)) do
+						local p = char:FindFirstChild(n)
+						if p then dressLeg(p, n == lowerLegName(side)) end
+					end
+				else
+					dressLeg(char:FindFirstChild((side == "Right") and "Right Leg" or "Left Leg"), true)
+				end
+			end
+			if Config.Headless then pcall(applyHeadless, true) end
 		end
 	end
 end)
@@ -1335,7 +1457,7 @@ UserInputService.InputBegan:Connect(function(i, gp)
 		end)
 	end
 	if name == Config.MenuKey then
-		main.Visible = not main.Visible
+		setMenu(not MENU_OPEN)
 	end
 end)
 
