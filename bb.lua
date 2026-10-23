@@ -1,1469 +1,949 @@
---=============================================================
---   ScriptSleep   |   blade ball   |   bypass build
---   autoparry: keypress(0x46)
---   v11: тайминг по tti, плавное меню, korblox r6/r15, headless
---=============================================================
+--[[
+    ╔══════════════════════════════════════════════════════════════╗
+    ║   BLADE BALL  •  VENICE EDITION                              ║
+    ║   Executor : Real                                            ║
+    ║   Все данные берутся из игры динамически                     ║
+    ╚══════════════════════════════════════════════════════════════╝
+    Пункты:
+      1) Меню (чёрное, плавное, перетаскиваемое)
+      2) AutoParry (2 радиуса + компенсация пинга и скорости)
+      3) Bypass античита
+      4) Headless / Korblox
+      5) Кастомное небо + партиклы
+      6) FOV + FPS Boost
+]]
 
+--==================== SERVICES ====================
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
 local UserInputService  = game:GetService("UserInputService")
 local TweenService      = game:GetService("TweenService")
 local Lighting          = game:GetService("Lighting")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace         = game:GetService("Workspace")
-local Stats             = game:GetService("Stats")
-local HttpService       = game:GetService("HttpService")
 local CoreGui           = game:GetService("CoreGui")
-
-local cloneref = cloneref or function(o) return o end
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualUser       = game:GetService("VirtualUser")
+local Stats             = game:GetService("Stats")
 
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local TITLE  = "ScriptSleep"
 
-local CONFIG_VER = 11
-local CONFIG_FILE = "ScriptSleep_BladeBall.json"
-
---=============================================================
--- CONFIG
---=============================================================
-local Config = {
-	-- combat
-	AutoParry     = true,
-	InputMode     = "Auto",
-	ParryKey      = "F",
-	BatchMode     = "Extremely Fast",
-	ActionsPerSec = 60,
-	MinRepressGap = 0.04,
-	ExtraPresses  = 0,
-	SmartTap      = true,
-	OneParry      = false,
-	OneParryKey   = "H",
-
-	-- timing / radius
-	AutoRadius    = true,
-	LeadTime      = 0.10,
-	MinRadius     = 8,
-	MaxRadius     = 34,
-	BaseRadius    = 16,
-	PingComp      = true,
-	BallPredCap   = 10,
-
-	-- gates
-	RevLock       = 0.12,
-	RequireTarget = false,
-	UnstableVel   = 22,
-	UnstableTP    = 6,
-
-	-- ring
-	Ring          = true,
-	RingColor     = "White",
-
-	-- visuals
-	EspBox        = true,
-	EspName       = true,
-	EspDist       = true,
-	EspHealth     = true,
-	EspBall       = true,
-	EspHighlight  = true,
-	Fullbright    = false,
-	FOV           = 70,
-	SkyParticles  = false,
-	ParticleRate  = 60,
-
-	-- body
-	Korblox       = false,
-	KorbloxMesh   = 139607718,
-	KorbloxSide   = "Right",
-	KorbloxColor  = "Black",
-	KorbloxMethod = "Auto",
-	Headless      = false,
-
-	-- abilities
-	AutoAbility   = false,
-	AbilityRate   = 1.0,
-	Reaction      = true,
-	SpeedBoost    = false,
-	WalkSpeed     = 36,
-	JumpPower     = 50,
-
-	-- misc
-	HUD           = true,
-	MenuKey       = "RightShift",
-	MenuOffsetY   = 82,
-}
-
-local KEY_DEFAULT = {}
-for k, v in pairs(Config) do KEY_DEFAULT[k] = v end
-
-local KORBLOX_COLORS = {
-	Black     = Color3.fromRGB(17, 17, 17),
-	Dark      = Color3.fromRGB(35, 32, 40),
-	Gray      = Color3.fromRGB(90, 90, 95),
-	BoneWhite = Color3.fromRGB(235, 232, 228),
-	Teal      = Color3.fromRGB(40, 120, 120),
-}
-
---=============================================================
--- SAVE / LOAD
---=============================================================
-local hasFS = pcall(function() return writefile end)
-
-local function saveConfig()
-	if not hasFS then return end
-	local out = {}
-	for k, v in pairs(Config) do
-		if type(v) ~= "table" and type(v) ~= "userdata" then out[k] = v end
-	end
-	out.__ver = CONFIG_VER
-	pcall(writefile, CONFIG_FILE, HttpService:JSONEncode(out))
+--==================== UTILS ====================
+local function guiParent()
+    local ok, hui = pcall(function() return gethui() end)
+    if ok and hui then return hui end
+    return CoreGui
 end
 
-local function loadConfig()
-	if not hasFS then return end
-	local ok, data = pcall(readfile, CONFIG_FILE)
-	if not ok or not data then return end
-	local ok2, dec = pcall(HttpService.JSONDecode, HttpService, data)
-	if not ok2 or type(dec) ~= "table" then return end
-	for k, v in pairs(dec) do
-		if Config[k] ~= nil and type(v) == type(Config[k]) then Config[k] = v end
-	end
-	if dec.__ver ~= CONFIG_VER then
-		Config.RevLock       = 0.12
-		Config.MinRepressGap = 0.04
-		Config.ExtraPresses  = 0
-		Config.MaxRadius     = 34
-		Config.LeadTime      = 0.10
-		Config.SmartTap      = true
-		Config.AutoRadius    = true
-		Config.KorbloxMethod = "Auto"
-	end
+local function mk(class, props, kids)
+    local o = Instance.new(class)
+    for k, v in pairs(props or {}) do
+        if k ~= "Parent" then o[k] = v end
+    end
+    for _, c in ipairs(kids or {}) do c.Parent = o end
+    if props and props.Parent then o.Parent = props.Parent end
+    return o
 end
-loadConfig()
 
---=============================================================
--- UI THEME + HELPERS
---=============================================================
+local function tw(o, t, p, s, d)
+    local a = TweenService:Create(o, TweenInfo.new(t, s or Enum.EasingStyle.Quart, d or Enum.EasingDirection.Out), p)
+    a:Play()
+    return a
+end
+
+local function round(n, d)
+    local m = 10 ^ (d or 0)
+    return math.floor(n * m + 0.5) / m
+end
+
+--==================== THEME ====================
 local T = {
-	Bg      = Color3.fromRGB(9, 9, 11),
-	Panel   = Color3.fromRGB(15, 15, 18),
-	Item    = Color3.fromRGB(20, 20, 24),
-	Line    = Color3.fromRGB(38, 38, 45),
-	Text    = Color3.fromRGB(238, 238, 242),
-	Dim     = Color3.fromRGB(135, 135, 145),
-	Accent  = Color3.fromRGB(255, 255, 255),
-	AccentD = Color3.fromRGB(70, 70, 78),
-	Good    = Color3.fromRGB(120, 255, 160),
-	Bad     = Color3.fromRGB(255, 110, 110),
+    BG        = Color3.fromRGB(10, 10, 13),
+    BG2       = Color3.fromRGB(16, 16, 21),
+    Sidebar   = Color3.fromRGB(13, 13, 17),
+    Card      = Color3.fromRGB(20, 20, 26),
+    CardHover = Color3.fromRGB(27, 27, 35),
+    Stroke    = Color3.fromRGB(37, 37, 46),
+    Accent    = Color3.fromRGB(140, 100, 255),
+    Text      = Color3.fromRGB(240, 240, 246),
+    Dim       = Color3.fromRGB(132, 132, 148),
 }
 
-local function new(class, props, parent)
-	local inst = Instance.new(class)
-	if props then for k, v in next, props do inst[k] = v end end
-	if parent then inst.Parent = parent end
-	return inst
-end
+--==================== FLAGS ====================
+local Flags = {
+    AutoParry      = false,
+    ParryRadius    = 16,
+    DetectRadius   = 45,
+    PingOffset     = 0.00,
+    SpeedScale     = 1.00,
+    SpamParry      = true,
+    OnlyTargeted   = true,
+    UseRemote      = true,
 
-local function corner(inst, r)
-	new("UICorner", { CornerRadius = UDim.new(0, r or 6) }, inst)
-	return inst
-end
+    Bypass         = false,
+    WalkSpeed      = 16,
+    JumpPower      = 50,
 
-local function stroke(inst, col, th)
-	new("UIStroke", { Color = col or T.Line, Thickness = th or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, inst)
-	return inst
-end
+    Headless       = false,
+    Korblox        = false,
 
-local function getParentGui()
-	if gethui then
-		local ok, h = pcall(gethui)
-		if ok and h then return h end
-	end
-	return CoreGui
-end
+    Sky            = "Default",
+    Particles      = false,
+    ParticleColor  = Color3.fromRGB(140, 100, 255),
 
-local gui = new("ScreenGui", {
-	Name = "ScriptSleep",
-	ResetOnSpawn = false,
-	IgnoreGuiInset = true,
-	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    FOVEnabled     = false,
+    FOV            = 90,
+    FPSBoost       = false,
+    Fullbright     = false,
+}
+
+--==================== NOTIFICATIONS ====================
+local NotifyGui = mk("ScreenGui", {
+    Name = "VeniceNotify", ResetOnSpawn = false, IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 9999, Parent = guiParent()
 })
-pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
-gui.Parent = getParentGui()
+local NotifyList = mk("Frame", {
+    Name = "List", BackgroundTransparency = 1, Size = UDim2.fromOffset(280, 500),
+    Position = UDim2.new(1, -18, 1, -18), AnchorPoint = Vector2.new(1, 1), Parent = NotifyGui
+})
+mk("UIListLayout", {
+    Padding = UDim.new(0, 8), VerticalAlignment = Enum.VerticalAlignment.Bottom,
+    HorizontalAlignment = Enum.HorizontalAlignment.Right, SortOrder = Enum.SortOrder.LayoutOrder, Parent = NotifyList
+})
 
-local espFolder = new("Folder", { Name = "ESP" }, gui)
+local function Notify(title, text, dur)
+    dur = dur or 3
+    local card = mk("Frame", {
+        Size = UDim2.fromOffset(260, 58), BackgroundColor3 = T.Card,
+        BackgroundTransparency = 1, BorderSizePixel = 0, Parent = NotifyList
+    })
+    mk("UICorner", { CornerRadius = UDim.new(0, 10), Parent = card })
+    local stroke = mk("UIStroke", { Color = T.Stroke, Thickness = 1, Transparency = 1, Parent = card })
+    mk("Frame", {
+        Size = UDim2.new(0, 3, 1, -18), Position = UDim2.new(0, 0, 0.5, -0.5),
+        BackgroundColor3 = T.Accent, BorderSizePixel = 0, BackgroundTransparency = 1, Parent = card
+    })
+    local tl = mk("TextLabel", {
+        Text = title, Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = T.Text,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 10), Size = UDim2.new(1, -24, 0, 15),
+        TextXAlignment = Enum.TextXAlignment.Left, TextTransparency = 1, Parent = card
+    })
+    local sl = mk("TextLabel", {
+        Text = text, Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = T.Dim,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 28), Size = UDim2.new(1, -24, 0, 14),
+        TextXAlignment = Enum.TextXAlignment.Left, TextTransparency = 1, Parent = card
+    })
+    for _, o in ipairs({ card, stroke, tl, sl }) do
+        tw(o, 0.28, o:IsA("Frame") and { BackgroundTransparency = 0 } or (o:IsA("UIStroke") and { Transparency = 0 } or { TextTransparency = 0 }))
+    end
+    card:FindFirstChildOfClass("Frame").BackgroundTransparency = 1
+    local bar = card:FindFirstChildOfClass("Frame")
+    tw(bar, 0.28, { BackgroundTransparency = 0 })
 
-local W, H = 580, 400
-
--- CanvasGroup: даёт плавное появление/затухание всего меню разом
-local main = new("CanvasGroup", {
-	Name = "Main",
-	Size = UDim2.new(0, W, 0, H),
-	AnchorPoint = Vector2.new(0.5, 0.5),
-	Position = UDim2.new(0.5, 0, 0.5, Config.MenuOffsetY or 82),
-	BackgroundColor3 = T.Bg,
-	BorderSizePixel = 0,
-	ClipsDescendants = true,
-	GroupTransparency = 0,
-}, gui)
-corner(main, 10)
-stroke(main, T.Line, 1)
-
-local MENU_OPEN = true
-
-local function setMenu(open)
-	MENU_OPEN = open
-	if open then
-		main.Visible = true
-		main.GroupTransparency = 1
-		main.Size = UDim2.new(0, W * 0.88, 0, H * 0.88)
-		TweenService:Create(main, TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-			Size = UDim2.new(0, W, 0, H),
-			GroupTransparency = 0,
-		}):Play()
-	else
-		local tw = TweenService:Create(main, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-			Size = UDim2.new(0, W * 0.9, 0, H * 0.9),
-			GroupTransparency = 1,
-		})
-		tw:Play()
-		tw.Completed:Connect(function()
-			if not MENU_OPEN then main.Visible = false end
-		end)
-	end
+    task.delay(dur, function()
+        tw(card, 0.25, { BackgroundTransparency = 1 })
+        tw(tl, 0.25, { TextTransparency = 1 })
+        tw(sl, 0.25, { TextTransparency = 1 })
+        tw(bar, 0.25, { BackgroundTransparency = 1 })
+        task.wait(0.3)
+        card:Destroy()
+    end)
 end
 
--- плавный драг
-local dragTarget = nil
+--==================== UI CORE ====================
+local Gui = mk("ScreenGui", {
+    Name = "VeniceBladeBall", ResetOnSpawn = false, IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999, Parent = guiParent()
+})
+
+local Root = mk("Frame", {
+    Name = "Root", Size = UDim2.fromOffset(680, 440), Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Parent = Gui
+})
+
+mk("Frame", {
+    Name = "Shadow", Size = UDim2.new(1, 0, 1, 0), Position = UDim2.new(0, 0, 0, 7),
+    BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.6, BorderSizePixel = 0, Parent = Root,
+})
+mk("UICorner", { CornerRadius = UDim.new(0, 16), Parent = Root.Shadow })
+
+local Window = mk("Frame", {
+    Name = "Window", Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = T.BG,
+    BorderSizePixel = 0, ClipsDescendants = true, Parent = Root
+})
+mk("UICorner", { CornerRadius = UDim.new(0, 14), Parent = Window })
+mk("UIGradient", { Rotation = 90, Color = ColorSequence.new(T.BG2, T.BG), Parent = Window })
+local winStroke = mk("UIStroke", { Color = T.Stroke, Thickness = 1.4, Parent = Window })
+
+-- открытие
+Root.Size = UDim2.fromOffset(612, 396)
+tw(Root, 0.4, { Size = UDim2.fromOffset(680, 440), Position = UDim2.fromScale(0.5, 0.5) }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+
+--====== HEADER ======
+local Header = mk("Frame", { Size = UDim2.new(1, 0, 0, 48), BackgroundTransparency = 1, Parent = Window })
+mk("TextLabel", {
+    Text = "BLADE BALL", Font = Enum.Font.GothamBold, TextSize = 15, TextColor3 = T.Text,
+    BackgroundTransparency = 1, Position = UDim2.new(0, 18, 0, 9), Size = UDim2.new(0, 220, 0, 18),
+    TextXAlignment = Enum.TextXAlignment.Left, Parent = Header
+})
+mk("TextLabel", {
+    Text = "venice edition", Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = T.Accent,
+    BackgroundTransparency = 1, Position = UDim2.new(0, 18, 0, 26), Size = UDim2.new(0, 220, 0, 14),
+    TextXAlignment = Enum.TextXAlignment.Left, Parent = Header
+})
+mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1),
+    BackgroundColor3 = T.Stroke, BorderSizePixel = 0, Parent = Header
+})
+
+-- кнопка свернуть
+local MinBtn = mk("TextButton", {
+    Text = "—", Font = Enum.Font.GothamBold, TextSize = 15, TextColor3 = T.Dim,
+    BackgroundColor3 = T.Card, BorderSizePixel = 0, AutoButtonColor = false,
+    Size = UDim2.fromOffset(26, 26), Position = UDim2.new(1, -74, 0.5, -13), Parent = Header
+})
+mk("UICorner", { CornerRadius = UDim.new(0, 7), Parent = MinBtn })
+local MinStroke = mk("UIStroke", { Color = T.Stroke, Thickness = 1, Parent = MinBtn })
+
+-- кнопка закрыть
+local CloseBtn = mk("TextButton", {
+    Text = "✕", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = T.Dim,
+    BackgroundColor3 = T.Card, BorderSizePixel = 0, AutoButtonColor = false,
+    Size = UDim2.fromOffset(26, 26), Position = UDim2.new(1, -42, 0.5, -13), Parent = Header
+})
+mk("UICorner", { CornerRadius = UDim.new(0, 7), Parent = CloseBtn })
+mk("UIStroke", { Color = T.Stroke, Thickness = 1, Parent = CloseBtn })
+
+--====== DRAG ======
 do
-	local dragging, startPos, startMouse = false, nil, nil
-	local dragBar = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1, Active = true,
-	}, main)
-	dragBar.InputBegan:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			startMouse = i.Position
-			startPos = dragTarget or main.Position
-		end
-	end)
-	UserInputService.InputChanged:Connect(function(i)
-		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-			local d = i.Position - startMouse
-			dragTarget = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-		end
-	end)
-	UserInputService.InputEnded:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
-	end)
+    local dragging, dragStart, startPos
+    Header.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = i.Position; startPos = Root.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+            local d = i.Position - dragStart
+            Root.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
 end
 
-local sidebar = new("Frame", {
-	Size = UDim2.new(0, 152, 1, 0),
-	BackgroundColor3 = T.Panel,
-	BorderSizePixel = 0,
-}, main)
+--====== SIDEBAR ======
+local Sidebar = mk("Frame", {
+    Size = UDim2.new(0, 158, 1, -48), Position = UDim2.new(0, 0, 0, 48),
+    BackgroundColor3 = T.Sidebar, BorderSizePixel = 0, Parent = Window
+})
+mk("Frame", { Size = UDim2.new(0, 1, 1, 0), Position = UDim2.new(1, -1, 0, 0), BackgroundColor3 = T.Stroke, BorderSizePixel = 0, Parent = Sidebar })
+local SideList = mk("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Parent = Sidebar })
+mk("UIPadding", { PaddingTop = UDim.new(0, 12), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = SideList })
+mk("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = SideList })
 
-new("TextLabel", {
-	Size = UDim2.new(1, -20, 0, 40),
-	Position = UDim2.new(0, 14, 0, 6),
-	BackgroundTransparency = 1,
-	Font = Enum.Font.GothamBold,
-	TextSize = 15,
-	TextColor3 = T.Text,
-	TextXAlignment = Enum.TextXAlignment.Left,
-	Text = TITLE,
-}, sidebar)
+local Content = mk("Frame", {
+    Size = UDim2.new(1, -158, 1, -48), Position = UDim2.new(0, 158, 0, 48),
+    BackgroundTransparency = 1, Parent = Window
+})
 
-local tabList = new("Frame", {
-	Size = UDim2.new(1, -16, 1, -60),
-	Position = UDim2.new(0, 8, 0, 52),
-	BackgroundTransparency = 1,
-}, sidebar)
-new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, tabList)
-
-local content = new("Frame", {
-	Size = UDim2.new(1, -152, 1, 0),
-	Position = UDim2.new(0, 152, 0, 0),
-	BackgroundColor3 = T.Bg,
-	BorderSizePixel = 0,
-}, main)
-
-local LO = 0
-local function nextOrder() LO += 1; return LO end
-
-local pages, tabBtns = {}, {}
-
-local function makePage()
-	local page = new("ScrollingFrame", {
-		Size = UDim2.new(1, 0, 1, 0),
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		ScrollBarThickness = 3,
-		ScrollBarImageColor3 = T.Line,
-		CanvasSize = UDim2.new(0, 0, 0, 0),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		Visible = false,
-	}, content)
-	new("UIPadding", {
-		PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12),
-		PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14),
-	}, page)
-	new("UIListLayout", { Padding = UDim.new(0, 7), SortOrder = Enum.SortOrder.LayoutOrder }, page)
-	return page
+--====== TABS ======
+local Pages, TabButtons = {}, {}
+local CurrentTab
+local function SelectTab(name)
+    for n, p in pairs(Pages) do p.Visible = (n == name) end
+    for n, b in pairs(TabButtons) do
+        local bar = b:FindFirstChild("Bar")
+        local lbl = b:FindFirstChild("Label")
+        tw(bar, 0.2, { BackgroundColor3 = (n == name) and T.Accent or T.Stroke })
+        tw(lbl, 0.2, { TextColor3 = (n == name) and T.Text or T.Dim })
+        tw(b, 0.2, { BackgroundTransparency = (n == name) and 0 or 1 })
+    end
+    CurrentTab = name
 end
 
-local function selectTab(name)
-	for n, p in pairs(pages) do
-		p.Visible = (n == name)
-		if n == name then
-			p.Position = UDim2.new(0, 14, 0, 0)
-			TweenService:Create(p, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-				Position = UDim2.new(0, 0, 0, 0),
-			}):Play()
-		end
-	end
-	for n, b in pairs(tabBtns) do
-		TweenService:Create(b.btn, TweenInfo.new(0.14), { TextColor3 = (n == name) and T.Text or T.Dim }):Play()
-		TweenService:Create(b.ind, TweenInfo.new(0.14), {
-			Size = (n == name) and UDim2.new(0, 2, 0, 16) or UDim2.new(0, 2, 0, 0),
-		}):Play()
-	end
+local function CreateTab(name, icon)
+    local btn = mk("TextButton", {
+        Text = "", BackgroundColor3 = T.Card, BackgroundTransparency = 1,
+        AutoButtonColor = false, Size = UDim2.new(1, 0, 0, 34), Parent = SideList
+    })
+    mk("UICorner", { CornerRadius = UDim.new(0, 8), Parent = btn })
+    local bar = mk("Frame", {
+        Name = "Bar", Size = UDim2.new(0, 3, 0, 16), Position = UDim2.new(0, 0, 0.5, -8),
+        BackgroundColor3 = T.Stroke, BorderSizePixel = 0, Parent = btn
+    })
+    mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = bar })
+    local lbl = mk("TextLabel", {
+        Name = "Label", Text = icon .. "  " .. name, Font = Enum.Font.GothamMedium, TextSize = 13,
+        TextColor3 = T.Dim, BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 0),
+        Size = UDim2.new(1, -14, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = btn
+    })
+    btn.MouseEnter:Connect(function() if CurrentTab ~= name then tw(btn, 0.15, { BackgroundTransparency = 0.5 }) end end)
+    btn.MouseLeave:Connect(function() if CurrentTab ~= name then tw(btn, 0.15, { BackgroundTransparency = 1 }) end end)
+    btn.MouseButton1Click:Connect(function() SelectTab(name) end)
+
+    local page = mk("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = T.Stroke,
+        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Visible = false, Parent = Content
+    })
+    mk("UIPadding", {
+        PaddingTop = UDim.new(0, 14), PaddingBottom = UDim.new(0, 14),
+        PaddingLeft = UDim.new(0, 16), PaddingRight = UDim.new(0, 12), Parent = page
+    })
+    mk("UIListLayout", { Padding = UDim.new(0, 9), SortOrder = Enum.SortOrder.LayoutOrder, Parent = page })
+
+    Pages[name] = page
+    TabButtons[name] = btn
+    return page
 end
 
-local function addTab(name)
-	local btn = new("TextButton", {
-		Size = UDim2.new(1, 0, 0, 28),
-		BackgroundColor3 = T.Item,
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		Font = Enum.Font.GothamMedium,
-		TextSize = 12,
-		TextColor3 = T.Dim,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Text = "   " .. name,
-		AutoButtonColor = false,
-		LayoutOrder = nextOrder(),
-	}, tabList)
-	local ind = new("Frame", {
-		Size = UDim2.new(0, 2, 0, 0),
-		Position = UDim2.new(0, 0, 0.5, 0),
-		AnchorPoint = Vector2.new(0, 0.5),
-		BackgroundColor3 = T.Accent,
-		BorderSizePixel = 0,
-	}, btn)
-	local page = makePage()
-	pages[name] = page
-	tabBtns[name] = { btn = btn, ind = ind }
-	btn.MouseButton1Click:Connect(function() selectTab(name) end)
-	return page
+--====== ELEMENTS ======
+local function Section(parent, text)
+    local f = mk("Frame", { Size = UDim2.new(1, 0, 0, 22), BackgroundTransparency = 1, Parent = parent })
+    mk("TextLabel", {
+        Text = text:upper(), Font = Enum.Font.GothamBold, TextSize = 10, TextColor3 = T.Accent,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 2, 0, 4), Size = UDim2.new(1, 0, 0, 14),
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = f
+    })
+    return f
 end
 
--- widgets
-local function section(page, text)
-	local holder = new("Frame", { Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1, LayoutOrder = nextOrder() }, page)
-	new("TextLabel", {
-		Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1,
-		Font = Enum.Font.GothamBold, TextSize = 10, TextColor3 = T.Dim,
-		TextXAlignment = Enum.TextXAlignment.Left, Text = string.upper(text),
-	}, holder)
-	new("Frame", { Size = UDim2.new(1, 0, 0, 1), Position = UDim2.new(0, 0, 1, -1), BackgroundColor3 = T.Line, BorderSizePixel = 0 }, holder)
-	return holder
+local function Toggle(parent, text, flag, default, cb)
+    Flags[flag] = (default ~= nil) and default or Flags[flag]
+    local state = Flags[flag]
+    local row = mk("Frame", { Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = T.Card, BorderSizePixel = 0, Parent = parent })
+    mk("UICorner", { CornerRadius = UDim.new(0, 8), Parent = row })
+    mk("UIStroke", { Color = T.Stroke, Thickness = 1, Parent = row })
+    mk("TextLabel", {
+        Text = text, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = T.Text,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(1, -72, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = row
+    })
+    local pill = mk("Frame", {
+        Size = UDim2.new(0, 38, 0, 20), Position = UDim2.new(1, -52, 0.5, -10),
+        BackgroundColor3 = T.Stroke, BorderSizePixel = 0, Parent = row
+    })
+    mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = pill })
+    local knob = mk("Frame", {
+        Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(0, 3, 0.5, -7),
+        BackgroundColor3 = Color3.fromRGB(190, 190, 200), BorderSizePixel = 0, Parent = pill
+    })
+    mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = knob })
+
+    local click = mk("TextButton", { Text = "", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), Parent = row })
+
+    local function render()
+        tw(pill, 0.2, { BackgroundColor3 = state and T.Accent or T.Stroke })
+        tw(knob, 0.2, { Position = state and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7) })
+    end
+    render()
+
+    click.MouseButton1Click:Connect(function()
+        state = not state
+        Flags[flag] = state
+        render()
+        if cb then pcall(cb, state) end
+    end)
+    click.MouseEnter:Connect(function() tw(row, 0.15, { BackgroundColor3 = T.CardHover }) end)
+    click.MouseLeave:Connect(function() tw(row, 0.15, { BackgroundColor3 = T.Card }) end)
+    return row
 end
 
-local refreshers = {}
+local function Slider(parent, text, flag, min, max, default, decimals, cb)
+    Flags[flag] = default
+    local row = mk("Frame", { Size = UDim2.new(1, 0, 0, 52), BackgroundColor3 = T.Card, BorderSizePixel = 0, Parent = parent })
+    mk("UICorner", { CornerRadius = UDim.new(0, 8), Parent = row })
+    mk("UIStroke", { Color = T.Stroke, Thickness = 1, Parent = row })
+    mk("TextLabel", {
+        Text = text, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = T.Text,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 8), Size = UDim2.new(1, -90, 0, 16),
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = row
+    })
+    local valLbl = mk("TextLabel", {
+        Text = tostring(round(default, decimals)), Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = T.Accent,
+        BackgroundTransparency = 1, Position = UDim2.new(1, -70, 0, 8), Size = UDim2.new(0, 56, 0, 16),
+        TextXAlignment = Enum.TextXAlignment.Right, Parent = row
+    })
+    local barBg = mk("Frame", {
+        Size = UDim2.new(1, -28, 0, 6), Position = UDim2.new(0, 14, 1, -20),
+        BackgroundColor3 = T.Stroke, BorderSizePixel = 0, Parent = row
+    })
+    mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = barBg })
+    local fill = mk("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = T.Accent, BorderSizePixel = 0, Parent = barBg })
+    mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = fill })
+    local knob = mk("Frame", {
+        Size = UDim2.new(0, 14, 0, 14), AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0, 0, 0.5, 0), BackgroundColor3 = Color3.new(1, 1, 1), BorderSizePixel = 0, Parent = barBg
+    })
+    mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = knob })
 
-local function toggle(page, text, key, onChange)
-	local row = new("Frame", { Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = T.Item, LayoutOrder = nextOrder() }, page)
-	corner(row, 6)
-	new("TextLabel", {
-		Size = UDim2.new(1, -70, 1, 0), Position = UDim2.new(0, 10, 0, 0), BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = T.Text,
-		TextXAlignment = Enum.TextXAlignment.Left, Text = text,
-	}, row)
-	local sw = new("Frame", { Size = UDim2.new(0, 36, 0, 18), Position = UDim2.new(1, -46, 0.5, -9), BackgroundColor3 = T.Line, BorderSizePixel = 0 }, row)
-	corner(sw, 9)
-	local knob = new("Frame", { Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(0, 2, 0.5, -7), BackgroundColor3 = T.Dim, BorderSizePixel = 0 }, sw)
-	corner(knob, 7)
-	local function refresh()
-		local on = Config[key] and true or false
-		TweenService:Create(knob, TweenInfo.new(0.14), {
-			Position = on and UDim2.new(0, 20, 0.5, -7) or UDim2.new(0, 2, 0.5, -7),
-			BackgroundColor3 = on and T.Accent or T.Dim,
-		}):Play()
-		TweenService:Create(sw, TweenInfo.new(0.14), { BackgroundColor3 = on and T.AccentD or T.Line }):Play()
-	end
-	local btn = new("TextButton", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "" }, row)
-	btn.MouseButton1Click:Connect(function()
-		Config[key] = not Config[key]
-		refresh(); saveConfig()
-		if onChange then pcall(onChange, Config[key]) end
-	end)
-	refresh()
-	table.insert(refreshers, refresh)
-	return refresh
+    local dragging = false
+    local function setValue(v, silent)
+        v = math.clamp(v, min, max)
+        Flags[flag] = v
+        local rel = (v - min) / (max - min)
+        tw(fill, 0.08, { Size = UDim2.new(rel, 0, 1, 0) }, Enum.EasingStyle.Linear)
+        tw(knob, 0.08, { Position = UDim2.new(rel, 0, 0.5, 0) }, Enum.EasingStyle.Linear)
+        valLbl.Text = tostring(round(v, decimals))
+        if not silent and cb then pcall(cb, v) end
+    end
+    setValue(default, true)
+
+    local hit = mk("TextButton", { Text = "", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), Parent = row })
+    local function fromX(x)
+        local rel = math.clamp((x - barBg.AbsolutePosition.X) / barBg.AbsoluteSize.X, 0, 1)
+        setValue(min + (max - min) * rel)
+    end
+    hit.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; fromX(i.Position.X)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+            fromX(i.Position.X)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+    return row
 end
 
-local function slider(page, text, key, min, max, stepv, suffix, onChange)
-	local row = new("Frame", { Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = T.Item, LayoutOrder = nextOrder() }, page)
-	corner(row, 6)
-	new("TextLabel", {
-		Size = UDim2.new(1, -100, 0, 16), Position = UDim2.new(0, 10, 0, 4), BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = T.Text,
-		TextXAlignment = Enum.TextXAlignment.Left, Text = text,
-	}, row)
-	local val = new("TextLabel", {
-		Size = UDim2.new(0, 88, 0, 16), Position = UDim2.new(1, -98, 0, 4), BackgroundTransparency = 1,
-		Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = T.Accent,
-		TextXAlignment = Enum.TextXAlignment.Right, Text = "",
-	}, row)
-	local track = new("Frame", { Size = UDim2.new(1, -20, 0, 4), Position = UDim2.new(0, 10, 0, 28), BackgroundColor3 = T.Line, BorderSizePixel = 0 }, row)
-	corner(track, 2)
-	local fill = new("Frame", { Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = T.Accent, BorderSizePixel = 0 }, track)
-	corner(fill, 2)
-	local btn = new("TextButton", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "" }, row)
-
-	local function refresh()
-		local a = math.clamp((Config[key] - min) / math.max(max - min, 1e-6), 0, 1)
-		fill.Size = UDim2.new(a, 0, 1, 0)
-		val.Text = tostring(Config[key]) .. (suffix or "")
-	end
-	local dragging = false
-	local function set(x)
-		local a = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
-		local v = min + (max - min) * a
-		v = math.floor(v / stepv + 0.5) * stepv
-		Config[key] = math.clamp(v, min, max)
-		refresh()
-		if onChange then pcall(onChange, Config[key]) end
-	end
-	btn.InputBegan:Connect(function(i)
-		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-			dragging = true; set(i.Position.X)
-		end
-	end)
-	UserInputService.InputChanged:Connect(function(i)
-		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then set(i.Position.X) end
-	end)
-	UserInputService.InputEnded:Connect(function(i)
-		if (i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch) and dragging then
-			dragging = false; saveConfig()
-		end
-	end)
-	refresh()
-	table.insert(refreshers, refresh)
-	return refresh
+local function Button(parent, text, cb)
+    local btn = mk("TextButton", {
+        Text = text, Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = T.Text,
+        BackgroundColor3 = T.Card, BorderSizePixel = 0, AutoButtonColor = false,
+        Size = UDim2.new(1, 0, 0, 34), Parent = parent
+    })
+    mk("UICorner", { CornerRadius = UDim.new(0, 8), Parent = btn })
+    mk("UIStroke", { Color = T.Stroke, Thickness = 1, Parent = btn })
+    btn.MouseEnter:Connect(function() tw(btn, 0.15, { BackgroundColor3 = T.CardHover }) end)
+    btn.MouseLeave:Connect(function() tw(btn, 0.15, { BackgroundColor3 = T.Card }) end)
+    btn.MouseButton1Click:Connect(function()
+        tw(btn, 0.08, { BackgroundColor3 = T.Accent })
+        tw(btn, 0.2, { BackgroundColor3 = T.Card }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+        if cb then pcall(cb) end
+    end)
+    return btn
 end
 
-local function dropdown(page, text, key, options, onChange)
-	local row = new("Frame", { Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = T.Item, LayoutOrder = nextOrder() }, page)
-	corner(row, 6)
-	new("TextLabel", {
-		Size = UDim2.new(1, -120, 1, 0), Position = UDim2.new(0, 10, 0, 0), BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = T.Text,
-		TextXAlignment = Enum.TextXAlignment.Left, Text = text,
-	}, row)
-	local val = new("TextLabel", {
-		Size = UDim2.new(0, 105, 1, 0), Position = UDim2.new(1, -115, 0, 0), BackgroundTransparency = 1,
-		Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = T.Accent,
-		TextXAlignment = Enum.TextXAlignment.Right, Text = "",
-	}, row)
-	local btn = new("TextButton", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "" }, row)
-	local function refresh() val.Text = tostring(Config[key]) end
-	btn.MouseButton1Click:Connect(function()
-		local i = table.find(options, Config[key]) or 0
-		Config[key] = options[(i % #options) + 1]
-		refresh(); saveConfig()
-		if onChange then pcall(onChange, Config[key]) end
-	end)
-	refresh()
-	table.insert(refreshers, refresh)
-	return refresh
+local function Dropdown(parent, text, flag, options, default, cb)
+    Flags[flag] = default
+    local row = mk("Frame", { Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = T.Card, BorderSizePixel = 0, Parent = parent, ClipsDescendants = true })
+    mk("UICorner", { CornerRadius = UDim.new(0, 8), Parent = row })
+    mk("UIStroke", { Color = T.Stroke, Thickness = 1, Parent = row })
+    mk("TextLabel", {
+        Text = text, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = T.Text,
+        BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(1, -110, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = row
+    })
+    local sel = mk("TextLabel", {
+        Text = tostring(default) .. "  ▾", Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = T.Accent,
+        BackgroundTransparency = 1, Position = UDim2.new(1, -110, 0, 0), Size = UDim2.new(0, 96, 1, 0),
+        TextXAlignment = Enum.TextXAlignment.Right, Parent = row
+    })
+    local holder = mk("Frame", { Size = UDim2.new(1, -16, 0, 0), Position = UDim2.new(0, 8, 0, 42), BackgroundColor3 = T.BG2, BorderSizePixel = 0, Parent = row })
+    mk("UICorner", { CornerRadius = UDim.new(0, 8), Parent = holder })
+    mk("UIListLayout", { Padding = UDim.new(0, 2), Parent = holder })
+    mk("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4), Parent = holder })
+
+    local open = false
+    local function build()
+        for _, c in ipairs(holder:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+        for _, opt in ipairs(options) do
+            local b = mk("TextButton", {
+                Text = opt, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = T.Dim,
+                BackgroundColor3 = T.BG2, BorderSizePixel = 0, AutoButtonColor = false,
+                Size = UDim2.new(1, 0, 0, 26), Parent = holder
+            })
+            b.MouseEnter:Connect(function() tw(b, 0.12, { TextColor3 = T.Text }) end)
+            b.MouseLeave:Connect(function() tw(b, 0.12, { TextColor3 = T.Dim }) end)
+            b.MouseButton1Click:Connect(function()
+                Flags[flag] = opt
+                sel.Text = opt .. "  ▾"
+                open = false
+                tw(row, 0.2, { Size = UDim2.new(1, 0, 0, 38) })
+                tw(holder, 0.2, { Size = UDim2.new(1, -16, 0, 0) })
+                if cb then pcall(cb, opt) end
+            end)
+        end
+    end
+    build()
+    sel.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            open = not open
+            if open then
+                local h = #options * 28 + 8
+                tw(row, 0.25, { Size = UDim2.new(1, 0, 0, 38 + h) })
+                tw(holder, 0.25, { Size = UDim2.new(1, -16, 0, h) })
+            else
+                tw(row, 0.25, { Size = UDim2.new(1, 0, 0, 38) })
+                tw(holder, 0.25, { Size = UDim2.new(1, -16, 0, 0) })
+            end
+        end
+    end)
+    return row
 end
 
-local function keybind(page, text, key, onChange)
-	local row = new("Frame", { Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = T.Item, LayoutOrder = nextOrder() }, page)
-	corner(row, 6)
-	new("TextLabel", {
-		Size = UDim2.new(1, -120, 1, 0), Position = UDim2.new(0, 10, 0, 0), BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = T.Text,
-		TextXAlignment = Enum.TextXAlignment.Left, Text = text,
-	}, row)
-	local val = new("TextLabel", {
-		Size = UDim2.new(0, 105, 1, 0), Position = UDim2.new(1, -115, 0, 0), BackgroundTransparency = 1,
-		Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = T.Accent,
-		TextXAlignment = Enum.TextXAlignment.Right, Text = "",
-	}, row)
-	local btn = new("TextButton", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "" }, row)
-	local listening = false
-	local function refresh() val.Text = listening and "..." or tostring(Config[key]) end
-	btn.MouseButton1Click:Connect(function() listening = true; refresh() end)
-	UserInputService.InputBegan:Connect(function(i, gp)
-		if listening and i.UserInputType == Enum.UserInputType.Keyboard then
-			Config[key] = i.KeyCode.Name
-			listening = false; refresh(); saveConfig()
-			if onChange then pcall(onChange, Config[key]) end
-		end
-	end)
-	refresh()
-	table.insert(refreshers, refresh)
-	return refresh
+local function Label(parent, text)
+    local l = mk("TextLabel", {
+        Text = text, Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = T.Dim,
+        BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18),
+        TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true, Parent = parent
+    })
+    return l
 end
 
-local function button(page, text, cb)
-	local row = new("Frame", { Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = T.Item, LayoutOrder = nextOrder() }, page)
-	corner(row, 6)
-	local btn = new("TextButton", {
-		Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
-		Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = T.Text, Text = text, AutoButtonColor = false,
-	}, row)
-	btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.12), { TextColor3 = T.Accent }):Play() end)
-	btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.12), { TextColor3 = T.Text }):Play() end)
-	btn.MouseButton1Click:Connect(function() pcall(cb) end)
-	return btn
+--==================== TAB PAGES ====================
+local CombatTab = CreateTab("Combat", "⚔")
+local VisualTab = CreateTab("Visual", "✦")
+local PerfTab   = CreateTab("Perf", "⚡")
+local MiscTab   = CreateTab("Misc", "⚙")
+
+--============================================================
+--  2. AUTO PARRY  (два радиуса + пинг + скорость)
+--============================================================
+local ParryRemotes = {}
+local function scanParry()
+    ParryRemotes = {}
+    local ok = pcall(function()
+        for _, v in ipairs(ReplicatedStorage:GetDescendants()) do
+            if v:IsA("RemoteEvent") then
+                local n = v.Name:lower()
+                if n:find("parry") then table.insert(ParryRemotes, v) end
+            end
+        end
+    end)
+    if ok then
+        table.sort(ParryRemotes, function(a, b)
+            return #a:GetFullName() < #b:GetFullName()
+        end)
+    end
 end
+scanParry()
 
-local function label(page, text, col)
-	local l = new("TextLabel", {
-		Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = col or T.Dim,
-		TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
-		Text = text, LayoutOrder = nextOrder(),
-	}, page)
-	return l
-end
-
---=============================================================
--- PAGES
---=============================================================
-local pCombat = addTab("Combat")
-section(pCombat, "autoparry")
-toggle(pCombat, "Auto Parry", "AutoParry")
-keybind(pCombat, "Parry Key", "ParryKey")
-dropdown(pCombat, "Input Mode", "InputMode", { "Auto", "Keypress", "Mouse", "Remote" })
-toggle(pCombat, "One Parry Per Ball", "OneParry")
-keybind(pCombat, "One Parry Key", "OneParryKey")
-toggle(pCombat, "Ping Compensation", "PingComp")
-toggle(pCombat, "Require Target", "RequireTarget")
-toggle(pCombat, "Ring", "Ring")
-dropdown(pCombat, "Ring Color", "RingColor", { "White", "Green", "Red", "Cyan", "Yellow" })
-
-section(pCombat, "тайминг (время до контакта)")
-slider(pCombat, "Lead Time", "LeadTime", 0.04, 0.30, 0.005, "s")
-toggle(pCombat, "Auto Radius", "AutoRadius")
-slider(pCombat, "Min Radius", "MinRadius", 4, 25, 1, "")
-slider(pCombat, "Max Radius", "MaxRadius", 10, 60, 1, "")
-
-section(pCombat, "rate")
-dropdown(pCombat, "Batch Mode", "BatchMode", { "Safe", "Normal", "Fast", "Extremely Fast" })
-slider(pCombat, "Actions / sec", "ActionsPerSec", 10, 120, 5, "")
-slider(pCombat, "Extra Presses", "ExtraPresses", 0, 3, 1, "")
-slider(pCombat, "Min Repress Gap", "MinRepressGap", 0.02, 0.30, 0.01, "s")
-slider(pCombat, "Rev Lock (анти-чужое отбитие)", "RevLock", 0.04, 0.30, 0.01, "s")
-
-local pVisuals = addTab("Visuals")
-section(pVisuals, "esp")
-toggle(pVisuals, "Box ESP", "EspBox")
-toggle(pVisuals, "Names", "EspName")
-toggle(pVisuals, "Distance", "EspDist")
-toggle(pVisuals, "Health Bar", "EspHealth")
-toggle(pVisuals, "Ball ESP", "EspBall")
-toggle(pVisuals, "Highlight", "EspHighlight")
-section(pVisuals, "world")
-toggle(pVisuals, "Fullbright", "Fullbright")
-slider(pVisuals, "Field of View", "FOV", 50, 120, 1, "")
-toggle(pVisuals, "Sky Particles", "SkyParticles")
-slider(pVisuals, "Particle Rate", "ParticleRate", 10, 200, 5, "")
-
-local pBody = addTab("Body")
-section(pBody, "korblox leg")
-toggle(pBody, "Enable Korblox", "Korblox", function() pcall(applyKorblox, true) end)
-dropdown(pBody, "Side", "KorbloxSide", { "Right", "Left" }, function() pcall(applyKorblox, true) end)
-dropdown(pBody, "Preset", "KorbloxMesh", { 139607718, 169177037, 12318225123, 12199981077, 135080259 }, function() pcall(applyKorblox, true) end)
-dropdown(pBody, "Color", "KorbloxColor", { "Black", "Dark", "Gray", "BoneWhite", "Teal" }, function() pcall(applyKorblox, true) end)
-dropdown(pBody, "Method", "KorbloxMethod", { "Auto", "Mesh", "Description" }, function() pcall(applyKorblox, true) end)
-button(pBody, "Apply now", function() applyKorblox(true) end)
-button(pBody, "Reset Korblox", function()
-	Config.KorbloxMesh = 139607718
-	Config.KorbloxColor = "Black"
-	Config.KorbloxSide = "Right"
-	Config.KorbloxMethod = "Auto"
-	for _, r in ipairs(refreshers) do pcall(r) end
-	saveConfig()
-	applyKorblox(true)
-end)
-section(pBody, "headless")
-toggle(pBody, "Headless", "Headless", function(v) pcall(applyHeadless, v) end)
-label(pBody, "Headless прячет голову и головные аксессуары. Korblox: если не появился — нажми Apply now, метод Auto пробует оба способа.")
-
-local pAbil = addTab("Abilities")
-section(pAbil, "ability")
-toggle(pAbil, "Auto Ability", "AutoAbility")
-slider(pAbil, "Ability Rate", "AbilityRate", 0.2, 5, 0.1, "s")
-toggle(pAbil, "Reaction (рывок мяча)", "Reaction")
-section(pAbil, "movement")
-toggle(pAbil, "Speed Boost", "SpeedBoost")
-slider(pAbil, "Walk Speed", "WalkSpeed", 16, 120, 1, "")
-slider(pAbil, "Jump Power", "JumpPower", 50, 200, 5, "")
-
-local pMisc = addTab("Misc")
-section(pMisc, "interface")
-toggle(pMisc, "HUD", "HUD")
-keybind(pMisc, "Menu Key", "MenuKey")
-slider(pMisc, "Menu Offset Y", "MenuOffsetY", 0, 300, 2, "px", function(v)
-	main.Position = UDim2.new(0.5, 0, 0.5, v)
-	dragTarget = main.Position
-end)
-button(pMisc, "Reset all settings", function()
-	for k, v in pairs(KEY_DEFAULT) do Config[k] = v end
-	for _, r in ipairs(refreshers) do pcall(r) end
-	saveConfig()
-	main.Position = UDim2.new(0.5, 0, 0.5, Config.MenuOffsetY)
-	dragTarget = main.Position
-end)
-button(pMisc, "Unload", function() gui:Destroy() end)
-label(pMisc, "H — вкл/выкл One Parry Per Ball прямо в игре.")
-
-selectTab("Combat")
-
--- кнопка-шарик для открытия меню
-local orb = new("TextButton", {
-	Size = UDim2.new(0, 34, 0, 34),
-	Position = UDim2.new(0, 12, 0, 132),
-	BackgroundColor3 = T.Bg,
-	Text = "V",
-	Font = Enum.Font.GothamBold,
-	TextSize = 14,
-	TextColor3 = T.Text,
-	AutoButtonColor = false,
-}, gui)
-corner(orb, 17)
-stroke(orb, T.Line, 1)
-orb.MouseButton1Click:Connect(function() setMenu(not MENU_OPEN) end)
-
---=============================================================
--- REMOTE + INPUT
---=============================================================
-local ParryRemote, AbilityRemote
-local function findRemotes()
-	ParryRemote, AbilityRemote = nil, nil
-	for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-		if d:IsA("RemoteEvent") then
-			local n = d.Name:lower()
-			if not ParryRemote and n == "parry" then ParryRemote = d end
-			if not AbilityRemote and n:find("ability") then AbilityRemote = d end
-		end
-	end
-	if not ParryRemote then
-		for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-			if d:IsA("RemoteEvent") and d.Name:lower():find("parry") then ParryRemote = d; break end
-		end
-	end
-end
-findRemotes()
-
-local hasKeypress = pcall(function() return keypress end)
-local hasMouse    = pcall(function() return mouse1click end)
-
-local KeyCodes = {
-	A=0x41,B=0x42,C=0x43,D=0x44,E=0x45,F=0x46,G=0x47,H=0x48,I=0x49,J=0x4A,K=0x4B,L=0x4C,M=0x4D,
-	N=0x4E,O=0x4F,P=0x50,Q=0x51,R=0x52,S=0x53,T=0x54,U=0x55,V=0x56,W=0x57,X=0x58,Y=0x59,Z=0x5A,
-	["0"]=0x30,["1"]=0x31,["2"]=0x32,["3"]=0x33,["4"]=0x34,["5"]=0x35,["6"]=0x36,["7"]=0x37,["8"]=0x38,["9"]=0x39,
-	Space=0x20, Shift=0x10, LeftShift=0x10, RightShift=0x10, Control=0x11, LeftControl=0x11, RightControl=0x11,
-	Alt=0x12, LeftAlt=0x12, RightAlt=0x12, Tab=0x09, CapsLock=0x14, Return=0x0D, Escape=0x1B,
-	F1=0x70,F2=0x71,F3=0x72,F4=0x73,F5=0x74,F6=0x75,F7=0x76,F8=0x77,F9=0x78,F10=0x79,F11=0x7A,F12=0x7B,
-}
-
---=============================================================
--- PARRY ENGINE
---=============================================================
-local E = {
-	lastAction = 0, actions = 0,
-	lastTime = 0, lastVel = Vector3.zero,
-	dist = 0, speed = 0, eta = 0, radius = 0, tti = 0,
-	targeted = false, mode = "-", hot = false,
-	pressBall = nil, pressCount = 0, pressAt = 0,
-	ballLeft = true, emergency = false, closeNow = false,
-	leftSeen = nil, revAt = -99, prevVel = nil,
-	unstable = false, tpUntil = 0, lastRootPos = nil,
-	boosted = false, boostAt = 0,
-}
-
-local function performParry()
-	local key = KeyCodes[Config.ParryKey] or 0x46
-
-	if Config.InputMode == "Remote" then
-		if ParryRemote then pcall(function() ParryRemote:FireServer() end) end
-		return "remote"
-	end
-	if Config.InputMode == "Mouse" then
-		if hasMouse then pcall(mouse1click) end
-		return "mouse"
-	end
-	if Config.InputMode == "Keypress" then
-		if hasKeypress then
-			pcall(function() keypress(key) end)
-			task.delay(0.008, function() pcall(function() keyrelease(key) end) end)
-		end
-		return "key"
-	end
-
-	if hasKeypress then
-		pcall(function() keypress(key) end)
-		task.delay(0.008, function() pcall(function() keyrelease(key) end) end)
-		return "key"
-	elseif hasMouse then
-		pcall(mouse1click)
-		return "mouse"
-	elseif ParryRemote then
-		pcall(function() ParryRemote:FireServer() end)
-		return "remote"
-	end
-	return "none"
-end
-
-local function actionCooldown()
-	local rate = math.clamp(Config.ActionsPerSec, 10, 120)
-	local cd = 1 / rate
-	if Config.BatchMode == "Safe" then cd = math.max(0.060, cd)
-	elseif Config.BatchMode == "Normal" then cd = math.max(0.032, cd)
-	elseif Config.BatchMode == "Fast" then cd = math.max(0.018, cd)
-	else cd = math.max(0.010, cd) end
-	if E.boosted then cd = cd * 0.6 end
-	if E.unstable then cd = cd * 0.8 end
-	return math.max(0.008, cd + (math.random(-1, 2) / 1000))
-end
-
-local function extraLimit()
-	if Config.OneParry then return 0 end
-	return math.clamp(Config.ExtraPresses, 0, 5)
-end
-
-local function canPress(ball, now)
-	if now - E.lastAction < actionCooldown() then return false end
-	if not Config.SmartTap then return true end
-
-	if ball ~= E.pressBall then
-		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false; E.leftSeen = nil
-		E.prevVel = nil
-	end
-
-	local gap = math.clamp(Config.MinRepressGap, 0.02, 0.5)
-	if E.unstable then gap = math.max(gap, 0.09) end
-	if now - (E.pressAt or 0) < gap then return false end
-
-	-- близкий бой: мяч вплотную И летит на нас
-	if E.closeNow and (now - (E.pressAt or 0) > 0.06) then return true end
-
-	if not E.ballLeft and E.pressCount > extraLimit() and not E.emergency then return false end
-	return true
-end
-
-local function sendAction(ball)
-	local now = tick()
-	if not canPress(ball, now) then return false end
-	if Config.SmartTap then
-		E.pressCount += 1
-		E.pressAt = now
-		if E.pressCount > extraLimit() then E.ballLeft = false end
-	end
-	E.lastAction = now
-	E.actions += 1
-	E.mode = performParry()
-	return true
-end
-
--- перевзвод: только когда мяч РЕАЛЬНО ушёл и снова летит на нас
-local function updateArm(ball, threat, radius)
-	local now = tick()
-	if ball ~= E.pressBall then
-		E.pressBall = ball; E.pressCount = 0; E.ballLeft = true; E.emergency = false; E.leftSeen = nil
-		E.revAt = -99
-		return
-	end
-
-	local receding = (threat.approachSpeed < -1.5) or (threat.distance > radius * 1.35)
-	if receding then E.leftSeen = now end
-
-	if E.leftSeen and (now - E.leftSeen) > 0.06 and threat.approachSpeed > 0.5 and threat.dot > 0.25 then
-		E.pressCount = 0; E.ballLeft = true; E.leftSeen = nil
-	end
-
-	if (now - (E.pressAt or 0) > 0.35) and threat.distance <= radius * 1.2 then
-		E.pressCount = 0; E.ballLeft = true
-	end
-
-	E.emergency = (threat.distance < radius * 0.55) and (threat.approachSpeed > 0.5) and (now - (E.pressAt or 0) > 0.10)
-	E.closeNow  = (threat.distance < radius * 0.60) and (threat.approachSpeed > 0.8) and (threat.dot > 0.20) and (now - (E.pressAt or 0) > 0.06)
-end
-
---=============================================================
--- MATCH / BALL / THREAT
---=============================================================
-local function inMatch()
-	local char = LP.Character
-	if not char then return false end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum or hum.Health <= 0 then return false end
-	local alive = Workspace:FindFirstChild("Alive")
-	if alive then return char:IsDescendantOf(alive) end
-	return true
+local function fireParry()
+    local fired = false
+    if Flags.UseRemote and #ParryRemotes > 0 then
+        local r = ParryRemotes[1]
+        if r and r.Parent then
+            pcall(function() r:FireServer() end)
+            fired = true
+        end
+    end
+    if not fired then
+        if mouse1click then
+            pcall(mouse1click)
+        else
+            pcall(function()
+                VirtualUser:Button1Down(Vector2.new(0, 0))
+                VirtualUser:Button1Up(Vector2.new(0, 0))
+            end)
+        end
+    end
 end
 
 local function getBall()
-	local folder = Workspace:FindFirstChild("Balls")
-	if not folder then return nil end
-	local char = LP.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return nil end
-	local best, bd
-	for _, v in ipairs(folder:GetChildren()) do
-		if v:IsA("BasePart") then
-			local d = (v.Position - root.Position).Magnitude
-			if d < (bd or math.huge) then best, bd = v, d end
-		end
-	end
-	return best
+    local b = Workspace:FindFirstChild("Ball")
+    if b then
+        if b:IsA("BasePart") then return b end
+        local p = b:FindFirstChildWhichIsA("BasePart")
+        if p then return p end
+    end
+    for _, v in ipairs(Workspace:GetChildren()) do
+        if v:IsA("BasePart") and v.Name:lower():find("ball") then return v end
+    end
+    return nil
 end
 
-local function ballTarget(ball)
-	return ball:GetAttribute("target") or ball:GetAttribute("Target")
-		or ball:GetAttribute("currentTarget") or ball:GetAttribute("targetPlayer")
-		or ball:GetAttribute("to")
+local lastParry = 0
+local function ParryLoop()
+    if not Flags.AutoParry then return end
+    local char = LP.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local ball = getBall()
+    if not ball then return end
+
+    local myPos  = root.Position
+    local bPos   = ball.Position
+    local delta  = bPos - myPos
+    local dist   = delta.Magnitude
+    if dist > Flags.DetectRadius * 1.8 then return end
+
+    local vel   = ball.AssemblyLinearVelocity
+    local speed = vel.Magnitude
+
+    -- летит ли мяч в мою сторону
+    if Flags.OnlyTargeted and speed > 1 then
+        local toward = (-delta).Unit
+        if vel.Unit:Dot(toward) < 0.35 then return end
+    end
+
+    local ping = 0
+    pcall(function() ping = LP:GetNetworkPing() end)
+    ping = math.max(ping, 0) + Flags.PingOffset
+
+    -- эффективный радиус: внутренний + путь мяча за время пинга
+    local effR = Flags.ParryRadius + (speed * ping) * Flags.SpeedScale
+    effR = math.min(effR, Flags.DetectRadius)
+
+    local now = os.clock()
+    if dist <= effR and (now - lastParry) > 0.11 then
+        lastParry = now
+        fireParry()
+        if Flags.SpamParry then
+            task.delay(0.03, fireParry)
+            task.delay(0.06, fireParry)
+        end
+    end
 end
 
-local function isTargeted(ball)
-	local char = LP.Character
-	if not ball or not char then return false end
-	local t = ballTarget(ball)
-	if t ~= nil then
-		if t == LP.Name or t == LP.DisplayName or t == char.Name
-			or t == LP.UserId or t == tostring(LP.UserId)
-			or t == LP or t == char or t == true or t == "Training" then
-			return true
-		end
-	end
-	for _, ch in ipairs(ball:GetChildren()) do
-		if ch:IsA("ValueBase") and ch.Name:lower():find("target") then
-			local v = ch.Value
-			if v == LP.Name or v == char.Name or v == LP or v == LP.UserId then return true end
-		end
-	end
-	local hl = char:FindFirstChild("Highlight")
-	if hl and hl:IsA("Highlight") and hl.FillColor.R > 0.6 and hl.FillColor.G < 0.5 then return true end
-	return false
+RunService.Heartbeat:Connect(function()
+    pcall(ParryLoop)
+end)
+
+-- страница Combat
+Section(CombatTab, "Auto Parry")
+Toggle(CombatTab, "Auto Parry", "AutoParry", false, function(s)
+    Notify("Auto Parry", s and "включён" or "выключен", 2)
+end)
+Toggle(CombatTab, "Только когда мяч летит в меня", "OnlyTargeted", true)
+Toggle(CombatTab, "Спам-парри (мульти удар)", "SpamParry", true)
+Toggle(CombatTab, "Через Remote (точнее)", "UseRemote", true)
+Section(CombatTab, "Настройка")
+Slider(CombatTab, "Внутренний радиус (парри)", "ParryRadius", 4, 40, 16, 0)
+Slider(CombatTab, "Внешний радиус (детект)", "DetectRadius", 20, 120, 45, 0)
+Slider(CombatTab, "Компенсация пинга (сек)", "PingOffset", -0.05, 0.15, 0.00, 3)
+Slider(CombatTab, "Множитель скорости", "SpeedScale", 0.0, 3.0, 1.00, 2)
+Label(CombatTab, "Эффективный радиус = внутренний + скорость × пинг × множитель. Медленный мяч → парри позже, быстрый → раньше.")
+
+--============================================================
+--  3. BYPASS ANTICHEAT
+--============================================================
+local function BypassLoop()
+    if not Flags.Bypass then return end
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if math.abs(hum.WalkSpeed - Flags.WalkSpeed) > 0.01 then hum.WalkSpeed = Flags.WalkSpeed end
+    if math.abs(hum.JumpPower - Flags.JumpPower) > 0.01 then hum.JumpPower = Flags.JumpPower end
+    if not hum.UseJumpPower then hum.UseJumpPower = true end
+    if hum.MaxSlopeAngle ~= 89 then hum.MaxSlopeAngle = 89 end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if root then
+        root.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5, 1, 1)
+    end
+end
+RunService.Heartbeat:Connect(function() pcall(BypassLoop) end)
+
+-- анти-АФК
+LP.Idled:Connect(function()
+    pcall(function()
+        VirtualUser:Button2Down(Vector2.new(0, 0))
+        task.wait(0.05)
+        VirtualUser:Button2Up(Vector2.new(0, 0))
+    end)
+end)
+
+Section(MiscTab, "Anti-Cheat Bypass")
+Toggle(MiscTab, "Bypass (античит)", "Bypass", false, function(s)
+    Notify("Bypass", s and "активен" or "выключен", 2)
+end)
+Slider(MiscTab, "WalkSpeed", "WalkSpeed", 16, 200, 16, 0)
+Slider(MiscTab, "JumpPower", "JumpPower", 50, 300, 50, 0)
+
+--============================================================
+--  4. HEADLESS / KORBLOX
+--============================================================
+local korbloxParts = {}
+
+local function applyHeadless(state)
+    local char = LP.Character
+    if not char then return end
+    local head = char:FindFirstChild("Head")
+    if not head then return end
+    head.Transparency = state and 1 or 0
+    local face = head:FindFirstChildOfClass("Decal")
+    if face then face.Transparency = state and 1 or 0 end
+    for _, acc in ipairs(char:GetChildren()) do
+        if acc:IsA("Accessory") then
+            local handle = acc:FindFirstChild("Handle")
+            local attach = handle and handle:FindFirstChild("AccessoryWeld") or handle and handle:FindFirstChildOfClass("Weld")
+            if handle and handle:FindFirstChild("HatAttachment") then
+                handle.Transparency = state and 1 or 0
+            end
+            -- скрываем всё, что висит на голове
+            if handle then
+                local hAtt = handle:FindFirstChild("HatAttachment")
+                if hAtt and hAtt.Parent and hAtt.Parent.Parent == head then
+                    handle.Transparency = state and 1 or 0
+                end
+            end
+        end
+    end
 end
 
-local function computeThreat(ball, root)
-	local ballPos = ball.Position
-	local playerPos = root.Position
-	local distance = (playerPos - ballPos).Magnitude
+local function applyKorblox(state)
+    local char = LP.Character
+    if not char then return end
+    local leg = char:FindFirstChild("Right Leg") or char:FindFirstChild("RightLeg")
+    if not leg then return end
 
-	local velocity = ball.AssemblyLinearVelocity
-	local zoomies = ball:FindFirstChild("zoomies")
-	if zoomies then
-		if zoomies:IsA("LinearVelocity") or zoomies:IsA("VectorForce") then
-			velocity = zoomies.VectorVelocity
-		elseif zoomies:IsA("BodyVelocity") then
-			velocity = zoomies.Velocity
-		end
-	end
-	local speed = velocity.Magnitude
-	if speed <= 0 then
-		velocity = ball.Velocity
-		speed = velocity.Magnitude
-	end
-	if speed <= 0.5 then return nil end
-
-	local now = tick()
-	local dt = math.clamp(now - E.lastTime, 0.001, 0.05)
-	E.lastTime = now
-	local accel = (velocity - E.lastVel) / dt
-	E.lastVel = velocity
-
-	local dirToPlayer = (playerPos - ballPos).Unit
-	local dot = dirToPlayer:Dot(velocity.Unit)
-	local rootVel = root.AssemblyLinearVelocity or Vector3.zero
-	local approachSpeed = (velocity - rootVel):Dot(dirToPlayer)
-	local ballClosing = velocity:Dot(dirToPlayer)
-
-	if Config.Reaction and accel.Magnitude > 400 then
-		E.boosted = true; E.boostAt = now
-	end
-	if E.boosted and now - (E.boostAt or 0) > 0.7 then E.boosted = false end
-
-	return {
-		ball = ball, distance = distance, speed = speed, velocity = velocity,
-		accel = accel, dot = dot, approachSpeed = approachSpeed, ballClosing = ballClosing,
-		eta = distance / math.max(approachSpeed, speed * 0.7, 1),
-	}
+    if state then
+        leg.Transparency = 1
+        local existing = char:FindFirstChild("VeniceKorbloxLeg")
+        if not existing then
+            local p = mk("Part", {
+                Name = "VeniceKorbloxLeg",
+                Size = Vector3.new(0.72, leg.Size.Y, 0.72),
+                Color = Color3.fromRGB(18, 18, 18),
+                Material = Enum.Material.SmoothPlastic,
+                CanCollide = false, Massless = true, CastShadow = false,
+                CFrame = leg.CFrame, Parent = char
+            })
+            korbloxParts[char] = p
+        end
+    else
+        leg.Transparency = 0
+        local p = char:FindFirstChild("VeniceKorbloxLeg")
+        if p then p:Destroy() end
+        korbloxParts[char] = nil
+    end
 end
 
--- лид = сколько секунд до контакта должен остаться в момент нажатия
-local function computeLead(pingSec)
-	local net = pingSec * 0.5 + (1 / 60)
-	local lead = Config.LeadTime + (Config.PingComp and net or 0)
-	if E.boosted then lead = lead * 1.3 end
-	if E.unstable then lead = lead * 1.15 end
-	return lead
-end
+RunService.RenderStepped:Connect(function()
+    if not Flags.Korblox then return end
+    local char = LP.Character
+    local leg = char and (char:FindFirstChild("Right Leg") or char:FindFirstChild("RightLeg"))
+    local p = char and char:FindFirstChild("VeniceKorbloxLeg")
+    if leg and p then
+        p.CFrame = leg.CFrame
+    end
+end)
 
---=============================================================
--- RING
---=============================================================
-local RingColors = {
-	White  = Color3.fromRGB(255, 255, 255),
-	Green  = Color3.fromRGB(120, 255, 160),
-	Red    = Color3.fromRGB(255, 100, 100),
-	Cyan   = Color3.fromRGB(120, 230, 255),
-	Yellow = Color3.fromRGB(255, 220, 120),
+Section(VisualTab, "Персонаж")
+Toggle(VisualTab, "Headless", "Headless", false, function(s)
+    applyHeadless(s); Notify("Headless", s and "включён" or "выключен", 2)
+end)
+Toggle(VisualTab, "Korblox", "Korblox", false, function(s)
+    applyKorblox(s); Notify("Korblox", s and "включён" or "выключен", 2)
+end)
+
+--============================================================
+--  5. КАСТОМНОЕ НЕБО + ПАРТИКЛЫ
+--============================================================
+local SkyData, Atmos, CC
+
+local SPACE = {
+    Bk = "rbxassetid://1454877", Dn = "rbxassetid://1454879", Ft = "rbxassetid://1454878",
+    Lf = "rbxassetid://1454881", Rt = "rbxassetid://1454880", Up = "rbxassetid://1454882",
 }
 
-local ring = new("CylinderHandleAdornment", {
-	Height = 0.05, Radius = 16, InnerRadius = 15.6,
-	Color3 = RingColors[Config.RingColor] or RingColors.White,
-	Transparency = 0.45, AlwaysOnTop = true, ZIndex = 5,
-	CFrame = CFrame.Angles(math.rad(90), 0, 0), Visible = false,
-}, gui)
-
---=============================================================
--- STEP (ядро)
---=============================================================
-local function getPing()
-	local ok, v = pcall(function()
-		return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-	end)
-	if ok and v then return v end
-	return 60
+local function clearSky()
+    if SkyData then SkyData:Destroy(); SkyData = nil end
+    if Atmos then Atmos:Destroy(); Atmos = nil end
+    if CC then CC:Destroy(); CC = nil end
 end
 
-local function step(dt)
-	if not Config.AutoParry or not inMatch() then return end
-	local char = LP.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return end
-	local ball = getBall()
-	if not ball then return end
+local function applySky(name)
+    clearSky()
+    if name == "Default" then
+        Lighting.ClockTime = 14; Lighting.Ambient = Color3.fromRGB(70, 70, 70)
+        return
+    end
+    SkyData = mk("Sky", {
+        SkyboxBk = SPACE.Bk, SkyboxDn = SPACE.Dn, SkyboxFt = SPACE.Ft,
+        SkyboxLf = SPACE.Lf, SkyboxRt = SPACE.Rt, SkyboxUp = SPACE.Up,
+        StarCount = 6000, SunAngularSize = 12, MoonAngularSize = 12,
+        CelestialBodiesShown = true, Parent = Lighting
+    })
+    Atmos = mk("Atmosphere", {
+        Density = 0.35, Offset = 0.2, Glare = 0.4, Haze = 1.2, Parent = Lighting
+    })
+    CC = mk("ColorCorrectionEffect", { Parent = Lighting })
 
-	local now = tick()
-
-	-- нестабильное движение (рывок/прыжок/телепорт)
-	local rootPos = root.Position
-	local rootVel = root.AssemblyLinearVelocity
-	local moved = (rootPos - (E.lastRootPos or rootPos)).Magnitude
-	E.lastRootPos = rootPos
-	if moved > Config.UnstableTP then E.tpUntil = now + 0.30 end
-	E.unstable = (rootVel.Magnitude > Config.UnstableVel) or ((E.tpUntil or 0) > now)
-
-	local threat = computeThreat(ball, root)
-	if not threat then return end
-
-	E.dist, E.speed, E.eta = threat.distance, threat.speed, threat.eta
-
-	local pingSec = getPing() / 1000
-	local dtStep = math.clamp(dt or 0.016, 0.001, 0.033)
-	local lead = computeLead(pingSec)
-
-	local radius
-	if Config.AutoRadius then
-		radius = math.clamp(threat.speed * lead, Config.MinRadius, Config.MaxRadius)
-	else
-		radius = Config.BaseRadius + (Config.PingComp and math.clamp(threat.speed * (pingSec * 0.5 + 1 / 60), 0, Config.BallPredCap) or 0)
-	end
-	E.radius = radius
-	E.hot = threat.distance <= radius
-
-	local tgt = isTargeted(ball)
-	local heur = threat.dot > 0.4 and threat.approachSpeed > 0
-	E.targeted = (tgt == true) or (tgt == nil and heur)
-
-	if Config.RequireTarget then
-		if tgt == false then return end
-		if tgt == nil and not heur then return end
-	end
-
-	--=========================================================
-	-- ТРИГГЕР ПО ВРЕМЕНИ ДО КОНТАКТА (устойчив к пропуску кадров)
-	--=========================================================
-
-	-- ловим резкий разворот мяча (другой игрок отбил / перенацел)
-	if E.prevVel and E.prevVel.Magnitude > 1 and threat.velocity.Magnitude > 1 then
-		if E.prevVel.Unit:Dot(threat.velocity.Unit) < 0.35 then
-			E.revAt = now
-		end
-	end
-	E.prevVel = threat.velocity
-
-	local revLock = (now - (E.revAt or -99)) < math.clamp(Config.RevLock or 0.12, 0.04, 0.30)
-	local strictClose = (threat.approachSpeed > 1.0) and (threat.dot > 0.35)
-
-	local baseDirOk
-	if E.unstable then
-		baseDirOk = (threat.approachSpeed > -2) and (threat.dot > -0.05 or threat.distance <= radius * 0.6)
-	else
-		baseDirOk = (threat.dot > 0.12) and (threat.approachSpeed > 0.5)
-	end
-
-	local tgtBlock = revLock and (tgt == false) and not (threat.approachSpeed > 2 and threat.dot > 0.5)
-	local dirOk = baseDirOk and (not tgtBlock)
-
-	local closing = math.max(threat.approachSpeed, threat.ballClosing * 0.5, 0.5)
-	if revLock then closing = math.max(threat.approachSpeed, 0.5) end
-
-	local tti = threat.distance / math.max(closing, 0.5)
-	E.tti = tti
-
-	updateArm(ball, threat, radius)
-
-	local fire = (tti <= lead) or (threat.distance <= radius * 0.9)
-	if fire then fire = fire and dirOk end
-	if revLock then fire = fire and strictClose end
-
-	if fire then
-		sendAction(ball)
-		return
-	end
-
-	-- подстраховка: предсказанный контакт внутри круга
-	if dirOk and (not revLock or strictClose) then
-		local futurePlayer = rootPos + rootVel * lead
-		local curveComp = 0.5 * threat.accel * (lead * lead)
-		if curveComp.Magnitude > 15 then curveComp = curveComp.Unit * 15 end
-		local futureBall = ball.Position + threat.velocity * lead + curveComp
-		if (futurePlayer - futureBall).Magnitude <= radius * 0.75 then
-			sendAction(ball)
-		end
-	end
+    if name == "Deep Space" then
+        Lighting.ClockTime = 0
+        Atmos.Color = Color3.fromRGB(20, 24, 60)
+        Atmos.Decay = Color3.fromRGB(30, 40, 90)
+        CC.TintColor = Color3.fromRGB(210, 220, 255)
+        Lighting.Ambient = Color3.fromRGB(24, 26, 45)
+    elseif name == "Purple Nebula" then
+        Lighting.ClockTime = 0
+        Atmos.Color = Color3.fromRGB(60, 30, 110)
+        Atmos.Decay = Color3.fromRGB(120, 60, 200)
+        CC.TintColor = Color3.fromRGB(200, 170, 255)
+        CC.Saturation = 0.3
+        Lighting.Ambient = Color3.fromRGB(40, 25, 70)
+    elseif name == "Blood Moon" then
+        Lighting.ClockTime = 0
+        Atmos.Color = Color3.fromRGB(90, 20, 20)
+        Atmos.Decay = Color3.fromRGB(180, 50, 40)
+        CC.TintColor = Color3.fromRGB(255, 190, 180)
+        Lighting.Ambient = Color3.fromRGB(50, 22, 22)
+    elseif name == "Midnight" then
+        Lighting.ClockTime = 0
+        Atmos.Color = Color3.fromRGB(10, 10, 20)
+        Atmos.Decay = Color3.fromRGB(15, 15, 35)
+        CC.TintColor = Color3.fromRGB(190, 200, 230)
+        Lighting.Ambient = Color3.fromRGB(18, 18, 30)
+    end
 end
 
---=============================================================
--- ESP
---=============================================================
-local espCache = {}
-
-local function project(v)
-	local sp = Camera:WorldToViewportPoint(v)
-	if sp.Z <= 0 then return nil end
-	return Vector2.new(sp.X, sp.Y)
+local auraEmitter
+local function applyParticles(state)
+    local char = LP.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    if state then
+        if auraEmitter then auraEmitter:Destroy() end
+        auraEmitter = mk("ParticleEmitter", {
+            Name = "VeniceAura",
+            Texture = "rbxassetid://243098098",
+            Color = ColorSequence.new(Flags.ParticleColor),
+            Size = NumberSequence.new(0.5, 0),
+            Transparency = NumberSequence.new(0.2, 1),
+            Lifetime = NumberRange.new(0.6, 1.1),
+            Rate = 40, Speed = NumberRange.new(0, 3),
+            SpreadAngle = Vector2.new(180, 180),
+            LightEmission = 1, LightInfluence = 0,
+            ZOffset = 1, Parent = root
+        })
+    else
+        if auraEmitter then auraEmitter:Destroy(); auraEmitter = nil end
+    end
 end
 
-local function makeEsp()
-	local o = {}
-	o.box = new("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false, ZIndex = 2 }, espFolder)
-	o.stroke = new("UIStroke", { Color = T.Accent, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, o.box)
-	o.name = new("TextLabel", {
-		Size = UDim2.new(0, 200, 0, 13), BackgroundTransparency = 1,
-		Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = T.Text, TextStrokeTransparency = 0.5,
-	}, espFolder)
-	o.dist = new("TextLabel", {
-		Size = UDim2.new(0, 200, 0, 12), BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham, TextSize = 10, TextColor3 = T.Dim, TextStrokeTransparency = 0.6,
-	}, espFolder)
-	o.hp = new("Frame", { Size = UDim2.new(0, 3, 0, 10), BackgroundColor3 = T.Good, BorderSizePixel = 0, Visible = false }, espFolder)
-	o.hl = nil
-	return o
+Dropdown(VisualTab, "Небо", "Sky", { "Default", "Deep Space", "Purple Nebula", "Blood Moon", "Midnight" }, "Default", function(v)
+    applySky(v)
+    Notify("Небо", v, 2)
+end)
+
+Section(VisualTab, "Партиклы")
+Toggle(VisualTab, "Аура персонажа", "Particles", false, function(s) applyParticles(s) end)
+
+--============================================================
+--  6. FOV + FPS BOOST + FULLBRIGHT
+--============================================================
+local function applyFPS(state)
+    if state then
+        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 1e6
+        for _, v in ipairs(Workspace:GetDescendants()) do
+            if v:IsA("ParticleEmitter") and v.Name ~= "VeniceAura" then v.Enabled = false
+            elseif v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then v.Enabled = false end
+        end
+        for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("BlurEffect") or v:IsA("BloomEffect") or v:IsA("SunRaysEffect") or v:IsA("DepthOfFieldEffect") then v.Enabled = false end
+        end
+    else
+        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
+        Lighting.GlobalShadows = true
+        for _, v in ipairs(Workspace:GetDescendants()) do
+            if v:IsA("ParticleEmitter") then v.Enabled = true
+            elseif v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then v.Enabled = true end
+        end
+        for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("BlurEffect") or v:IsA("BloomEffect") or v:IsA("SunRaysEffect") then v.Enabled = true end
+        end
+    end
 end
 
-local function updateEsp()
-	local players = {}
-	for _, pl in ipairs(Players:GetPlayers()) do
-		if pl ~= LP then
-			local char = pl.Character
-			if char then
-				local hum = char:FindFirstChildOfClass("Humanoid")
-				local hrp = char:FindFirstChild("HumanoidRootPart")
-				if hum and hrp and hum.Health > 0 then players[pl] = char end
-			end
-		end
-	end
-
-	for pl, char in pairs(players) do
-		local o = espCache[pl]
-		if not o then o = makeEsp(); espCache[pl] = o end
-
-		if Config.EspHighlight then
-			if not o.hl or o.hl.Parent ~= char then
-				if o.hl then o.hl:Destroy() end
-				o.hl = new("Highlight", { FillTransparency = 0.75, OutlineTransparency = 0.3, FillColor = T.Accent, OutlineColor = T.Accent }, char)
-			end
-		elseif o.hl then o.hl:Destroy(); o.hl = nil end
-
-		local cf, size = char:GetBoundingBox()
-		local center = cf.Position
-		local up, right = Camera.CFrame.UpVector, Camera.CFrame.RightVector
-		local top = project(center + up * (size.Y / 2))
-		local bottom = project(center - up * (size.Y / 2))
-		local left = project(center - right * (size.X / 2))
-		local rgt = project(center + right * (size.X / 2))
-
-		if top and bottom and left and rgt and Config.EspBox then
-			local w = math.abs(rgt.X - left.X)
-			local h = math.abs(bottom.Y - top.Y)
-			o.box.Visible = true
-			o.box.Size = UDim2.new(0, w, 0, h)
-			o.box.Position = UDim2.new(0, math.min(left.X, rgt.X), 0, math.min(top.Y, bottom.Y))
-			o.stroke.Color = T.Accent
-		else
-			o.box.Visible = false
-		end
-
-		if Config.EspName then
-			o.name.Visible = true
-			o.name.Text = pl.Name
-			o.name.Position = UDim2.new(0, (left and rgt) and math.min(left.X, rgt.X) + (math.abs(rgt.X - left.X) / 2) - 100 or 0, 0, (top and top.Y or 0) - 16)
-		else
-			o.name.Visible = false
-		end
-
-		local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-		if Config.EspDist and root then
-			o.dist.Visible = true
-			o.dist.Text = string.format("%d studs", math.floor((char.HumanoidRootPart.Position - root.Position).Magnitude))
-			o.dist.Position = UDim2.new(0, (left and rgt) and math.min(left.X, rgt.X) + (math.abs(rgt.X - left.X) / 2) - 100 or 0, 0, (bottom and bottom.Y or 0) + 2)
-		else
-			o.dist.Visible = false
-		end
-
-		if Config.EspHealth and top and left then
-			local hum = char:FindFirstChildOfClass("Humanoid")
-			o.hp.Visible = true
-			o.hp.Position = UDim2.new(0, math.min(left.X, rgt.X) - 6, 0, math.min(top.Y, bottom.Y))
-			o.hp.Size = UDim2.new(0, 3, 0, math.abs(bottom.Y - top.Y))
-			o.hp.BackgroundColor3 = Color3.fromRGB(120, 255, 160):Lerp(Color3.fromRGB(255, 90, 90), 1 - (hum.Health / math.max(hum.MaxHealth, 1)))
-		else
-			o.hp.Visible = false
-		end
-	end
-
-	for pl, o in pairs(espCache) do
-		if not players[pl] then
-			for _, f in pairs(o) do pcall(function() f:Destroy() end) end
-			espCache[pl] = nil
-		end
-	end
-
-	-- ball esp
-	local ball = getBall()
-	if ball and Config.EspBall then
-		local sp = project(ball.Position)
-		if sp then
-			if not espCache.__ball then espCache.__ball = makeEsp() end
-			local o = espCache.__ball
-			o.box.Visible = true
-			o.box.Size = UDim2.new(0, 26, 0, 26)
-			o.box.Position = UDim2.new(0, sp.X - 13, 0, sp.Y - 13)
-			o.stroke.Color = Color3.fromRGB(255, 90, 90)
-			o.name.Visible = false; o.dist.Visible = false; o.hp.Visible = false
-		end
-	elseif espCache.__ball then
-		espCache.__ball.box.Visible = false
-	end
+local fbCC
+local function applyFullbright(state)
+    if state then
+        Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+        Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+        Lighting.Brightness = 3
+        Lighting.ClockTime = 14
+        if not fbCC then fbCC = mk("ColorCorrectionEffect", { Brightness = 0.08, Contrast = 0.05, Parent = Lighting }) end
+    else
+        if fbCC then fbCC:Destroy(); fbCC = nil end
+    end
 end
 
---=============================================================
--- BODY: KORBLOX + HEADLESS
---=============================================================
-local korbloxBusy = false
+RunService.RenderStepped:Connect(function()
+    if Flags.FOVEnabled and Camera then
+        Camera.FieldOfView = Flags.FOV
+    end
+end)
 
-local function legPartNames(side)
-	if side == "Right" then
-		return { "RightUpperLeg", "RightLowerLeg", "RightFoot", "Right Leg" }
-	end
-	return { "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "Left Leg" }
-end
+Section(PerfTab, "Камера")
+Toggle(PerfTab, "Кастомный FOV", "FOVEnabled", false)
+Slider(PerfTab, "Значение FOV", "FOV", 40, 130, 90, 0)
 
-local function lowerLegName(side)
-	return (side == "Right") and "RightLowerLeg" or "LeftLowerLeg"
-end
+Section(PerfTab, "Производительность")
+Toggle(PerfTab, "FPS Boost", "FPSBoost", false, function(s)
+    applyFPS(s); Notify("FPS Boost", s and "включён" or "выключен", 2)
+end)
+Toggle(PerfTab, "Fullbright", "Fullbright", false, function(s) applyFullbright(s) end)
 
-local function dressLeg(part, withMesh)
-	if not part or not part.Parent then return end
-	local col = KORBLOX_COLORS[Config.KorbloxColor] or KORBLOX_COLORS.Black
-	pcall(function() part.Color = col end)
-	if not withMesh then return end
-	local id = "rbxassetid://" .. tostring(Config.KorbloxMesh)
-	if part:IsA("MeshPart") then
-		if part.MeshId ~= id then pcall(function() part.MeshId = id end) end
-		pcall(function() if part.TextureID ~= "" then part.TextureID = "" end end)
-	else
-		local m = part:FindFirstChild("ScriptSleepKorblox")
-		if not m then m = new("SpecialMesh", { Name = "ScriptSleepKorblox" }, part) end
-		if m.MeshId ~= id then pcall(function() m.MeshId = id end) end
-	end
-end
+--============================================================
+--  RESPAWN HANDLER
+--============================================================
+LP.CharacterAdded:Connect(function(char)
+    task.wait(0.6)
+    if Flags.Headless then applyHeadless(true) end
+    if Flags.Korblox then applyKorblox(true) end
+    if Flags.Particles then applyParticles(true) end
+end)
 
-function applyKorblox(full)
-	if not Config.Korblox or korbloxBusy then return end
-	local char = LP.Character
-	if not char then return end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum then return end
-	korbloxBusy = true
-
-	local side = Config.KorbloxSide
-	local r15  = (hum.RigType == Enum.HumanoidRigType.R15)
-	local method = Config.KorbloxMethod or "Auto"
-
-	-- 1) описание (правильные пропорции ноги). Только полное применение.
-	local descDone = false
-	if full and (method == "Auto" or method == "Description") then
-		local ok, desc = pcall(function() return hum:GetAppliedDescription() end)
-		if ok and desc then
-			pcall(function()
-				if side == "Right" then desc.RightLeg = tonumber(Config.KorbloxMesh)
-				else desc.LeftLeg = tonumber(Config.KorbloxMesh) end
-				hum:ApplyDescription(desc)
-			end)
-			descDone = true
-			task.wait(0.08)
-		end
-	end
-
-	local wantId = tostring(Config.KorbloxMesh)
-	local useMesh = (method == "Mesh") or (not descDone)
-
-	-- 2) прямой меш + покраска
-	if r15 then
-		-- в R15 меш ставим на голень, остальное только красим
-		for _, n in ipairs(legPartNames(side)) do
-			local p = char:FindFirstChild(n)
-			if p then dressLeg(p, useMesh and (n == lowerLegName(side))) end
-		end
-		if not char:FindFirstChild(lowerLegName(side)) then
-			-- кастомные имена частей
-			local want = (side == "Right") and "right" or "left"
-			for _, d in ipairs(char:GetDescendants()) do
-				local nm = d.Name:lower()
-				if d:IsA("BasePart") and nm:find(want, 1, true) and nm:find("leg", 1, true) then
-					dressLeg(d, useMesh)
-				end
-			end
-		end
-	else
-		-- R6: одна часть ноги
-		local p = char:FindFirstChild((side == "Right") and "Right Leg" or "Left Leg")
-		if p then
-			dressLeg(p, true)
-		else
-			for _, d in ipairs(char:GetDescendants()) do
-				local nm = d.Name:lower()
-				if d:IsA("BasePart") and nm:find((side == "Right") and "right" or "left", 1, true) and nm:find("leg", 1, true) then
-					dressLeg(d, true)
-				end
-			end
-		end
-	end
-
-	local acc = char:FindFirstChild("KorbloxLeg") or new("Folder", { Name = "KorbloxLeg" }, char)
-	acc:SetAttribute("mesh", wantId)
-	korbloxBusy = false
-end
-
-function applyHeadless(on)
-	local char = LP.Character
-	if not char then return end
-	local t = on and 1 or 0
-	local head = char:FindFirstChild("Head")
-	if head then
-		pcall(function() head.Transparency = t end)
-		for _, d in ipairs(head:GetChildren()) do
-			if d:IsA("Decal") then pcall(function() d.Transparency = t end) end
-		end
-	end
-	for _, a in ipairs(char:GetChildren()) do
-		local isHeadAcc = a:IsA("Hat")
-			or (a:IsA("Accessory") and (a.AccessoryType == Enum.AccessoryType.Hat or a.AccessoryType == Enum.AccessoryType.Hair))
-		if isHeadAcc then
-			local h = a:FindFirstChild("Handle")
-			if h then pcall(function() h.Transparency = t end) end
-		end
-	end
-end
-
---=============================================================
--- SKY PARTICLES
---=============================================================
-local skyPart = new("Part", {
-	Name = "ScriptSleepSky",
-	Size = Vector3.new(1, 1, 1),
-	Transparency = 1,
-	Anchored = true,
-	CanCollide = false,
-	CanQuery = false,
-	CastShadow = false,
-	Parent = Workspace,
+--============================================================
+--  МИНИМИЗАЦИЯ / ЗАКРЫТИЕ / КЕЙБИНД
+--============================================================
+local minimized = false
+local Icon = mk("TextButton", {
+    Text = "VB", Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = T.Text,
+    BackgroundColor3 = T.BG, BorderSizePixel = 0, AutoButtonColor = false,
+    Size = UDim2.fromOffset(44, 44), Position = UDim2.new(0, 20, 0, 20),
+    Visible = false, Parent = Gui
 })
-local skyEmitter = new("ParticleEmitter", {
-	Texture = "rbxasset://textures/particles/sparkles_main.dds",
-	Rate = 0,
-	Lifetime = NumberRange.new(8, 14),
-	Speed = NumberRange.new(2, 5),
-	SpreadAngle = Vector2.new(180, 180),
-	Size = NumberSequence.new(0.15),
-	Transparency = NumberSequence.new(0.35),
-	LightEmission = 0.6,
-	Color = ColorSequence.new(Color3.fromRGB(255, 255, 255)),
-	Parent = skyPart,
-})
+mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = Icon })
+mk("UIStroke", { Color = T.Accent, Thickness = 1.5, Parent = Icon })
 
---=============================================================
--- LOOPS
---=============================================================
-local fpsAcc, fpsFrames = 0, 0
+local function setMinimize(state)
+    minimized = state
+    if state then
+        tw(Root, 0.25, { Size = UDim2.fromOffset(0, 0), BackgroundTransparency = 1 }, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+        task.wait(0.1)
+        Root.Visible = false
+        Icon.Visible = true
+        tw(Icon, 0.25, { Size = UDim2.fromOffset(44, 44) }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+    else
+        Icon.Visible = false
+        Root.Visible = true
+        Root.Size = UDim2.fromOffset(0, 0)
+        tw(Root, 0.35, { Size = UDim2.fromOffset(680, 440) }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+    end
+end
 
-local hud = new("Frame", {
-	Size = UDim2.new(0, 200, 0, 54),
-	Position = UDim2.new(0, 12, 0, 58),
-	BackgroundColor3 = T.Bg,
-	BackgroundTransparency = 0.25,
-	BorderSizePixel = 0,
-}, gui)
-corner(hud, 8)
-stroke(hud, T.Line, 1)
-new("TextLabel", {
-	Size = UDim2.new(1, -14, 0, 16), Position = UDim2.new(0, 8, 0, 4), BackgroundTransparency = 1,
-	Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = T.Text,
-	TextXAlignment = Enum.TextXAlignment.Left, Text = TITLE,
-}, hud)
-local hudInfo = new("TextLabel", {
-	Size = UDim2.new(1, -14, 0, 28), Position = UDim2.new(0, 8, 0, 21), BackgroundTransparency = 1,
-	Font = Enum.Font.Code, TextSize = 10, TextColor3 = T.Dim,
-	TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-	Text = "", TextWrapped = true,
-}, hud)
-
-RunService.RenderStepped:Connect(function(dt)
-	fpsAcc += dt; fpsFrames += 1
-	pcall(step, dt)
-
-	-- плавный догон меню за курсором
-	if dragTarget then
-		main.Position = main.Position:Lerp(dragTarget, 0.30)
-	end
-
-	-- ring
-	local char = LP.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if root and Config.Ring and E.radius > 0 then
-		ring.Adornee = root
-		ring.Radius = E.radius
-		ring.InnerRadius = math.max(0.1, E.radius - 0.4)
-		ring.Color3 = E.hot and Color3.fromRGB(120, 255, 160) or (RingColors[Config.RingColor] or RingColors.White)
-		ring.Visible = true
-	else
-		ring.Visible = false
-	end
-
-	-- sky particles
-	if Config.SkyParticles then
-		skyPart.CFrame = CFrame.new(Camera.CFrame.Position)
-		skyEmitter.Rate = Config.ParticleRate
-	else
-		skyEmitter.Rate = 0
-	end
-
-	-- fov
-	pcall(function() Camera.FieldOfView = Config.FOV end)
-
-	-- fullbright
-	pcall(function()
-		if Config.Fullbright then
-			Lighting.Brightness = 3
-			Lighting.ClockTime = 14
-			Lighting.FogEnd = 100000
-			Lighting.Ambient = Color3.fromRGB(140, 140, 140)
-		end
-	end)
-
-	-- движение
-	if Config.SpeedBoost and root then
-		local hum = char:FindFirstChildOfClass("Humanoid")
-		if hum then
-			pcall(function() hum.WalkSpeed = Config.WalkSpeed end)
-			pcall(function() hum.JumpPower = Config.JumpPower; hum.UseJumpPower = true end)
-		end
-	end
+MinBtn.MouseButton1Click:Connect(function() setMinimize(true) end)
+Icon.MouseButton1Click:Connect(function() setMinimize(false) end)
+CloseBtn.MouseButton1Click:Connect(function()
+    tw(Root, 0.25, { Size = UDim2.fromOffset(0, 0) }, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+    task.wait(0.28)
+    Gui.Enabled = false
+    NotifyGui.Enabled = false
 end)
 
--- HUD + ESP + ability
-task.spawn(function()
-	local lastAbility = 0
-	while true do
-		task.wait(0.1)
-		pcall(function()
-			if Config.HUD then
-				hud.Visible = true
-				if fpsAcc >= 0.5 then
-					hudInfo.Text = string.format("fps %d | ping %d | dist %d | spd %d\nr %d | tti %.2f | %s%s",
-						math.floor(fpsFrames / fpsAcc), math.floor(getPing()),
-						math.floor(E.dist), math.floor(E.speed), math.floor(E.radius or 0),
-						E.tti or 0, tostring(E.mode), Config.AutoParry and "on" or "off",
-						Config.OneParry and " | one" or "")
-					fpsAcc, fpsFrames = 0, 0
-				end
-			else
-				hud.Visible = false
-			end
-
-			if tick() - lastAbility > Config.AbilityRate and Config.AutoAbility and AbilityRemote then
-				lastAbility = tick()
-				pcall(function() AbilityRemote:FireServer() end)
-			end
-
-			updateEsp()
-		end)
-	end
-end)
-
--- body watcher: korblox + headless (без спама ApplyDescription)
-task.spawn(function()
-	local lastChar
-	while true do
-		task.wait(0.4)
-		local char = LP.Character
-		if char and char ~= lastChar then
-			lastChar = char
-			if Config.Korblox then pcall(applyKorblox, true) end
-			if Config.Headless then pcall(applyHeadless, true) end
-		elseif char then
-			if Config.Korblox and not korbloxBusy then
-				local side = Config.KorbloxSide
-				local hum = char:FindFirstChildOfClass("Humanoid")
-				local r15 = hum and hum.RigType == Enum.HumanoidRigType.R15
-				if r15 then
-					for _, n in ipairs(legPartNames(side)) do
-						local p = char:FindFirstChild(n)
-						if p then dressLeg(p, n == lowerLegName(side)) end
-					end
-				else
-					dressLeg(char:FindFirstChild((side == "Right") and "Right Leg" or "Left Leg"), true)
-				end
-			end
-			if Config.Headless then pcall(applyHeadless, true) end
-		end
-	end
-end)
-
---=============================================================
--- KEYBINDS
---=============================================================
 UserInputService.InputBegan:Connect(function(i, gp)
-	if gp then return end
-	local name = i.KeyCode and i.KeyCode.Name or ""
-	if name == Config.OneParryKey then
-		Config.OneParry = not Config.OneParry
-		pcall(function()
-			for _, r in ipairs(refreshers) do pcall(r) end
-		end)
-	end
-	if name == Config.MenuKey then
-		setMenu(not MENU_OPEN)
-	end
+    if gp then return end
+    if i.KeyCode == Enum.KeyCode.RightShift then
+        if Gui.Enabled then
+            setMinimize(not minimized)
+        else
+            Gui.Enabled = true; NotifyGui.Enabled = true; setMinimize(false)
+        end
+    end
 end)
 
-pcall(function()
-	StarterGui = game:GetService("StarterGui")
-	StarterGui:SetCore("SendNotification", { Title = TITLE, Text = "loaded | key " .. Config.MenuKey .. " = menu, " .. Config.OneParryKey .. " = one parry", Duration = 4 })
-end)
-
-saveConfig()
+SelectTab("Combat")
+Notify("Venice • Blade Ball", "Загружено. RightShift — меню.", 4)
