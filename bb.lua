@@ -1,6 +1,6 @@
 --=====================================================================
---   SleepScript  //  BLADE BALL   v5
---   Autoparry: Accuracy / Triggerbot / Instant / PredictionSpam / Dynamic
+--   SleepScript  //  BLADE BALL   v6
+--   Anti-Detection Core + Humanizer + Session Guard
 --   Хоткей меню: RightShift
 --=====================================================================
 
@@ -16,6 +16,7 @@ local HttpService         = game:GetService("HttpService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local VirtualUser         = game:GetService("VirtualUser")
 local TeleportService     = game:GetService("TeleportService")
+local CoreGui             = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -24,7 +25,7 @@ local function execFn(n)
     local ok, f = pcall(function() return rawget(getfenv(), n) end)
     if ok and type(f) == "function" then return f end
 end
-local gethui    = execFn("gethui") or function() return game:GetService("CoreGui") end
+local gethui    = execFn("gethui") or function() return CoreGui end
 local setfpscap = execFn("setfpscap")
 local writefile = execFn("writefile")
 local readfile  = execFn("readfile")
@@ -33,29 +34,42 @@ local isfile    = execFn("isfile")
 ------------------------------------------------------------------ config
 local Config = {
     AutoParry      = false,
-    Accuracy       = 53,       -- 1-100, выше = позже парри
+    Accuracy       = 53,
     AccRand        = true,
     AccRandAmt     = 8,
 
-    TriggerbotDelay= 0.03,     -- 0-1 c
-    InstantSpeed   = 200,      -- 1-350, скорость, при которой парри мгновенный
-    PredictionSpam = 260,      -- 1-350, скорость, при которой включается спам
-    DynThreshold   = true,     -- считать хиты до автоспама
-    DynHits        = 3,        -- сколько парри по мячу до спама
+    TriggerbotDelay= 0.03,
+    InstantSpeed   = 200,
+    PredictionSpam = 260,
+    DynThreshold   = true,
+    DynHits        = 3,
 
     ParryRange     = 12,
     PingFactor     = 0.5,
     Reaction       = 0.04,
-    Cooldown       = 0.10,
+    Cooldown       = 0.32,
     SpamRate       = 0.05,
     OnlyTarget     = true,
     MinSpeed       = 15,
     Mode           = "Keypress",
 
-    StartupDelay   = 3,        -- пауза после инжекта
-    DtSafety       = true,     -- защита от лаг-спайков
-    DesyncGuard    = true,     -- защита от телепорта мяча
-    HoldPress      = false,    -- держать клавишу кадр
+    -- ANTI-DETECT / ЗАЩИТА
+    Humanize       = true,
+    HumanJitter    = 0.035,   -- σ реакции, сек
+    HumanAccSpread = 0.02,    -- σ фокуса на мяч
+    MissChance     = 7,       -- % намеренных пропусков
+    HoldMin        = 0.02,
+    HoldMax        = 0.06,
+    MaxParryPerSec = 9,
+    ParanoidOnKick = true,
+    ParanoidTime   = 25,
+    ParanoidScale  = 0.25,
+    Watchdog       = true,
+    RejoinAttempts = 5,
+    StartupDelay   = 3,
+    DtSafety       = true,
+    DesyncGuard    = true,
+    HoldPress      = false,
 
     FovEnabled     = false,
     Fov            = 100,
@@ -73,11 +87,13 @@ local Config = {
 }
 
 local CFG_PATH = "SleepScript.json"
+local LOG_PATH = "SleepScript_kicks.json"
+
 local function saveConfig()
     if not writefile then return end
     local t = {}
     for k, v in pairs(Config) do
-        if typeof(v) == "Color3" then t[k] = {r=v.R, g=v.G, b=v.B, __c=true} else t[k] = v end
+        if typeof(v) == Color3 then t[k] = {r=v.R, g=v.G, b=v.B, __c=true} else t[k] = v end
     end
     pcall(writefile, CFG_PATH, HttpService:JSONEncode(t))
 end
@@ -93,37 +109,35 @@ local function loadConfig()
 end
 loadConfig()
 
-local Diag = { parries=0, kicks=0, status="idle", dist=0, hits=0, target=false, real=false, window=0 }
+local Diag = { parries=0, kicks=0, status="idle", dist=0, hits=0, target=false, real=false,
+               window=0, tti=0, aggr=1, rate=0 }
 
---=====================================================================
---  BALL / TARGET
---=====================================================================
-local BallsFolder
-local function GetBall()
-    if BallsFolder and not BallsFolder.Parent then BallsFolder = nil end
-    if not BallsFolder then BallsFolder = Workspace:FindFirstChild("Balls") end
-    if BallsFolder then
-        for _, v in ipairs(BallsFolder:GetChildren()) do
-            if v:IsA("BasePart") and v:GetAttribute("realBall") == true then return v end
-        end
-        for _, v in ipairs(BallsFolder:GetChildren()) do
-            if v:IsA("BasePart") and v.AssemblyLinearVelocity.Magnitude > 15 then return v end
-        end
-        return nil
-    end
-    for _, v in ipairs(Workspace:GetChildren()) do
-        if v:IsA("BasePart") and v:GetAttribute("realBall") == true then return v end
+------------------------------------------------------------------ utils
+local function gauss()
+    local u1 = math.random()
+    local u2 = math.random()
+    if u1 < 1e-9 then u1 = 1e-9 end
+    return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+end
+
+-- время до входа мяча в радиус, с учётом гравитации; nil = уходит
+local function timeToImpact(p, v, q, radius)
+    if (p - q).Magnitude <= radius then return 0 end
+    local g = -Workspace.Gravity * 0.5
+    local dt = 1 / 120
+    local t = 0
+    local prev = (p - q).Magnitude
+    while t < 2 do
+        t = t + dt
+        local d = ((p + v * t + Vector3.new(0, g * t * t, 0)) - q).Magnitude
+        if d <= radius then return t end
+        if d > prev + 0.001 and t > 0.06 then return nil end
+        prev = d
     end
     return nil
 end
 
-local function IsTargeted(char)
-    if not char then return false, false end
-    local a = char:GetAttribute("Targeted")
-    if a ~= nil then return a == true, true end
-    if char:FindFirstChild("Highlight") then return true, true end
-    return false, false
-end
+local AC = {}
 
 --=====================================================================
 --  AUTO PARRY
@@ -133,9 +147,23 @@ do
     local bootTime   = os.clock()
     local lastFrame  = os.clock()
     local lastPress  = 0
-    local lastBallPos, trackedBall, hits, spam = nil, nil, 0, false
-    local pending, held = false, false
+    local trackedBall, hits, spam = nil, 0, false
+    local pending, held, holdDur = false, false, 0.03
+    local ballJitter, ballFocus, ballMiss = 0, 0, false
     local pings = {}
+
+    local cachedRemote, cachedRelease
+    local function getRemote(name)
+        if cachedRemote and cachedRemote.Parent then return cachedRemote, cachedRelease end
+        for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+            if d:IsA("RemoteEvent") then
+                local n = d.Name:lower()
+                if n == "parrybuttonpress" or n == "parry" then cachedRemote = d
+                elseif n == "parrybuttonrelease" then cachedRelease = d end
+            end
+        end
+        return cachedRemote, cachedRelease
+    end
 
     local function getPing()
         local ok, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
@@ -150,14 +178,14 @@ do
 
     local function down()
         if Config.Mode == "Mouse" then
-            pcall(function() VirtualInputManager:SendMouseButtonEvent(0,0,0,true, game, 0) end)
+            pcall(function() VirtualInputManager:SendMouseButtonEvent(0,0,0,true,game,0) end)
         else
             pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, false) end)
         end
     end
     local function up()
         if Config.Mode == "Mouse" then
-            pcall(function() VirtualInputManager:SendMouseButtonEvent(0,0,0,false, game, 0) end)
+            pcall(function() VirtualInputManager:SendMouseButtonEvent(0,0,0,false,game,0) end)
         else
             pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, false) end)
         end
@@ -165,8 +193,8 @@ do
 
     local function press()
         if Config.Mode == "Remote" then
-            local r = ReplicatedStorage:FindFirstChild("Parry", true)
-            if r and r:IsA("RemoteEvent") then pcall(function() r:FireServer() end) end
+            local r = getRemote()
+            if r then pcall(function() r:FireServer() end) end
             return
         end
         if Config.HoldPress then
@@ -176,104 +204,170 @@ do
         end
     end
 
-    local function fire()
-        lastPress = os.clock()
+    local function fire(now)
+        if not AC.allowRate(now) then return false end
+        lastPress = now
         hits = hits + 1
         Diag.parries = Diag.parries + 1
         Diag.hits = hits
+        holdDur = Config.HoldMin + math.random() * (Config.HoldMax - Config.HoldMin)
         press()
+        return true
+    end
+
+    -- самая опасная цель (минимальный TTI)
+    local function getBall(hrp)
+        local folder = Workspace:FindFirstChild("Balls")
+        if not folder then return nil, nil end
+        local best, bestT = nil, math.huge
+        for _, b in ipairs(folder:GetChildren()) do
+            if b:IsA("BasePart") and b:GetAttribute("realBall") == true then
+                local vel = b.AssemblyLinearVelocity
+                if vel.Magnitude >= Config.MinSpeed then
+                    local t = timeToImpact(b.Position, vel, hrp.Position, Config.ParryRange + 3)
+                    if t and t < bestT then bestT = t; best = b end
+                end
+            end
+        end
+        if not best then
+            local bd = math.huge
+            for _, b in ipairs(folder:GetChildren()) do
+                if b:IsA("BasePart") and b.AssemblyLinearVelocity.Magnitude >= Config.MinSpeed then
+                    local d = (b.Position - hrp.Position).Magnitude
+                    if d < bd then bd = d; best = b end
+                end
+            end
+        end
+        return best, bestT
+    end
+
+    local function isTargeted(char, ppos, pos, vel)
+        local a = char:GetAttribute("Targeted")
+        if a ~= nil then return a == true, true end
+        if char:FindFirstChild("Highlight") then return true, true end
+        return ((ppos - pos).Unit):Dot(vel.Unit) > 0.3, false
+    end
+
+    function AutoParry.reset()
+        if held then up(); held = false end
+        pending, trackedBall, hits, spam = false, nil, 0, false
     end
 
     local function step()
         local now = os.clock()
         local dt = now - lastFrame
         lastFrame = now
+        AutoParry.lastStep = now
 
-        if held and (now - lastPress) > 0.03 then up() held = false end
+        if held and (now - lastPress) > holdDur then up(); held = false end
 
         if not Config.AutoParry then Diag.status = "выкл" return end
         if now - bootTime < Config.StartupDelay then Diag.status = "старт" return end
 
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then Diag.status = "мёртв" return end
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum or hum.Health <= 0 then Diag.status = "мёртв" return end
 
-        local ball = GetBall()
-        if not ball then Diag.status = "нет мяча" Diag.real = false return end
+        local ball, tti = getBall(hrp)
+        if not ball then Diag.status = "нет мяча" Diag.real = false Diag.tti = 0 return end
         Diag.real = true
 
         local pos, ppos = ball.Position, hrp.Position
         local vel = ball.AssemblyLinearVelocity
         local speed = vel.Magnitude
         local dist = (ppos - pos).Magnitude
-        Diag.dist = dist
+        Diag.dist, Diag.tti = dist, tti or -1
 
-        if Config.DesyncGuard and lastBallPos then
-            if (pos - lastBallPos).Magnitude > 150 then
-                lastBallPos = pos Diag.status = "десинк" return
+        -- десинк-гард
+        if Config.DesyncGuard then
+            local last = ball:GetAttribute("__ssLast")
+            if last and (pos - last).Magnitude > 150 then
+                ball:SetAttribute("__ssLast", pos)
+                Diag.status = "десинк" return
             end
+            ball:SetAttribute("__ssLast", pos)
         end
-        lastBallPos = pos
 
         if speed < Config.MinSpeed then Diag.status = "стоит" return end
 
-        if ball ~= trackedBall then trackedBall = ball hits = 0 spam = false pending = false end
+        if ball ~= trackedBall then
+            trackedBall = ball
+            hits, spam, pending = 0, false, false
+            if Config.Humanize then
+                ballJitter = gauss() * Config.HumanJitter
+                ballFocus  = gauss() * Config.HumanAccSpread
+                ballMiss   = math.random() * 100 < Config.MissChance
+            else
+                ballJitter, ballFocus, ballMiss = 0, 0, false
+            end
+        end
         Diag.hits = hits
 
-        local targeted, known = IsTargeted(char)
-        if not known then targeted = ((ppos - pos).Unit):Dot(vel.Unit) > 0.3 end
+        local targeted = isTargeted(char, ppos, pos, vel)
         Diag.target = targeted
         if Config.OnlyTarget and not targeted then Diag.status = "не мой" return end
 
+        -- ---- профиль реакции (humanizer + паранойя) ----
+        local aggr = AC.aggression()
+        Diag.aggr = aggr
+
         local pingSec = (getPing() / 1000) * Config.PingFactor
-        local window = Config.ParryRange + speed * (pingSec + Config.Reaction)
-        if Config.DtSafety and dt > 0.04 then window = window + speed * dt end
+        local react = (Config.Reaction + ballJitter + ballFocus) * (2 - aggr)
+        if react < 0.004 then react = 0.004 end
 
         local acc = Config.Accuracy
-        if Config.AccRand then
-            acc = acc + math.random(-Config.AccRandAmt, Config.AccRandAmt)
-        end
+        if Config.AccRand then acc = acc + math.random(-Config.AccRandAmt, Config.AccRandAmt) end
         acc = math.clamp(acc, 1, 100)
-        window = window * (1 - (acc / 100) * 0.55)
-        if window < 3 then window = 3 end
-        Diag.window = window
+
+        local budget = (react + pingSec) * (1 - (acc / 100) * 0.6)
+        if Config.DtSafety and dt > 0.04 then budget = budget + dt end
+        budget = math.max(budget, 0.012)
+        if ballMiss and aggr > 0.5 then budget = budget * 0.45 end
+        Diag.window = budget
+
+        if tti == nil then
+            -- мяч формально прошёл, но всё ещё в зоне
+            if dist <= Config.ParryRange and ((ppos - pos).Unit):Dot(vel.Unit) > 0 then
+                if not spam and (now - lastPress) >= Config.Cooldown then fire(now) end
+            end
+            Diag.status = "уходит" return
+        end
 
         if speed >= Config.PredictionSpam then spam = true end
         local instant = speed >= Config.InstantSpeed
         local dynOn = Config.DynThreshold and hits >= Config.DynHits
+        local spamNow = (spam or dynOn) and aggr > 0.45 and not ballMiss
 
-        -- СПАМ
-        if spam or dynOn then
-            if dist <= window and (now - lastPress) >= Config.SpamRate then fire() end
+        if spamNow then
+            if tti <= math.max(budget * 3, Config.SpamRate) and (now - lastPress) >= Config.SpamRate then
+                fire(now)
+            end
             Diag.status = spam and "спам(скор)" or "спам(дин)"
             return
         end
 
-        if dist > window then Diag.status = "летит" return end
-        if ((ppos - pos).Unit):Dot(vel.Unit) <= 0 then Diag.status = "уходит" return end
+        if (now - lastPress) < Config.Cooldown then Diag.status = "кулдаун" return end
+        if tti > budget then Diag.status = string.format("лети %0.2f", tti) return end
 
-        -- ИНСТАНТ
-        if instant then
-            if (now - lastPress) >= Config.Cooldown then fire() end
+        if instant and aggr > 0.6 then
+            fire(now)
             Diag.status = "инстант"
             return
         end
 
-        if (now - lastPress) < Config.Cooldown then Diag.status = "кулдаун" return end
-
-        -- ТРИГГЕРБОТ
         if Config.TriggerbotDelay > 0 then
             if not pending then
                 pending = true
                 Diag.status = "триггер"
                 task.delay(Config.TriggerbotDelay, function()
                     pending = false
-                    fire()
+                    if Config.AutoParry then fire(os.clock()) end
                 end)
             end
         else
+            fire(now)
             Diag.status = "ПАРРИ"
-            fire()
         end
     end
 
@@ -282,7 +376,6 @@ do
         if not ok then Diag.status = "ошибка" warn("[SleepScript]", err) end
     end)
 
-    -- если юзер сам жмёт F/ЛКМ — не даблкликаем
     UserInputService.InputBegan:Connect(function(i, gp)
         if gp then return end
         if i.KeyCode == Enum.KeyCode.F or i.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -291,7 +384,162 @@ do
     end)
 
     LocalPlayer.CharacterAdded:Connect(function()
-        trackedBall = nil hits = 0 spam = false pending = false
+        task.wait(0.2)
+        AutoParry.reset()
+    end)
+end
+
+--=====================================================================
+--  ANTI-DETECTION CORE
+--=====================================================================
+do
+    local rate = {}
+    local paranoidUntil = 0
+    local busy, attempt = false, 0
+    local lastJob = game.JobId
+
+    AC.kicks = 0
+    AC.paranoid = false
+    AC.log = {}
+    AC.lastKickAt = 0
+
+    if readfile and isfile then
+        pcall(function()
+            if isfile(LOG_PATH) then AC.log = HttpService:JSONDecode(readfile(LOG_PATH)) end
+        end)
+    end
+
+    local function saveLog()
+        if writefile then pcall(writefile, LOG_PATH, HttpService:JSONEncode(AC.log)) end
+    end
+
+    function AC.aggression()
+        if not AC.paranoid then return 1 end
+        local left = paranoidUntil - os.clock()
+        if left <= 0 then AC.paranoid = false return 1 end
+        local s = Config.ParanoidScale
+        return s + (1 - s) * (1 - left / math.max(Config.ParanoidTime, 0.1))
+    end
+
+    function AC.allowRate(now)
+        while rate[1] and now - rate[1] > 1 do table.remove(rate, 1) end
+        local cap = math.max(2, math.floor(Config.MaxParryPerSec * (0.4 + 0.6 * AC.aggression())))
+        if #rate >= cap then return false end
+        rate[#rate+1] = now
+        Diag.rate = #rate
+        return true
+    end
+
+    function AC.enterParanoid()
+        if not Config.ParanoidOnKick then return end
+        AC.paranoid = true
+        paranoidUntil = os.clock() + Config.ParanoidTime
+    end
+
+    -- вытаскиваем текст кика из системного окна
+    function AC.readReason()
+        local parts = {}
+        for _, root in ipairs({CoreGui, gethui()}) do
+            local p = root and root:FindFirstChild("RobloxPromptGui")
+            if p then
+                for _, d in ipairs(p:GetDescendants()) do
+                    if d:IsA("TextLabel") and d.Text ~= "" and #d.Text < 220 then
+                        parts[#parts+1] = d.Text
+                    end
+                end
+            end
+        end
+        local s = table.concat(parts, " | ")
+        if s == "" then s = "unknown" end
+        return s
+    end
+
+    function AC.logKick(reason)
+        AC.log[#AC.log+1] = {
+            t = os.time(),
+            clock = os.date("%H:%M:%S"),
+            reason = reason,
+            uptime = math.floor(os.clock()),
+            paranoid = Config.ParanoidOnKick,
+        }
+        while #AC.log > 40 do table.remove(AC.log, 1) end
+        saveLog()
+    end
+
+    function AC.getLogText(n)
+        local out = {}
+        local from = math.max(1, #AC.log - (n or 8) + 1)
+        for i = #AC.log, from, -1 do
+            local e = AC.log[i]
+            out[#out+1] = string.format("%s  %s", e.clock, tostring(e.reason):sub(1, 46))
+        end
+        if #out == 0 then return "киков ещё не было" end
+        return table.concat(out, "\n")
+    end
+
+    function AC.rejoin(reason)
+        if busy then return end
+        busy = true
+        attempt = attempt + 1
+        local wait = math.min(2 ^ (attempt - 1), 20)
+        task.wait(1 + math.random() * 0.6)
+        local ok = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, lastJob, LocalPlayer)
+        end)
+        if not ok then pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end) end
+        task.wait(wait)
+        busy = false
+        if attempt >= Config.RejoinAttempts then attempt = 0 end
+    end
+
+    function AC.onKick(reason)
+        AC.kicks = AC.kicks + 1
+        AC.lastKickAt = os.clock()
+        Diag.kicks = AC.kicks
+        AC.logKick(reason)
+        AutoParry.reset()
+        AC.enterParanoid()
+        if Config.Rejoin then AC.rejoin(reason) end
+    end
+
+    function AC.antiAfk()
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:Button2Down(Vector2.new(0,0), cam.CFrame)
+            task.wait(0.35)
+            VirtualUser:Button2Up(Vector2.new(0,0), cam.CFrame)
+        end)
+    end
+
+    -- ---------- события кика ----------
+    LocalPlayer.AncestryChanged:Connect(function(_, parent)
+        if parent == nil then AC.onKick(AC.readReason()) end
+    end)
+    LocalPlayer.Idled:Connect(function()
+        if Config.AntiAfk then AC.antiAfk() end
+    end)
+
+    -- ---------- watchdog / heartbeat ----------
+    task.spawn(function()
+        while true do
+            task.wait(0.5)
+            if Config.Watchdog then
+                local idle = os.clock() - (AutoParry.lastStep or os.clock())
+                if Config.AutoParry and idle > 1.2 then
+                    AutoParry.reset()
+                    Diag.status = "watchdog"
+                end
+                if game.JobId ~= lastJob then
+                    lastJob = game.JobId
+                    attempt = 0
+                    AutoParry.reset()
+                end
+            end
+            if AC.paranoid and os.clock() > paranoidUntil then AC.paranoid = false end
+            Diag.aggr = AC.aggression()
+        end
     end)
 end
 
@@ -337,37 +585,6 @@ do
             pcall(function() Workspace.Terrain.Decoration = true end)
         end
     end
-end
-
---=====================================================================
---  SESSION
---=====================================================================
-local Session = {}
-do
-    local busy = false
-    function Session.rejoin()
-        if busy then return end
-        busy = true
-        task.wait(1.5)
-        local ok = pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end)
-        if not ok then pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end) end
-        busy = false
-    end
-    LocalPlayer.AncestryChanged:Connect(function(_, parent)
-        if parent == nil then
-            Diag.kicks = Diag.kicks + 1
-            warn("[SleepScript] кик. Всего: " .. Diag.kicks)
-            if Config.Rejoin then Session.rejoin() end
-        end
-    end)
-    LocalPlayer.Idled:Connect(function()
-        if not Config.AntiAfk then return end
-        pcall(function()
-            VirtualUser:Button2Down(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
-            task.wait(1)
-            VirtualUser:Button2Up(Vector2.new(0,0), Workspace.CurrentCamera.CFrame)
-        end)
-    end)
 end
 
 --=====================================================================
@@ -445,6 +662,7 @@ end
 --=====================================================================
 local Accent = Config.Accent
 local AP, AT, AG, TL = {}, {}, {}, {}
+local UIset = { sliders = {}, toggles = {} }
 
 local function new(class, props)
     local i = Instance.new(class)
@@ -475,7 +693,7 @@ end
 local gui = new("ScreenGui", {Name="SleepScript", ResetOnSpawn=false, IgnoreGuiInset=true,
     ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=999, Parent=gethui()})
 
-local OPEN = UDim2.fromOffset(560, 350)
+local OPEN = UDim2.fromOffset(560, 380)
 local main = new("Frame", {Name="Main", Parent=gui, AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0),
     Size=UDim2.fromOffset(560, 40), BackgroundColor3=Color3.fromRGB(15,15,19), BorderSizePixel=0, ClipsDescendants=true})
 new("UICorner", {CornerRadius=UDim.new(0,12), Parent=main})
@@ -483,11 +701,11 @@ reg(new("UIStroke", {Thickness=1.4, Transparency=0.25, Color=Accent, Parent=main
 
 local header = new("Frame", {Parent=main, Size=UDim2.new(1,0,0,34), BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0})
 regG(new("UIGradient", {Parent=header, Color=ColorSequence.new(Accent, Accent:Lerp(Color3.new(0,0,0),0.45))}))
-new("TextLabel", {Parent=header, BackgroundTransparency=1, Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-200,1,0),
+new("TextLabel", {Parent=header, BackgroundTransparency=1, Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-220,1,0),
     Font=Enum.Font.GothamBold, Text="SleepScript", TextSize=14, TextColor3=Color3.new(1,1,1),
     TextXAlignment=Enum.TextXAlignment.Left})
 local status = new("TextLabel", {Parent=header, BackgroundTransparency=1, AnchorPoint=Vector2.new(1,0), Position=UDim2.new(1,-14,0,0),
-    Size=UDim2.new(0,180,1,0), Font=Enum.Font.GothamMedium, Text="", TextSize=10.5,
+    Size=UDim2.new(0,200,1,0), Font=Enum.Font.GothamMedium, Text="", TextSize=10.5,
     TextColor3=Color3.fromRGB(235,235,245), TextXAlignment=Enum.TextXAlignment.Right})
 
 local body = new("Frame", {Parent=main, Position=UDim2.new(0,0,0,34), Size=UDim2.new(1,0,1,-34), BackgroundTransparency=1})
@@ -560,14 +778,18 @@ local function toggle(parent, label, default, cb)
     local state = default
     local function render(a)
         local target = state and UDim2.new(0,20,0.5,0) or UDim2.new(0,2,0.5,0)
-        if a then tw(knob, 0.18, {Position=target}) tw(track, 0.18, {BackgroundColor3 = state and Accent or Color3.fromRGB(46,46,56)})
-        else knob.Position = target track.BackgroundColor3 = state and Accent or Color3.fromRGB(46,46,56) end
+        local col = state and Accent or Color3.fromRGB(46,46,56)
+        if a then tw(knob, 0.18, {Position=target}) tw(track, 0.18, {BackgroundColor3=col})
+        else knob.Position = target track.BackgroundColor3 = col end
     end
     render(false)
     TL[#TL+1] = {track=track, state=function() return state end}
     btn.MouseEnter:Connect(function() tw(btn, 0.15, {BackgroundColor3=Color3.fromRGB(32,32,40)}) end)
     btn.MouseLeave:Connect(function() tw(btn, 0.15, {BackgroundColor3=Color3.fromRGB(24,24,30)}) end)
     btn.MouseButton1Click:Connect(function() state = not state render(true) cb(state) saveConfig() end)
+    UIset.toggles[label] = function(v)
+        if state ~= v then state = v render(true) cb(v) saveConfig() end
+    end
 end
 local function slider(parent, label, min, max, default, step, suffix, cb)
     local holder = new("Frame", {Parent=parent, Size=UDim2.new(1,0,0,34), BackgroundTransparency=1, LayoutOrder=nextOrd()})
@@ -600,6 +822,7 @@ local function slider(parent, label, min, max, default, step, suffix, cb)
         if f then cb(value) end
     end
     apply(default, false)
+    UIset.sliders[label] = function(v) apply(v, true) saveConfig() end
     local dragging = false
     local function fromX(x)
         local rel = math.clamp((x - track.AbsolutePosition.X)/math.max(track.AbsoluteSize.X,1), 0, 1)
@@ -655,7 +878,7 @@ local function colorPicker(parent)
 end
 
 local pParry  = makeTab("ПАРРИ", 1)
-local pAnti   = makeTab("АНТИЧИТ", 2)
+local pGuard  = makeTab("ЗАЩИТА", 2)
 local pVisual = makeTab("ВИЗУАЛ", 3)
 local pSkin   = makeTab("СКИН", 4)
 local pMenu   = makeTab("МЕНЮ", 5)
@@ -683,28 +906,22 @@ end
 section(pParry, "ОСНОВНОЕ")
 toggle(pParry, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)
 slider(pParry, "Accuracy", 1, 100, Config.Accuracy, 1, "", function(v) Config.Accuracy = v end)
-note(pParry, "Выше = позже парри (ближе к мячу). 50-60 — оптимально.")
+note(pParry, "Выше = позже парри. Бюджет реакции режется пропорционально.")
 toggle(pParry, "Случайный разброс Accuracy", Config.AccRand, function(v) Config.AccRand = v end)
 slider(pParry, "Разброс", 0, 30, Config.AccRandAmt, 1, "", function(v) Config.AccRandAmt = v end)
 slider(pParry, "Triggerbot delay", 0, 1, Config.TriggerbotDelay, 0.01, " с", function(v) Config.TriggerbotDelay = v end)
-note(pParry, "Задержка перед нажатием — имитация человеческой реакции.")
 
 section(pParry, "СКОРОСТНЫЕ РЕЖИМЫ")
-slider(pParry, "Instant speed", 1, 350, Config.InstantSpeed, 1, "", function(v) Config.InstantSpeed = v end)
-note(pParry, "При скорости мяча выше — парри мгновенно, без задержки и предсказания.")
-slider(pParry, "Prediction spam", 1, 350, Config.PredictionSpam, 1, "", function(v) Config.PredictionSpam = v end)
-note(pParry, "При скорости выше — спам предсказаний (серия нажатий по мячу).")
-
-section(pParry, "DYNAMIC THRESHOLD")
-toggle(pParry, "Включить", Config.DynThreshold, function(v) Config.DynThreshold = v end)
+slider(pParry, "Instant speed", 1, 400, Config.InstantSpeed, 1, "", function(v) Config.InstantSpeed = v end)
+slider(pParry, "Prediction spam", 1, 400, Config.PredictionSpam, 1, "", function(v) Config.PredictionSpam = v end)
+toggle(pParry, "Dynamic threshold", Config.DynThreshold, function(v) Config.DynThreshold = v end)
 slider(pParry, "Хитов до спама", 1, 10, Config.DynHits, 1, "", function(v) Config.DynHits = v end)
-note(pParry, "Считает парри по одному мячу; после N попаданий включает автоспам.")
 
 section(pParry, "ТОНКАЯ НАСТРОЙКА")
-slider(pParry, "Parry range", 5, 40, Config.ParryRange, 1, " ст", function(v) Config.ParryRange = v end)
+slider(pParry, "Parry range", 5, 25, Config.ParryRange, 1, " ст", function(v) Config.ParryRange = v end)
 slider(pParry, "Ping factor", 0.0, 0.8, Config.PingFactor, 0.05, "", function(v) Config.PingFactor = v end)
 slider(pParry, "Реакция", 0.0, 0.2, Config.Reaction, 0.005, " с", function(v) Config.Reaction = v end)
-slider(pParry, "Кулдаун", 0.04, 0.3, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
+slider(pParry, "Кулдаун", 0.04, 0.6, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
 slider(pParry, "Частота спама", 0.02, 0.2, Config.SpamRate, 0.01, " с", function(v) Config.SpamRate = v end)
 toggle(pParry, "Только когда целятся в меня", Config.OnlyTarget, function(v) Config.OnlyTarget = v end)
 
@@ -715,28 +932,80 @@ radio(pParry, methGroup, "Mouse",    "Mouse — ЛКМ",              function(v
 radio(pParry, methGroup, "Remote",   "Remote — прямой",          function(v) Config.Mode = v end)
 for _, t in ipairs(methGroup) do t.mark.Visible = (t.value == Config.Mode) end
 
--- АНТИЧИТ
-section(pAnti, "ДИАГНОСТИКА")
-local diagLbl = new("TextLabel", {Parent=pAnti, Size=UDim2.new(1,0,0,100), BackgroundTransparency=1,
+-- ЗАЩИТА
+section(pGuard, "ДИАГНОСТИКА")
+local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,112), BackgroundTransparency=1,
     Font=Enum.Font.Code, Text="", TextSize=11, TextColor3=Color3.fromRGB(180,180,195),
     TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
-section(pAnti, "ОБХОД BAC")
-toggle(pAnti, "Задержка после инжекта", true, function(v) Config.StartupDelay = v and 3 or 0 end)
-toggle(pAnti, "Защита от лаг-спайков", Config.DtSafety, function(v) Config.DtSafety = v end)
-toggle(pAnti, "Защита от десинка мяча", Config.DesyncGuard, function(v) Config.DesyncGuard = v end)
-toggle(pAnti, "Удерживать клавишу", Config.HoldPress, function(v) Config.HoldPress = v end)
-note(pAnti, "Никаких хуков, ремоут не трогаем, один парри на мяч, ручной F не даблкликается.", 26)
-button(pAnti, "СТЕЛС-РЕЖИМ", function()
-    Config.Mode = "Keypress" Config.OnlyTarget = true Config.DynThreshold = false
-    Config.InstantSpeed = 350 Config.PredictionSpam = 350
-    Config.ParryRange = 12 Config.Accuracy = 50 Config.AccRand = true
-    Config.TriggerbotDelay = 0.03 Config.FpsBoost = false Config.UnlockFps = false
-    Fps.Set(false) saveConfig()
-end)
-section(pAnti, "СЕССИЯ")
-toggle(pAnti, "Авто-реджойн", Config.Rejoin, function(v) Config.Rejoin = v end)
-toggle(pAnti, "Анти-АФК", Config.AntiAfk, function(v) Config.AntiAfk = v end)
-button(pAnti, "РЕ-ДЖОЙН СЕЙЧАС", function() Session.rejoin() end)
+
+section(pGuard, "HUMANIZER")
+toggle(pGuard, "Humanizer", Config.Humanize, function(v) Config.Humanize = v end)
+slider(pGuard, "Джиттер реакции", 0, 0.12, Config.HumanJitter, 0.005, " с", function(v) Config.HumanJitter = v end)
+slider(pGuard, "Разброс фокуса", 0, 0.1, Config.HumanAccSpread, 0.005, " с", function(v) Config.HumanAccSpread = v end)
+toggle(pGuard, "Случайный пропуск", Config.Humanize and Config.MissChance > 0, function(v) Config.MissChance = v and 7 or 0 end)
+slider(pGuard, "Шанс пропуска", 0, 25, Config.MissChance, 1, "%", function(v) Config.MissChance = v end)
+slider(pGuard, "Держать клавишу мин", 0.005, 0.15, Config.HoldMin, 0.005, " с", function(v) Config.HoldMin = v end)
+slider(pGuard, "Держать клавишу макс", 0.01, 0.25, Config.HoldMax, 0.005, " с", function(v) Config.HoldMax = v end)
+
+section(pGuard, "ЛИМИТЫ")
+slider(pGuard, "Лимит парри/сек", 2, 25, Config.MaxParryPerSec, 1, "", function(v) Config.MaxParryPerSec = v end)
+note(pGuard, "Скользящее окно 1 с. Главная защита от детекта спама.")
+
+section(pGuard, "ПАРАНОЙЯ")
+toggle(pGuard, "Паранойя после кика", Config.ParanoidOnKick, function(v) Config.ParanoidOnKick = v end)
+slider(pGuard, "Длительность", 5, 90, Config.ParanoidTime, 1, " с", function(v) Config.ParanoidTime = v end)
+slider(pGuard, "Уровень легита", 0, 0.8, Config.ParanoidScale, 0.05, "", function(v) Config.ParanoidScale = v end)
+note(pGuard, "После кика реакция растёт, спам выкл, лимит режется — и плавно возвращается обратно.")
+
+section(pGuard, "СЕССИЯ")
+toggle(pGuard, "Watchdog", Config.Watchdog, function(v) Config.Watchdog = v end)
+toggle(pGuard, "Задержка после инжекта", Config.StartupDelay > 0, function(v) Config.StartupDelay = v and 3 or 0 end)
+toggle(pGuard, "Защита от лаг-спайков", Config.DtSafety, function(v) Config.DtSafety = v end)
+toggle(pGuard, "Защита от десинка", Config.DesyncGuard, function(v) Config.DesyncGuard = v end)
+toggle(pGuard, "Удерживать клавишу", Config.HoldPress, function(v) Config.HoldPress = v end)
+toggle(pGuard, "Авто-реджойн", Config.Rejoin, function(v) Config.Rejoin = v end)
+slider(pGuard, "Попыток реджойна", 1, 10, Config.RejoinAttempts, 1, "", function(v) Config.RejoinAttempts = v end)
+toggle(pGuard, "Анти-АФК", Config.AntiAfk, function(v) Config.AntiAfk = v end)
+button(pGuard, "РЕ-ДЖОЙН СЕЙЧАС", function() AC.rejoin("manual") end)
+
+section(pGuard, "ПРЕСЕТЫ")
+local function preset(map)
+    for label, v in pairs(map) do
+        if UIset.toggles[label] then UIset.toggles[label](v)
+        elseif UIset.sliders[label] then UIset.sliders[label](v) end
+    end
+    saveConfig()
+end
+button(pGuard, "LEGIT", function() preset({
+    Humanizer = true, ["Случайный пропуск"] = true, ["Шанс пропуска"] = 12,
+    Accuracy = 60, ["Triggerbot delay"] = 0.06, ["Prediction spam"] = 400,
+    ["Instant speed"] = 320, ["Лимит парри/сек"] = 7, ["Parry range"] = 9,
+    ["Кулдаун"] = 0.35, ["Только когда целятся в меня"] = true, ["Джиттер реакции"] = 0.05,
+}) end)
+button(pGuard, "BALANCED", function() preset({
+    Humanizer = true, ["Случайный пропуск"] = true, ["Шанс пропуска"] = 7,
+    Accuracy = 55, ["Triggerbot delay"] = 0.03, ["Prediction spam"] = 280,
+    ["Instant speed"] = 220, ["Лимит парри/сек"] = 10, ["Parry range"] = 12,
+    ["Кулдаун"] = 0.30, ["Джиттер реакции"] = 0.035,
+}) end)
+button(pGuard, "AGGRESSIVE", function() preset({
+    Humanizer = true, ["Случайный пропуск"] = true, ["Шанс пропуска"] = 4,
+    Accuracy = 48, ["Triggerbot delay"] = 0.015, ["Prediction spam"] = 220,
+    ["Instant speed"] = 180, ["Лимит парри/сек"] = 14, ["Parry range"] = 14,
+    ["Кулдаун"] = 0.20, ["Джиттер реакции"] = 0.025,
+}) end)
+button(pGuard, "RAGE", function() preset({
+    Humanizer = false, ["Случайный пропуск"] = false,
+    Accuracy = 42, ["Triggerbot delay"] = 0, ["Prediction spam"] = 1,
+    ["Instant speed"] = 1, ["Лимит парри/сек"] = 22, ["Parry range"] = 16,
+    ["Кулдаун"] = 0.12, ["Только когда целятся в меня"] = false,
+}) end)
+
+section(pGuard, "ЛОГ КИКОВ")
+local logLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,96), BackgroundTransparency=1,
+    Font=Enum.Font.Code, Text="", TextSize=10, TextColor3=Color3.fromRGB(200,170,170),
+    TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
+button(pGuard, "ОЧИСТИТЬ ЛОГ", function() AC.log = {} end)
 
 -- ВИЗУАЛ
 section(pVisual, "КАМЕРА")
@@ -809,12 +1078,14 @@ end)
 
 task.spawn(function()
     while true do
-        task.wait(0.3)
-        status.Text = string.format("%dms | %s | кик %d", math.floor(AutoParry.getPing()), Diag.status, Diag.kicks)
+        task.wait(0.25)
+        local flag = AC.paranoid and " | ПАРАНОЙЯ" or ""
+        status.Text = string.format("%dms | %s | %d/с%s", math.floor(AutoParry.getPing()), Diag.status, Diag.rate, flag)
         diagLbl.Text = string.format(
-            "статус : %s\nмяч    : %s\nнаведён: %s\nдист   : %.0f ст\nокно   : %.0f ст\nхиты   : %d\nпарри  : %d\nкиков  : %d",
+            "статус   : %s\nмяч      : %s\nнаведён  : %s\nдист     : %.0f ст\ntti      : %.2f с\nбюджет   : %.3f с\nагрессия : %.2f\nпарри/с  : %d\nхиты     : %d\nвсего    : %d\nкиков    : %d",
             Diag.status, Diag.real and "да" or "нет", Diag.target and "да" or "нет",
-            Diag.dist, Diag.window, Diag.hits, Diag.parries, Diag.kicks)
+            Diag.dist, Diag.tti, Diag.window, Diag.aggr, Diag.rate, Diag.hits, Diag.parries, Diag.kicks)
+        logLbl.Text = AC.getLogText(8)
     end
 end)
 
@@ -822,4 +1093,4 @@ if Config.FpsBoost then Fps.Set(true) end
 if Config.Korblox then Skin.SetKorblox(true) end
 if Config.Headless then Skin.SetHeadless(true) end
 
-print("[SleepScript] v5 загружен. RightShift — меню.")
+print("[SleepScript] v6 загружен. RightShift — меню.")
