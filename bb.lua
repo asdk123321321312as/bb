@@ -1,7 +1,7 @@
 --=====================================================================
---   SleepScript  //  BLADE BALL   v6.1
---   Anti-Detection Core + Humanizer + Session Guard
---   FIX: один парри на один заход мяча (защёлка parried)
+--   SleepScript  //  BLADE BALL   v6.2
+--   Anti-Detection Core + Server-Window Trigger + Adaptive Bypass
+--   FIX: нажатие всегда попадает в серверное окно парри
 --   Хоткей меню: RightShift
 --=====================================================================
 
@@ -18,6 +18,7 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local VirtualUser         = game:GetService("VirtualUser")
 local TeleportService     = game:GetService("TeleportService")
 local CoreGui             = game:GetService("CoreGui")
+local TextChatService     = game:GetService("TextChatService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -46,9 +47,9 @@ local Config = {
     DynHits        = 3,
 
     ParryRange     = 12,
-    PingFactor     = 0.5,
+    PingFactor     = 1.0,      -- 1.0 = честный аплинк (RTT/2)
     Reaction       = 0.04,
-    Cooldown       = 0.32,
+    Cooldown       = 0.35,
     SpamRate       = 0.05,
     OnlyTarget     = true,
     MinSpeed       = 15,
@@ -56,15 +57,16 @@ local Config = {
 
     -- ANTI-DETECT / ЗАЩИТА
     Humanize       = true,
-    HumanJitter    = 0.035,   -- σ реакции, сек
-    HumanAccSpread = 0.02,    -- σ фокуса на мяч
-    MissChance     = 7,       -- % намеренных пропусков
+    HumanJitter    = 0.035,
+    HumanAccSpread = 0.02,
+    MissChance     = 7,
     HoldMin        = 0.02,
     HoldMax        = 0.06,
     MaxParryPerSec = 9,
     ParanoidOnKick = true,
     ParanoidTime   = 25,
     ParanoidScale  = 0.25,
+    AutoTune       = true,     -- авто-ослабление под кик
     Watchdog       = true,
     RejoinAttempts = 5,
     StartupDelay   = 3,
@@ -79,7 +81,7 @@ local Config = {
     UnlockFps      = false,
 
     Rejoin         = true,
-    AntiAfk        = false,
+    AntiAfk        = true,
 
     Korblox        = false,
     Headless       = false,
@@ -110,8 +112,13 @@ local function loadConfig()
 end
 loadConfig()
 
+-- миграция старых конфигов: кулдаун ниже игрового = съеденные нажатия
+if Config.Cooldown < 0.25 then Config.Cooldown = 0.35 end
+
 local Diag = { parries=0, kicks=0, status="idle", dist=0, hits=0, target=false, real=false,
-               window=0, tti=0, aggr=1, rate=0, latched=false }
+               window=0, tti=0, aggr=1, rate=0, latched=false, serverWin=0 }
+
+local UIset = { sliders = {}, toggles = {} }
 
 ------------------------------------------------------------------ utils
 local function gauss()
@@ -121,21 +128,29 @@ local function gauss()
     return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
 end
 
--- время до входа мяча в радиус, с учётом гравитации; nil = уходит
+-- точное время до входа мяча в радиус: аналитика + уточнение по гравитации
 local function timeToImpact(p, v, q, radius)
-    if (p - q).Magnitude <= radius then return 0 end
-    local g = -Workspace.Gravity * 0.5
-    local dt = 1 / 120
-    local t = 0
-    local prev = (p - q).Magnitude
-    while t < 2 do
-        t = t + dt
-        local d = ((p + v * t + Vector3.new(0, g * t * t, 0)) - q).Magnitude
-        if d <= radius then return t end
-        if d > prev + 0.001 and t > 0.06 then return nil end
-        prev = d
+    local d = p - q
+    local dist = d.Magnitude
+    if dist <= radius then return 0 end
+    local a = v:Dot(v)
+    if a < 1e-6 then return nil end
+    local b = 2 * v:Dot(d)
+    local disc = b * b - 4 * a * (dist * dist - radius * radius)
+    if disc < 0 then return nil end
+    local t = (-b - math.sqrt(disc)) / (2 * a)
+    if t < 0 then return nil end
+    local g = Vector3.new(0, -Workspace.Gravity, 0)
+    for _ = 1, 4 do
+        local rel = (p + v * t + g * 0.5 * t * t) - q
+        local dd = rel.Magnitude
+        if dd < 1e-4 then break end
+        local deriv = rel:Dot(v + g * t) / dd
+        if math.abs(deriv) < 1e-4 then break end
+        t = t - (dd - radius) / deriv
+        if t < 0 then t = 0 break end
     end
-    return nil
+    return t
 end
 
 local AC = {}
@@ -206,7 +221,7 @@ do
     end
 
     local function fire(now)
-        if parried then return false end          -- защёлка: один парри на заход
+        if parried then return false end
         if not AC.allowRate(now) then return false end
         lastPress = now
         parried = true
@@ -218,7 +233,6 @@ do
         return true
     end
 
-    -- самая опасная цель (минимальный TTI)
     local function getBall(hrp)
         local folder = Workspace:FindFirstChild("Balls")
         if not folder then return nil, nil end
@@ -283,11 +297,10 @@ do
         local dist = (ppos - pos).Magnitude
         Diag.dist, Diag.tti = dist, tti or -1
 
-        -- защёлка снимается только когда мяч покинул зону (улетел/отбит/вернулся заново)
+        -- защёлка: один парри на заход мяча
         if parried and dist > Config.ParryRange + 12 then parried = false end
         Diag.latched = parried
 
-        -- десинк-гард
         if Config.DesyncGuard then
             local last = ball:GetAttribute("__ssLast")
             if last and (pos - last).Magnitude > 150 then
@@ -316,26 +329,33 @@ do
         Diag.target = targeted
         if Config.OnlyTarget and not targeted then Diag.status = "не мой" return end
 
-        -- ---- профиль реакции (humanizer + паранойя) ----
+        --=========== СЕРВЕРНАЯ МОДЕЛЬ ОКНА ===========--
         local aggr = AC.aggression()
         Diag.aggr = aggr
-
-        local pingSec = (getPing() / 1000) * Config.PingFactor
-        local react = (Config.Reaction + ballJitter + ballFocus) * (2 - aggr)
-        if react < 0.004 then react = 0.004 end
 
         local acc = Config.Accuracy
         if Config.AccRand then acc = acc + math.random(-Config.AccRandAmt, Config.AccRandAmt) end
         acc = math.clamp(acc, 1, 100)
 
-        local budget = (react + pingSec) * (1 - (acc / 100) * 0.6)
-        if Config.DtSafety and dt > 0.04 then budget = budget + dt end
-        budget = math.max(budget, 0.012)
-        if ballMiss and aggr > 0.5 then budget = budget * 0.45 end
-        Diag.window = budget
+        local instant = speed >= Config.InstantSpeed
+        local delay   = (instant and aggr > 0.6) and 0 or Config.TriggerbotDelay
+        local up      = (getPing() / 1000) * 0.5 * Config.PingFactor
+        local inR     = (Config.ParryRange * 2) / math.max(speed, 1)
+        local jit     = (ballJitter + ballFocus) * (2 - aggr)
+
+        -- сервер обязан получить нажатие, ПОКА мяч в радиусе R:
+        --   tti <= up + delay            — иначе сервер видит пустой парри
+        --   tti >= up + delay - inR*0.7  — иначе мяч уже пролетел
+        local early  = up + delay
+        local late   = math.max(early - inR * 0.7, 0.004)
+        local k      = acc / 100
+        local budget = early + (late - early) * k + jit
+        budget = math.max(math.min(budget, early), 0.004)
+        if ballMiss and aggr > 0.5 then budget = math.max(budget * 0.45, 0.003) end
+        Diag.window, Diag.serverWin = budget, early
+        --=============================================--
 
         if tti == nil then
-            -- мяч формально прошёл, но всё ещё в зоне
             if dist <= Config.ParryRange and ((ppos - pos).Unit):Dot(vel.Unit) > 0 then
                 if not parried and not pending and (now - lastPress) >= Config.Cooldown then fire(now) end
             end
@@ -343,41 +363,31 @@ do
         end
 
         if speed >= Config.PredictionSpam then spam = true end
-        local instant = speed >= Config.InstantSpeed
-        local dynOn = Config.DynThreshold and hits >= Config.DynHits
-        local spamNow = (spam or dynOn) and aggr > 0.45 and not ballMiss
+        local spamNow = (spam or (Config.DynThreshold and hits >= Config.DynHits))
+                        and aggr > 0.45 and not ballMiss
 
         if spamNow then
-            if not parried and tti <= math.max(budget * 3, Config.SpamRate) and (now - lastPress) >= Config.SpamRate then
-                fire(now)
-            end
-            Diag.status = spam and "спам(скор)" or "спам(дин)"
+            if not parried and tti <= budget and (now - lastPress) >= Config.SpamRate then fire(now) end
+            Diag.status = "спам"
             return
         end
 
         if parried then Diag.status = "уже отбит" return end
-
         if (now - lastPress) < Config.Cooldown then Diag.status = "кулдаун" return end
         if tti > budget then Diag.status = string.format("лети %0.2f", tti) return end
 
-        if instant and aggr > 0.6 then
+        if delay == 0 then
             fire(now)
-            Diag.status = "инстант"
-            return
-        end
-
-        if Config.TriggerbotDelay > 0 then
+            Diag.status = "ПАРРИ"
+        else
             if not pending then
                 pending = true
                 Diag.status = "триггер"
-                task.delay(Config.TriggerbotDelay, function()
+                task.delay(delay, function()
                     pending = false
                     if Config.AutoParry and not parried then fire(os.clock()) end
                 end)
             end
-        else
-            fire(now)
-            Diag.status = "ПАРРИ"
         end
     end
 
@@ -407,6 +417,7 @@ do
     local paranoidUntil = 0
     local busy, attempt = false, 0
     local lastJob = game.JobId
+    local kickStamps = {}
 
     AC.kicks = 0
     AC.paranoid = false
@@ -446,7 +457,6 @@ do
         paranoidUntil = os.clock() + Config.ParanoidTime
     end
 
-    -- вытаскиваем текст кика из системного окна
     function AC.readReason()
         local parts = {}
         for _, root in ipairs({CoreGui, gethui()}) do
@@ -470,7 +480,8 @@ do
             clock = os.date("%H:%M:%S"),
             reason = reason,
             uptime = math.floor(os.clock()),
-            paranoid = Config.ParanoidOnKick,
+            rate = Config.MaxParryPerSec,
+            cd = Config.Cooldown,
         }
         while #AC.log > 40 do table.remove(AC.log, 1) end
         saveLog()
@@ -485,6 +496,29 @@ do
         end
         if #out == 0 then return "киков ещё не было" end
         return table.concat(out, "\n")
+    end
+
+    -- авто-ослабление под конкретный тип кика
+    local function looksLikeParryKick(r)
+        r = r:lower()
+        return r:find("parry") or r:find("spam") or r:find("fast")
+            or r:find("auto") or r:find("cheat") or r:find("detect")
+    end
+
+    local function tuneDown()
+        if not Config.AutoTune then return end
+        Config.MaxParryPerSec = math.max(4, math.floor(Config.MaxParryPerSec) - 2)
+        Config.Cooldown       = math.min(0.6, Config.Cooldown + 0.05)
+        Config.MissChance     = math.min(22, Config.MissChance + 3)
+        Config.HumanJitter    = math.min(0.12, Config.HumanJitter + 0.01)
+        Config.Humanize       = true
+        local s, t = UIset.sliders, UIset.toggles
+        if s["Лимит парри/сек"] then s["Лимит парри/сек"](Config.MaxParryPerSec) end
+        if s["Кулдаун"]         then s["Кулдаун"](Config.Cooldown) end
+        if s["Шанс пропуска"]   then s["Шанс пропуска"](Config.MissChance) end
+        if s["Джиттер реакции"] then s["Джиттер реакции"](Config.HumanJitter) end
+        if t["Humanizer"]       then t["Humanizer"](true) end
+        saveConfig()
     end
 
     function AC.rejoin(reason)
@@ -509,6 +543,21 @@ do
         AC.logKick(reason)
         AutoParry.reset()
         AC.enterParanoid()
+        if looksLikeParryKick(reason) then tuneDown() end
+
+        kickStamps[#kickStamps+1] = os.clock()
+        while kickStamps[1] and os.clock() - kickStamps[1] > 60 do table.remove(kickStamps, 1) end
+        if #kickStamps >= 3 then
+            Config.MaxParryPerSec = 5
+            Config.Cooldown = 0.45
+            Config.MissChance = 15
+            Config.ParanoidTime = 60
+            kickStamps = {}
+            if UIset.sliders["Лимит парри/сек"] then UIset.sliders["Лимит парри/сек"](5) end
+            if UIset.sliders["Кулдаун"] then UIset.sliders["Кулдаун"](0.45) end
+            saveConfig()
+        end
+
         if Config.Rejoin then AC.rejoin(reason) end
     end
 
@@ -522,6 +571,18 @@ do
             VirtualUser:Button2Up(Vector2.new(0,0), cam.CFrame)
         end)
     end
+
+    -- ---------- сообщения игры в чат (античит-варнинги) ----------
+    pcall(function()
+        TextChatService.MessageReceived:Connect(function(msg)
+            local txt = tostring(msg.Text or "")
+            local l = txt:lower()
+            if l:find("anticheat") or l:find("anti-cheat") or l:find("parry")
+                or l:find("kicked") or l:find("detect") or l:find("spam") then
+                AC.logKick("chat: " .. txt:sub(1, 80))
+            end
+        end)
+    end)
 
     -- ---------- события кика ----------
     LocalPlayer.AncestryChanged:Connect(function(_, parent)
@@ -672,7 +733,6 @@ end
 --=====================================================================
 local Accent = Config.Accent
 local AP, AT, AG, TL = {}, {}, {}, {}
-local UIset = { sliders = {}, toggles = {} }
 
 local function new(class, props)
     local i = Instance.new(class)
@@ -916,10 +976,11 @@ end
 section(pParry, "ОСНОВНОЕ")
 toggle(pParry, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)
 slider(pParry, "Accuracy", 1, 100, Config.Accuracy, 1, "", function(v) Config.Accuracy = v end)
-note(pParry, "Выше = позже парри. Бюджет реакции режется пропорционально.")
+note(pParry, "Позиция внутри серверного окна: 1 = жать в самом начале окна (запас на лаг), 100 = жать позже, максимально легитно.")
 toggle(pParry, "Случайный разброс Accuracy", Config.AccRand, function(v) Config.AccRand = v end)
 slider(pParry, "Разброс", 0, 30, Config.AccRandAmt, 1, "", function(v) Config.AccRandAmt = v end)
-slider(pParry, "Triggerbot delay", 0, 1, Config.TriggerbotDelay, 0.01, " с", function(v) Config.TriggerbotDelay = v end)
+slider(pParry, "Triggerbot delay", 0, 0.2, Config.TriggerbotDelay, 0.005, " с", function(v) Config.TriggerbotDelay = v end)
+note(pParry, "Учитывается в модели окна: нажатие всё равно доходит до сервера вовремя.")
 
 section(pParry, "СКОРОСТНЫЕ РЕЖИМЫ")
 slider(pParry, "Instant speed", 1, 400, Config.InstantSpeed, 1, "", function(v) Config.InstantSpeed = v end)
@@ -929,8 +990,8 @@ slider(pParry, "Хитов до спама", 1, 10, Config.DynHits, 1, "", funct
 
 section(pParry, "ТОНКАЯ НАСТРОЙКА")
 slider(pParry, "Parry range", 5, 25, Config.ParryRange, 1, " ст", function(v) Config.ParryRange = v end)
-slider(pParry, "Ping factor", 0.0, 0.8, Config.PingFactor, 0.05, "", function(v) Config.PingFactor = v end)
-slider(pParry, "Реакция", 0.0, 0.2, Config.Reaction, 0.005, " с", function(v) Config.Reaction = v end)
+slider(pParry, "Ping factor", 0.0, 1.5, Config.PingFactor, 0.05, "", function(v) Config.PingFactor = v end)
+note(pParry, "1.0 = честный аплинк (RTT/2). Больше = жать раньше, меньше = позже.")
 slider(pParry, "Кулдаун", 0.04, 0.6, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
 slider(pParry, "Частота спама", 0.02, 0.2, Config.SpamRate, 0.01, " с", function(v) Config.SpamRate = v end)
 toggle(pParry, "Только когда целятся в меня", Config.OnlyTarget, function(v) Config.OnlyTarget = v end)
@@ -944,7 +1005,7 @@ for _, t in ipairs(methGroup) do t.mark.Visible = (t.value == Config.Mode) end
 
 -- ЗАЩИТА
 section(pGuard, "ДИАГНОСТИКА")
-local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,124), BackgroundTransparency=1,
+local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,136), BackgroundTransparency=1,
     Font=Enum.Font.Code, Text="", TextSize=11, TextColor3=Color3.fromRGB(180,180,195),
     TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
 
@@ -963,9 +1024,10 @@ note(pGuard, "Скользящее окно 1 с. Главная защита о
 
 section(pGuard, "ПАРАНОЙЯ")
 toggle(pGuard, "Паранойя после кика", Config.ParanoidOnKick, function(v) Config.ParanoidOnKick = v end)
+toggle(pGuard, "Авто-ослабление (AutoTune)", Config.AutoTune, function(v) Config.AutoTune = v end)
 slider(pGuard, "Длительность", 5, 90, Config.ParanoidTime, 1, " с", function(v) Config.ParanoidTime = v end)
 slider(pGuard, "Уровень легита", 0, 0.8, Config.ParanoidScale, 0.05, "", function(v) Config.ParanoidScale = v end)
-note(pGuard, "После кика реакция растёт, спам выкл, лимит режется — и плавно возвращается обратно.")
+note(pGuard, "Кик по парри — скрипт сам режет лимит, поднимает кулдаун и пропуски. 3 кика за минуту = жёсткий легит-режим.")
 
 section(pGuard, "СЕССИЯ")
 toggle(pGuard, "Watchdog", Config.Watchdog, function(v) Config.Watchdog = v end)
@@ -987,32 +1049,33 @@ local function preset(map)
     saveConfig()
 end
 button(pGuard, "LEGIT", function() preset({
-    Humanizer = true, ["Случайный пропуск"] = true, ["Шанс пропуска"] = 12,
-    Accuracy = 60, ["Triggerbot delay"] = 0.06, ["Prediction spam"] = 400,
-    ["Instant speed"] = 320, ["Лимит парри/сек"] = 7, ["Parry range"] = 9,
-    ["Кулдаун"] = 0.35, ["Только когда целятся в меня"] = true, ["Джиттер реакции"] = 0.05,
+    Humanizer = true, ["Случайный пропуск"] = true, ["Шанс пропуска"] = 14,
+    Accuracy = 70, ["Triggerbot delay"] = 0.04, ["Prediction spam"] = 999,
+    ["Instant speed"] = 999, ["Лимит парри/сек"] = 6, ["Parry range"] = 10,
+    ["Кулдаун"] = 0.4, ["Ping factor"] = 1.0, ["Только когда целятся в меня"] = true,
+    ["Джиттер реакции"] = 0.05,
 }) end)
 button(pGuard, "BALANCED", function() preset({
     Humanizer = true, ["Случайный пропуск"] = true, ["Шанс пропуска"] = 7,
-    Accuracy = 55, ["Triggerbot delay"] = 0.03, ["Prediction spam"] = 280,
-    ["Instant speed"] = 220, ["Лимит парри/сек"] = 10, ["Parry range"] = 12,
-    ["Кулдаун"] = 0.30, ["Джиттер реакции"] = 0.035,
+    Accuracy = 55, ["Triggerbot delay"] = 0.03, ["Prediction spam"] = 260,
+    ["Instant speed"] = 200, ["Лимит парри/сек"] = 9, ["Parry range"] = 12,
+    ["Кулдаун"] = 0.35, ["Ping factor"] = 1.0, ["Джиттер реакции"] = 0.035,
 }) end)
 button(pGuard, "AGGRESSIVE", function() preset({
     Humanizer = true, ["Случайный пропуск"] = true, ["Шанс пропуска"] = 4,
-    Accuracy = 48, ["Triggerbot delay"] = 0.015, ["Prediction spam"] = 220,
-    ["Instant speed"] = 180, ["Лимит парри/сек"] = 14, ["Parry range"] = 14,
-    ["Кулдаун"] = 0.20, ["Джиттер реакции"] = 0.025,
+    Accuracy = 45, ["Triggerbot delay"] = 0.02, ["Prediction spam"] = 240,
+    ["Instant speed"] = 180, ["Лимит парри/сек"] = 13, ["Parry range"] = 13,
+    ["Кулдаун"] = 0.25, ["Ping factor"] = 1.1, ["Джиттер реакции"] = 0.025,
 }) end)
 button(pGuard, "RAGE", function() preset({
     Humanizer = false, ["Случайный пропуск"] = false,
-    Accuracy = 42, ["Triggerbot delay"] = 0, ["Prediction spam"] = 1,
-    ["Instant speed"] = 1, ["Лимит парри/сек"] = 22, ["Parry range"] = 16,
-    ["Кулдаун"] = 0.12, ["Только когда целятся в меня"] = false,
+    Accuracy = 40, ["Triggerbot delay"] = 0, ["Prediction spam"] = 1,
+    ["Instant speed"] = 1, ["Лимит парри/сек"] = 20, ["Parry range"] = 15,
+    ["Кулдаун"] = 0.15, ["Ping factor"] = 1.2, ["Только когда целятся в меня"] = false,
 }) end)
 
-section(pGuard, "ЛОГ КИКОВ")
-local logLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,96), BackgroundTransparency=1,
+section(pGuard, "ЛОГ КИКОВ / ЧАТ")
+local logLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,110), BackgroundTransparency=1,
     Font=Enum.Font.Code, Text="", TextSize=10, TextColor3=Color3.fromRGB(200,170,170),
     TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
 button(pGuard, "ОЧИСТИТЬ ЛОГ", function() AC.log = {} end)
@@ -1092,11 +1155,12 @@ task.spawn(function()
         local flag = AC.paranoid and " | ПАРАНОЙЯ" or ""
         status.Text = string.format("%dms | %s | %d/с%s", math.floor(AutoParry.getPing()), Diag.status, Diag.rate, flag)
         diagLbl.Text = string.format(
-            "статус   : %s\nмяч      : %s\nнаведён  : %s\nзащёлка  : %s\nдист     : %.0f ст\ntti      : %.2f с\nбюджет   : %.3f с\nагрессия : %.2f\nпарри/с  : %d\nхиты     : %d\nвсего    : %d\nкиков    : %d",
+            "статус    : %s\nмяч       : %s\nнаведён   : %s\nзащёлка   : %s\nдист      : %.0f ст\ntti       : %.2f с\nнажатие   : %.3f с\nокно серв.: %.3f с\nагрессия  : %.2f\nпарри/с   : %d\nхиты      : %d\nвсего     : %d\nкиков     : %d",
             Diag.status, Diag.real and "да" or "нет", Diag.target and "да" or "нет",
             Diag.latched and "закрыта" or "открыта",
-            Diag.dist, Diag.tti, Diag.window, Diag.aggr, Diag.rate, Diag.hits, Diag.parries, Diag.kicks)
-        logLbl.Text = AC.getLogText(8)
+            Diag.dist, Diag.tti, Diag.window, Diag.serverWin,
+            Diag.aggr, Diag.rate, Diag.hits, Diag.parries, Diag.kicks)
+        logLbl.Text = AC.getLogText(9)
     end
 end)
 
@@ -1104,4 +1168,4 @@ if Config.FpsBoost then Fps.Set(true) end
 if Config.Korblox then Skin.SetKorblox(true) end
 if Config.Headless then Skin.SetHeadless(true) end
 
-print("[SleepScript] v6.1 загружен. RightShift — меню.")
+print("[SleepScript] v6.2 загружен. RightShift — меню.")
