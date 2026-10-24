@@ -1,6 +1,6 @@
 --=====================================================================
---   SleepScript  //  BLADE BALL   v6.6
---   Auto-Method + Hit Detector + BAC BYPASS + target-атрибут
+--   SleepScript  //  BLADE BALL   v7.0
+--   Isolation build: 3 режима BAC, чистый режим, автолестница
 --   Хоткей меню: RightShift
 --=====================================================================
 
@@ -38,9 +38,9 @@ local keyrelease = execFn("keyrelease")
 ------------------------------------------------------------------ config
 local Config = {
     AutoParry      = false,
-    Accuracy       = 53,
+    Accuracy       = 65,
     AccRand        = true,
-    AccRandAmt     = 8,
+    AccRandAmt     = 10,
 
     TriggerbotDelay= 0.03,
     InstantSpeed   = 999,
@@ -48,11 +48,11 @@ local Config = {
     DynThreshold   = false,
     DynHits        = 3,
 
-    ParryRange     = 9,
+    ParryRange     = 8,
     PingFactor     = 1.0,
-    Cooldown       = 0.45,
+    Cooldown       = 0.5,
     SpamRate       = 0.05,
-    MinGap         = 0.10,
+    MinGap         = 0.15,
     PerpTol        = 6,
     StrictTarget   = true,
     RequireAttr    = true,
@@ -61,33 +61,35 @@ local Config = {
     Mode           = "Keypress",
     AutoMethod     = true,
 
-    BacBypass      = true,
+    -- ЗАЩИТА
+    BacBypassMode  = "full",     -- off | light | full
+    WriteAttr      = true,
     Humanize       = true,
-    HumanJitter    = 0.05,
+    HumanJitter    = 0.07,
     HumanAccSpread = 0.03,
-    HumanPausePct  = 15,
+    HumanPausePct  = 18,
     HumanPause     = 0.12,
-    MissChance     = 8,
+    MissChance     = 10,
     HoldMin        = 0.03,
     HoldMax        = 0.07,
-    MaxParryPerSec = 5,
-    MaxParryPerMin = 25,
-    Warmup         = 15,
+    MaxParryPerSec = 4,
+    MaxParryPerMin = 20,
+    Warmup         = 20,
     ParanoidOnKick = true,
     ParanoidTime   = 30,
     ParanoidScale  = 0.25,
     AutoTune       = true,
     Watchdog       = true,
     RejoinAttempts = 5,
-    StartupDelay   = 3,
+    StartupDelay   = 5,
     DtSafety       = true,
-    DesyncGuard    = true,
+    DesyncGuard    = false,
     HoldPress      = true,
 
     FovEnabled     = false,
     Fov            = 100,
     FpsBoost       = false,
-    CutFx          = true,
+    CutFx          = false,
     UnlockFps      = false,
 
     Rejoin         = true,
@@ -122,14 +124,15 @@ local function loadConfig()
 end
 loadConfig()
 
-if Config.Cooldown < 0.3 then Config.Cooldown = 0.45 end
+if Config.Cooldown < 0.3 then Config.Cooldown = 0.5 end
 if Config.Mode == "Remote" then Config.Mode = "Keypress" end
+if Config.BacBypass == false then Config.BacBypassMode = "off" end
 
 local Diag = { parries=0, kicks=0, status="idle", dist=0, hits=0, target=false, real=false,
                window=0, tti=0, aggr=1, rate=0, rateMin=0, latched=false, serverWin=0, perp=0,
-               bypass="", att=0, landed=0, attr=false }
+               bypass="", att=0, landed=0, attr=false, clean=false }
 
-local UIset = { sliders = {}, toggles = {} }
+local UIset = { sliders = {}, toggles = {}, refresh = function() end }
 
 ------------------------------------------------------------------ utils
 local function gauss()
@@ -175,54 +178,62 @@ end
 local AC = {}
 
 --=====================================================================
---  BAC BYPASS
+--  BAC BYPASS  (3 режима + периодический ре-скан)
 --=====================================================================
 do
-    local killed = {}
+    local killed, seen = {}, {}
+    local newCount = 0
 
-    local function tryDestroy(inst, tag)
+    local function kill(inst, tag)
         if not inst then return end
-        killed[#killed+1] = (tag or "") .. inst.Name
+        local key = (tag or "") .. inst.Name
+        if seen[key] then return end
+        seen[key] = true
+        killed[#killed+1] = key
+        newCount = newCount + 1
         pcall(function() inst:Destroy() end)
     end
 
-    function AC.bypassBAC()
-        killed = {}
+    function AC.bypassBAC(silent)
+        newCount = 0
+        local mode = Config.BacBypassMode
+        if mode == "off" then
+            Diag.bypass = "выкл"
+            return 0
+        end
         local rs = ReplicatedStorage
 
-        local sec = rs:FindFirstChild("Security")
-        if sec then
-            for _, d in ipairs(sec:GetDescendants()) do
-                if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
-                    killed[#killed+1] = "Security." .. d.Name
-                    pcall(function() d:Destroy() end)
+        if mode == "full" then
+            local sec = rs:FindFirstChild("Security")
+            if sec then
+                for _, d in ipairs(sec:GetDescendants()) do
+                    if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+                        kill(d, "Security.")
+                    end
+                end
+                kill(sec, "")
+            end
+            for _, d in ipairs(rs:GetChildren()) do
+                local n = d.Name:lower()
+                if d ~= sec and (n:find("anticheat") or n:find("anti_cheat") or n:find("bac")) then
+                    kill(d, "rs.")
                 end
             end
-            tryDestroy(sec, "")
         end
 
         local ps = LocalPlayer:FindFirstChild("PlayerScripts")
         if ps then
-            local list = {}
             for _, d in ipairs(ps:GetDescendants()) do
                 local n = d.Name:lower()
                 if (n:find("devicecheck") or n:find("anticheat") or n:find("anti_cheat")
                     or n:find("security") or n:find("bac") or n:find("detector"))
                    and (d:IsA("LocalScript") or d:IsA("ModuleScript")) then
-                    list[#list+1] = d
+                    kill(d, "ps.")
                 end
             end
-            for _, d in ipairs(list) do tryDestroy(d, "ps.") end
         end
 
-        for _, d in ipairs(rs:GetChildren()) do
-            local n = d.Name:lower()
-            if d ~= sec and (n:find("anticheat") or n:find("anti_cheat") or n:find("bac")) then
-                tryDestroy(d, "rs.")
-            end
-        end
-
-        if getgc then
+        if mode == "full" and getgc then
             local hits = 0
             pcall(function()
                 for _, v in pairs(getgc(true)) do
@@ -233,25 +244,26 @@ do
                     end
                 end
             end)
-            if hits > 0 then killed[#killed+1] = "gc:" .. hits end
+            if hits > 0 and not seen["gc"] then seen["gc"] = true killed[#killed+1] = "gc:" .. hits end
         end
 
-        Diag.bypass = (#killed > 0) and table.concat(killed, ", ") or "не найдено"
-        return #killed
+        if not silent then
+            Diag.bypass = (#killed > 0) and ("[" .. mode .. "] " .. table.concat(killed, ", ")) or ("[" .. mode .. "] не найдено")
+        end
+        return newCount
     end
 
     function AC.bypassText()
         return Diag.bypass ~= "" and Diag.bypass or "не запускался"
     end
 
-    -- порядок перебора методов нажатия
     local ORDER = {"Keypress", "KeypressAlt", "Mouse", "Exec", "Remote"}
     function AC.nextMethod()
         local i = 1
         for k, v in ipairs(ORDER) do if v == Config.Mode then i = k end end
         Config.Mode = ORDER[(i % #ORDER) + 1]
         Diag.att, Diag.landed = 0, 0
-        if UIset.refreshMethods then UIset.refreshMethods() end
+        UIset.refresh()
         AC.logKick("auto-method -> " .. Config.Mode)
         saveConfig()
         return Config.Mode
@@ -372,12 +384,7 @@ do
     function AutoParry.test()
         holdDur = 0.05
         lastPress = os.clock()
-        if Config.Mode == "Remote" or Config.HoldPress then
-            rawDown() held = (Config.Mode ~= "Remote")
-            if Config.Mode == "Remote" then press() end
-        else
-            rawDown() rawUp()
-        end
+        if Config.Mode == "Remote" then press() else rawDown() held = true end
     end
 
     local function fire(now)
@@ -420,7 +427,6 @@ do
         return (best or fb), (best and bestT or nil)
     end
 
-    -- реальный флаг игры: атрибут target на мяче = имя игрока
     local function isTargeted(char, ball, ppos, pos, vel)
         local t = ball:GetAttribute("target")
         if t ~= nil then return (t == LocalPlayer.Name or t == LocalPlayer), true end
@@ -438,6 +444,12 @@ do
         Diag.latched = false
     end
 
+    function AutoParry.zeroStats()
+        attempts, landed = 0, 0
+        Diag.att, Diag.landed = 0, 0
+        methodTried = false
+    end
+
     local function step()
         local now = os.clock()
         local dt = now - lastFrame
@@ -449,7 +461,6 @@ do
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
 
-        -- ---- детектор попадания: мяч отскочил = метод рабочий ----
         if probe then
             local pb = probe.b
             if not pb or not pb.Parent or not hrp then
@@ -491,7 +502,7 @@ do
         if parried and dist > Config.ParryRange + 12 then parried = false end
         Diag.latched = parried
 
-        if Config.DesyncGuard then
+        if Config.DesyncGuard and Config.WriteAttr then
             local last = ball:GetAttribute("__ssLast")
             if last and (pos - last).Magnitude > 150 then
                 ball:SetAttribute("__ssLast", pos)
@@ -685,7 +696,10 @@ do
         AC.log[#AC.log+1] = {
             t = os.time(), clock = os.date("%H:%M:%S"), reason = reason,
             uptime = math.floor(os.clock()), mode = Config.Mode,
-            perMin = Config.MaxParryPerMin, cd = Config.Cooldown,
+            bypass = Config.BacBypassMode,
+            flags = string.format("pm%d ps%d cd%.2f r%.0f tol%d h%d w%d",
+                Config.MaxParryPerMin, Config.MaxParryPerSec, Config.Cooldown,
+                Config.ParryRange, Config.PerpTol, Config.HoldPress and 1 or 0, Config.Warmup),
         }
         while #AC.log > 40 do table.remove(AC.log, 1) end
         saveLog()
@@ -696,7 +710,8 @@ do
         local from = math.max(1, #AC.log - (n or 8) + 1)
         for i = #AC.log, from, -1 do
             local e = AC.log[i]
-            out[#out+1] = string.format("%s  %s", e.clock, tostring(e.reason):sub(1, 44))
+            out[#out+1] = string.format("%s %s", e.clock, tostring(e.reason):sub(1, 40))
+            if e.flags then out[#out+1] = "   " .. e.flags end
         end
         if #out == 0 then return "пусто" end
         return table.concat(out, "\n")
@@ -710,10 +725,10 @@ do
 
     local function tuneDown()
         if not Config.AutoTune then return end
-        Config.MaxParryPerMin = math.max(15, math.floor(Config.MaxParryPerMin) - 5)
+        Config.MaxParryPerMin = math.max(12, math.floor(Config.MaxParryPerMin) - 5)
         Config.MaxParryPerSec = math.max(3, math.floor(Config.MaxParryPerSec) - 1)
-        Config.Cooldown       = math.min(0.65, Config.Cooldown + 0.05)
-        Config.MissChance     = math.min(22, Config.MissChance + 3)
+        Config.Cooldown       = math.min(0.7, Config.Cooldown + 0.05)
+        Config.MissChance     = math.min(25, Config.MissChance + 3)
         Config.PerpTol        = math.max(4, Config.PerpTol - 1)
         Config.Humanize       = true
         local s = UIset.sliders
@@ -750,17 +765,10 @@ do
         if looksLikeKick(reason) then tuneDown() end
 
         kickStamps[#kickStamps+1] = os.clock()
-        while kickStamps[1] and os.clock() - kickStamps[1] > 60 do table.remove(kickStamps, 1) end
-        if #kickStamps >= 3 then
-            Config.MaxParryPerMin = 18
-            Config.MaxParryPerSec = 4
-            Config.Cooldown = 0.5
-            Config.MissChance = 14
-            Config.ParanoidTime = 60
+        while kickStamps[1] and os.clock() - kickStamps[1] > 120 do table.remove(kickStamps, 1) end
+        if #kickStamps >= 3 and not Diag.clean then
             kickStamps = {}
-            if UIset.sliders["Лимит парри/мин"] then UIset.sliders["Лимит парри/мин"](18) end
-            if UIset.sliders["Лимит парри/сек"] then UIset.sliders["Лимит парри/сек"](4) end
-            saveConfig()
+            AC.cleanMode()
         end
 
         if Config.Rejoin then AC.rejoin(reason) end
@@ -783,7 +791,7 @@ do
             local l = txt:lower()
             if l:find("anticheat") or l:find("anti-cheat") or l:find("parry")
                 or l:find("kicked") or l:find("detect") or l:find("exploit") then
-                AC.logKick("chat: " .. txt:sub(1, 78))
+                AC.logKick("chat: " .. txt:sub(1, 72))
             end
         end)
     end)
@@ -795,9 +803,49 @@ do
         if Config.AntiAfk then AC.antiAfk() end
     end)
 
+    -- чистый режим: только парри, всё остальное выключено
+    function AC.cleanMode()
+        Diag.clean = true
+        Config.BacBypassMode = "off"
+        Config.FpsBoost = false
+        Config.CutFx = false
+        Config.UnlockFps = false
+        Config.FovEnabled = false
+        Config.Korblox = false
+        Config.Headless = false
+        Config.DesyncGuard = false
+        Config.WriteAttr = false
+        Config.Humanize = true
+        Config.HumanJitter = 0.07
+        Config.HumanPausePct = 18
+        Config.MissChance = 12
+        Config.MaxParryPerMin = 15
+        Config.MaxParryPerSec = 3
+        Config.Cooldown = 0.55
+        Config.MinGap = 0.2
+        Config.ParryRange = 7
+        Config.PerpTol = 5
+        Config.Accuracy = 70
+        Config.Warmup = 25
+        Config.StartupDelay = 6
+        Config.PredictionSpam = 999
+        Config.InstantSpeed = 999
+        Config.DynThreshold = false
+        Config.TriggerbotDelay = 0.04
+        Config.ParanoidOnKick = true
+        Fps.Set(false)
+        Skin.SetKorblox(false)
+        Skin.SetHeadless(false)
+        UIset.refresh()
+        AC.logKick("-> ЧИСТЫЙ РЕЖИМ")
+        saveConfig()
+    end
+
     task.spawn(function()
+        local tick = 0
         while true do
             task.wait(0.5)
+            tick = tick + 1
             if Config.Watchdog then
                 local idle = os.clock() - (AutoParry.lastStep or os.clock())
                 if Config.AutoParry and idle > 1.2 then
@@ -808,8 +856,13 @@ do
                     lastJob = game.JobId
                     attempt = 0
                     AutoParry.reset()
-                    if Config.BacBypass then task.wait(2) AC.bypassBAC() end
+                    if Config.BacBypassMode ~= "off" then task.wait(2) AC.bypassBAC() end
                 end
+            end
+            -- периодический ре-скан BAC
+            if tick % 10 == 0 and Config.BacBypassMode ~= "off" then
+                local n = AC.bypassBAC(true)
+                if n and n > 0 then AC.logKick("bac: снесено ещё " .. n) end
             end
             if AC.paranoid and os.clock() > paranoidUntil then AC.paranoid = false end
             Diag.aggr = AC.aggression()
@@ -976,11 +1029,11 @@ reg(new("UIStroke", {Thickness=1.4, Transparency=0.25, Color=Accent, Parent=main
 
 local header = new("Frame", {Parent=main, Size=UDim2.new(1,0,0,34), BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0})
 regG(new("UIGradient", {Parent=header, Color=ColorSequence.new(Accent, Accent:Lerp(Color3.new(0,0,0),0.45))}))
-new("TextLabel", {Parent=header, BackgroundTransparency=1, Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-230,1,0),
+new("TextLabel", {Parent=header, BackgroundTransparency=1, Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-240,1,0),
     Font=Enum.Font.GothamBold, Text="SleepScript", TextSize=14, TextColor3=Color3.new(1,1,1),
     TextXAlignment=Enum.TextXAlignment.Left})
 local status = new("TextLabel", {Parent=header, BackgroundTransparency=1, AnchorPoint=Vector2.new(1,0), Position=UDim2.new(1,-14,0,0),
-    Size=UDim2.new(0,210,1,0), Font=Enum.Font.GothamMedium, Text="", TextSize=10.5,
+    Size=UDim2.new(0,220,1,0), Font=Enum.Font.GothamMedium, Text="", TextSize=10.5,
     TextColor3=Color3.fromRGB(235,235,245), TextXAlignment=Enum.TextXAlignment.Right})
 
 local body = new("Frame", {Parent=main, Position=UDim2.new(0,0,0,34), Size=UDim2.new(1,0,1,-34), BackgroundTransparency=1})
@@ -1158,7 +1211,7 @@ local pVisual = makeTab("ВИЗУАЛ", 3)
 local pSkin   = makeTab("СКИН", 4)
 local pMenu   = makeTab("МЕНЮ", 5)
 
-local methGroup = {}
+local methGroup, bypGroup = {}, {}
 local function radio(parent, group, value, label, onPick)
     local b = new("TextButton", {Parent=parent, Size=UDim2.new(1,0,0,26), BackgroundColor3=Color3.fromRGB(24,24,30),
         BorderSizePixel=0, Text="  "..label, Font=Enum.Font.GothamMedium, TextSize=11,
@@ -1177,9 +1230,14 @@ local function radio(parent, group, value, label, onPick)
     end)
     return entry
 end
-UIset.refreshMethods = function()
+UIset.refresh = function()
     for _, t in ipairs(methGroup) do
         local on = (t.value == Config.Mode)
+        t.mark.Visible = on
+        t.btn.TextColor3 = on and Color3.new(1,1,1) or Color3.fromRGB(216,216,226)
+    end
+    for _, t in ipairs(bypGroup) do
+        local on = (t.value == Config.BacBypassMode)
         t.mark.Visible = on
         t.btn.TextColor3 = on and Color3.new(1,1,1) or Color3.fromRGB(216,216,226)
     end
@@ -1195,21 +1253,17 @@ slider(pParry, "Triggerbot delay", 0, 0.2, Config.TriggerbotDelay, 0.005, " с",
 
 section(pParry, "МЕТОД НАЖАТИЯ")
 toggle(pParry, "Авто-подбор метода", Config.AutoMethod, function(v) Config.AutoMethod = v end)
-note(pParry, "Если метод не отбивает мяч за 12 попыток — скрипт сам переключится на следующий. Смотри счётчик «попаданий».")
-radio(pParry, methGroup, "Keypress",    "Keypress (VIM, обычный)",   function(v) Config.Mode = v end)
-radio(pParry, methGroup, "KeypressAlt", "KeypressAlt (repeat+hold)", function(v) Config.Mode = v end)
-radio(pParry, methGroup, "Mouse",       "Mouse (центр экрана)",      function(v) Config.Mode = v end)
-radio(pParry, methGroup, "Exec",        "Exec (keypress())",         function(v) Config.Mode = v end)
-radio(pParry, methGroup, "Remote",      "Remote (прямой)",           function(v) Config.Mode = v end)
-UIset.refreshMethods()
-button(pParry, "ТЕСТ НАЖАТИЯ (проверить, машет ли)", function() AutoParry.test() end)
+radio(pParry, methGroup, "Keypress",    "Keypress (VIM)",      function(v) Config.Mode = v end)
+radio(pParry, methGroup, "KeypressAlt", "KeypressAlt",         function(v) Config.Mode = v end)
+radio(pParry, methGroup, "Mouse",       "Mouse (центр)",       function(v) Config.Mode = v end)
+radio(pParry, methGroup, "Exec",        "Exec (keypress())",   function(v) Config.Mode = v end)
+radio(pParry, methGroup, "Remote",      "Remote",              function(v) Config.Mode = v end)
+button(pParry, "ТЕСТ НАЖАТИЯ", function() AutoParry.test() end)
 
 section(pParry, "ФИЛЬТР ЦЕЛИ")
 toggle(pParry, "Строго по атрибуту target", Config.StrictTarget, function(v) Config.StrictTarget = v end)
 toggle(pParry, "Только по атрибуту (без геометрии)", Config.RequireAttr, function(v) Config.RequireAttr = v end)
-note(pParry, "Атрибут target на мяче = имя игрока. Самый надёжный фильтр от BAC.")
 slider(pParry, "Промах траектории", 3, 20, Config.PerpTol, 1, " ст", function(v) Config.PerpTol = v end)
-toggle(pParry, "Только когда целятся в меня", Config.OnlyTarget, function(v) Config.OnlyTarget = v end)
 
 section(pParry, "ТОНКАЯ НАСТРОЙКА")
 slider(pParry, "Parry range", 5, 25, Config.ParryRange, 1, " ст", function(v) Config.ParryRange = v end)
@@ -1217,41 +1271,69 @@ slider(pParry, "Ping factor", 0.0, 1.5, Config.PingFactor, 0.05, "", function(v)
 slider(pParry, "Кулдаун", 0.04, 0.7, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
 slider(pParry, "Мин. зазор", 0.02, 0.3, Config.MinGap, 0.01, " с", function(v) Config.MinGap = v end)
 
-section(pParry, "РЕЖИМЫ (по умолчанию выкл)")
+section(pParry, "РЕЖИМЫ")
 slider(pParry, "Instant speed", 1, 999, Config.InstantSpeed, 1, "", function(v) Config.InstantSpeed = v end)
 slider(pParry, "Prediction spam", 1, 999, Config.PredictionSpam, 1, "", function(v) Config.PredictionSpam = v end)
 toggle(pParry, "Dynamic threshold", Config.DynThreshold, function(v) Config.DynThreshold = v end)
 slider(pParry, "Хитов до спама", 1, 10, Config.DynHits, 1, "", function(v) Config.DynHits = v end)
 
 -- ЗАЩИТА
+section(pGuard, "ИЗОЛЯЦИЯ")
+button(pGuard, "ЧИСТЫЙ РЕЖИМ (только парри)", function() AC.cleanMode() end)
+button(pGuard, "ВЕРНУТЬ ВСЁ", function()
+    Diag.clean = false
+    Config.BacBypassMode = "full"
+    Config.WriteAttr = true
+    Config.FpsBoost = false
+    Config.FovEnabled = false
+    Config.Korblox = false
+    Config.Headless = false
+    Config.DesyncGuard = true
+    Config.MaxParryPerMin = 20
+    Config.MaxParryPerSec = 4
+    Config.Cooldown = 0.5
+    Config.ParryRange = 8
+    Config.PerpTol = 6
+    Config.Warmup = 20
+    Config.StartupDelay = 5
+    Config.Humanize = true
+    Config.MissChance = 10
+    UIset.refresh()
+    AC.logKick("-> ВЕРНУЛ ВСЁ")
+    saveConfig()
+end)
+
 section(pGuard, "BAC BYPASS")
-toggle(pGuard, "Сносить BAC", Config.BacBypass, function(v) Config.BacBypass = v end)
+radio(pGuard, bypGroup, "off",   "off — не трогать BAC",     function(v) Config.BacBypassMode = v end)
+radio(pGuard, bypGroup, "light", "light — только клиент.скрипты", function(v) Config.BacBypassMode = v end)
+radio(pGuard, bypGroup, "full",  "full — Security + скрипты", function(v) Config.BacBypassMode = v end)
 button(pGuard, "ЗАПУСТИТЬ БАЙПАС", function() AC.bypassBAC() end)
-local bypassLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,30), BackgroundTransparency=1,
+local bypassLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,34), BackgroundTransparency=1,
     Font=Enum.Font.Code, Text="", TextSize=9.5, TextColor3=Color3.fromRGB(150,210,170),
     TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, TextWrapped=true,
     LayoutOrder=nextOrd()})
+UIset.refresh()
 
 section(pGuard, "ДИАГНОСТИКА")
-local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,160), BackgroundTransparency=1,
+local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,150), BackgroundTransparency=1,
     Font=Enum.Font.Code, Text="", TextSize=11, TextColor3=Color3.fromRGB(180,180,195),
     TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
 
 section(pGuard, "ЛИМИТЫ")
-slider(pGuard, "Лимит парри/мин", 10, 120, Config.MaxParryPerMin, 1, "", function(v) Config.MaxParryPerMin = v end)
-slider(pGuard, "Лимит парри/сек", 2, 25, Config.MaxParryPerSec, 1, "", function(v) Config.MaxParryPerSec = v end)
+slider(pGuard, "Лимит парри/мин", 8, 120, Config.MaxParryPerMin, 1, "", function(v) Config.MaxParryPerMin = v end)
+slider(pGuard, "Лимит парри/сек", 1, 25, Config.MaxParryPerSec, 1, "", function(v) Config.MaxParryPerSec = v end)
 
 section(pGuard, "HUMANIZER")
 toggle(pGuard, "Humanizer", Config.Humanize, function(v) Config.Humanize = v end)
-slider(pGuard, "Джиттер реакции", 0, 0.15, Config.HumanJitter, 0.005, " с", function(v) Config.HumanJitter = v end)
+slider(pGuard, "Джиттер реакции", 0, 0.2, Config.HumanJitter, 0.005, " с", function(v) Config.HumanJitter = v end)
 slider(pGuard, "Разброс фокуса", 0, 0.1, Config.HumanAccSpread, 0.005, " с", function(v) Config.HumanAccSpread = v end)
 slider(pGuard, "Человеч. паузы", 0, 30, Config.HumanPausePct, 1, "%", function(v) Config.HumanPausePct = v end)
 slider(pGuard, "Размер паузы", 0.02, 0.3, Config.HumanPause, 0.01, " с", function(v) Config.HumanPause = v end)
-slider(pGuard, "Шанс пропуска", 0, 25, Config.MissChance, 1, "%", function(v) Config.MissChance = v end)
+slider(pGuard, "Шанс пропуска", 0, 30, Config.MissChance, 1, "%", function(v) Config.MissChance = v end)
 slider(pGuard, "Держать клавишу мин", 0.005, 0.2, Config.HoldMin, 0.005, " с", function(v) Config.HoldMin = v end)
 slider(pGuard, "Держать клавишу макс", 0.01, 0.3, Config.HoldMax, 0.005, " с", function(v) Config.HoldMax = v end)
 
-section(pGuard, "РАЗОГРЕВ / ПАРАНОЙЯ")
+section(pGuard, "ПАРАНОЙЯ")
 slider(pGuard, "Разогрев после входа", 0, 60, Config.Warmup, 1, " с", function(v) Config.Warmup = v end)
 toggle(pGuard, "Паранойя после кика", Config.ParanoidOnKick, function(v) Config.ParanoidOnKick = v end)
 toggle(pGuard, "Авто-ослабление (AutoTune)", Config.AutoTune, function(v) Config.AutoTune = v end)
@@ -1260,58 +1342,16 @@ slider(pGuard, "Уровень легита", 0, 0.8, Config.ParanoidScale, 0.05
 
 section(pGuard, "СЕССИЯ")
 toggle(pGuard, "Watchdog", Config.Watchdog, function(v) Config.Watchdog = v end)
-toggle(pGuard, "Задержка после инжекта", Config.StartupDelay > 0, function(v) Config.StartupDelay = v and 3 or 0 end)
-toggle(pGuard, "Защита от десинка", Config.DesyncGuard, function(v) Config.DesyncGuard = v end)
+toggle(pGuard, "Писать атрибуты на мяч", Config.WriteAttr, function(v) Config.WriteAttr = v end)
 toggle(pGuard, "Удерживать клавишу", Config.HoldPress, function(v) Config.HoldPress = v end)
 toggle(pGuard, "Авто-реджойн", Config.Rejoin, function(v) Config.Rejoin = v end)
 slider(pGuard, "Попыток реджойна", 1, 10, Config.RejoinAttempts, 1, "", function(v) Config.RejoinAttempts = v end)
 toggle(pGuard, "Анти-АФК", Config.AntiAfk, function(v) Config.AntiAfk = v end)
 button(pGuard, "РЕ-ДЖОЙН СЕЙЧАС", function() AC.rejoin("manual") end)
 
-section(pGuard, "ПРЕСЕТЫ")
-local function preset(map)
-    for label, v in pairs(map) do
-        if UIset.toggles[label] then UIset.toggles[label](v)
-        elseif UIset.sliders[label] then UIset.sliders[label](v) end
-    end
-    saveConfig()
-end
-button(pGuard, "MAX LEGIT", function() preset({
-    Humanizer = true, ["Шанс пропуска"] = 15, ["Человеч. паузы"] = 22,
-    Accuracy = 75, ["Triggerbot delay"] = 0.05, ["Лимит парри/мин"] = 22,
-    ["Лимит парри/сек"] = 4, ["Кулдаун"] = 0.5, ["Мин. зазор"] = 0.15,
-    ["Промах траектории"] = 5, ["Parry range"] = 8, ["Разогрев после входа"] = 25,
-    ["Джиттер реакции"] = 0.06, ["Prediction spam"] = 999, ["Instant speed"] = 999,
-    ["Строго по атрибуту target"] = true, ["Только по атрибуту (без геометрии)"] = true,
-}) end)
-button(pGuard, "BALANCED", function() preset({
-    Humanizer = true, ["Шанс пропуска"] = 8, ["Человеч. паузы"] = 12,
-    Accuracy = 60, ["Triggerbot delay"] = 0.03, ["Лимит парри/мин"] = 30,
-    ["Лимит парри/сек"] = 6, ["Кулдаун"] = 0.45, ["Мин. зазор"] = 0.10,
-    ["Промах траектории"] = 6, ["Parry range"] = 9, ["Разогрев после входа"] = 15,
-    ["Джиттер реакции"] = 0.05, ["Prediction spam"] = 999, ["Instant speed"] = 999,
-    ["Только по атрибуту (без геометрии)"] = false,
-}) end)
-button(pGuard, "AGGRESSIVE", function() preset({
-    Humanizer = true, ["Шанс пропуска"] = 5, ["Человеч. паузы"] = 6,
-    Accuracy = 50, ["Triggerbot delay"] = 0.02, ["Лимит парри/мин"] = 45,
-    ["Лимит парри/сек"] = 10, ["Кулдаун"] = 0.3, ["Мин. зазор"] = 0.07,
-    ["Промах траектории"] = 8, ["Parry range"] = 11, ["Разогрев после входа"] = 8,
-    ["Джиттер реакции"] = 0.03, ["Prediction spam"] = 260, ["Instant speed"] = 200,
-    ["Только по атрибуту (без геометрии)"] = false,
-}) end)
-button(pGuard, "RAGE", function() preset({
-    Humanizer = false, ["Шанс пропуска"] = 0, ["Человеч. паузы"] = 0,
-    Accuracy = 45, ["Triggerbot delay"] = 0, ["Лимит парри/мин"] = 80,
-    ["Лимит парри/сек"] = 18, ["Кулдаун"] = 0.18, ["Мин. зазор"] = 0.04,
-    ["Промах траектории"] = 12, ["Parry range"] = 14, ["Разогрев после входа"] = 0,
-    ["Prediction spam"] = 1, ["Instant speed"] = 1,
-    ["Только по атрибуту (без геометрии)"] = false,
-}) end)
-
 section(pGuard, "ЛОГ КИКОВ / ЧАТ")
-local logLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,110), BackgroundTransparency=1,
-    Font=Enum.Font.Code, Text="", TextSize=10, TextColor3=Color3.fromRGB(200,170,170),
+local logLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,130), BackgroundTransparency=1,
+    Font=Enum.Font.Code, Text="", TextSize=9.5, TextColor3=Color3.fromRGB(200,170,170),
     TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
 button(pGuard, "ОЧИСТИТЬ ЛОГ", function() AC.log = {} end)
 
@@ -1388,29 +1428,29 @@ task.spawn(function()
     while true do
         task.wait(0.25)
         local flag = AC.paranoid and " | ПАРАНОЙЯ" or ""
-        status.Text = string.format("%dms | %s | %s | hit %d/%d%s",
+        local cl = Diag.clean and " | ЧИСТЫЙ" or ""
+        status.Text = string.format("%dms | %s | %s | hit %d/%d%s%s",
             math.floor(AutoParry.getPing()), Config.Mode, Diag.status,
-            Diag.landed, Diag.att, flag)
+            Diag.landed, Diag.att, flag, cl)
         diagLbl.Text = string.format(
-            "статус    : %s\nметод     : %s\nпопаданий : %d/%d\nмяч       : %s\ntarget    : %s\nатрибут   : %s\nзащёлка   : %s\nдист      : %.0f ст\nпромах тр.: %.1f ст\ntti       : %.2f с\nпарри/мин : %d\nвсего     : %d\nкиков     : %d",
+            "статус    : %s\nметод     : %s\nпопаданий : %d/%d\ntarget    : %s\nатрибут   : %s\nзащёлка   : %s\nдист      : %.0f ст\nпромах тр.: %.1f ст\nпарри/мин : %d\nвсего     : %d\nкиков     : %d",
             Diag.status, Config.Mode, Diag.landed, Diag.att,
-            Diag.real and "да" or "нет",
             Diag.attr and (Diag.target and "мой" or "чужой") or "нет данных",
             Diag.attr and "есть" or "НЕТ",
             Diag.latched and "закрыта" or "открыта",
-            Diag.dist, Diag.perp, Diag.tti, Diag.rateMin, Diag.parries, Diag.kicks)
-        logLbl.Text = AC.getLogText(8)
+            Diag.dist, Diag.perp, Diag.rateMin, Diag.parries, Diag.kicks)
+        logLbl.Text = AC.getLogText(6)
         bypassLbl.Text = AC.bypassText()
     end
 end)
 
 task.spawn(function()
-    task.wait(1.5)
-    if Config.BacBypass then AC.bypassBAC() end
+    task.wait(2)
+    if Config.BacBypassMode ~= "off" then AC.bypassBAC() end
 end)
 
 if Config.FpsBoost then Fps.Set(true) end
 if Config.Korblox then Skin.SetKorblox(true) end
 if Config.Headless then Skin.SetHeadless(true) end
 
-print("[SleepScript] v6.6 загружен. RightShift — меню.")
+print("[SleepScript] v7.0 загружен. RightShift — меню.")
