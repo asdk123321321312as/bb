@@ -1,6 +1,7 @@
 --=====================================================================
---   SleepScript  //  BLADE BALL   v6
+--   SleepScript  //  BLADE BALL   v6.1
 --   Anti-Detection Core + Humanizer + Session Guard
+--   FIX: один парри на один заход мяча (защёлка parried)
 --   Хоткей меню: RightShift
 --=====================================================================
 
@@ -110,7 +111,7 @@ end
 loadConfig()
 
 local Diag = { parries=0, kicks=0, status="idle", dist=0, hits=0, target=false, real=false,
-               window=0, tti=0, aggr=1, rate=0 }
+               window=0, tti=0, aggr=1, rate=0, latched=false }
 
 ------------------------------------------------------------------ utils
 local function gauss()
@@ -148,12 +149,12 @@ do
     local lastFrame  = os.clock()
     local lastPress  = 0
     local trackedBall, hits, spam = nil, 0, false
-    local pending, held, holdDur = false, false, 0.03
+    local pending, held, holdDur, parried = false, false, 0.03, false
     local ballJitter, ballFocus, ballMiss = 0, 0, false
     local pings = {}
 
     local cachedRemote, cachedRelease
-    local function getRemote(name)
+    local function getRemote()
         if cachedRemote and cachedRemote.Parent then return cachedRemote, cachedRelease end
         for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
             if d:IsA("RemoteEvent") then
@@ -205,8 +206,10 @@ do
     end
 
     local function fire(now)
+        if parried then return false end          -- защёлка: один парри на заход
         if not AC.allowRate(now) then return false end
         lastPress = now
+        parried = true
         hits = hits + 1
         Diag.parries = Diag.parries + 1
         Diag.hits = hits
@@ -250,7 +253,8 @@ do
 
     function AutoParry.reset()
         if held then up(); held = false end
-        pending, trackedBall, hits, spam = false, nil, 0, false
+        pending, trackedBall, hits, spam, parried = false, nil, 0, false, false
+        Diag.latched = false
     end
 
     local function step()
@@ -279,6 +283,10 @@ do
         local dist = (ppos - pos).Magnitude
         Diag.dist, Diag.tti = dist, tti or -1
 
+        -- защёлка снимается только когда мяч покинул зону (улетел/отбит/вернулся заново)
+        if parried and dist > Config.ParryRange + 12 then parried = false end
+        Diag.latched = parried
+
         -- десинк-гард
         if Config.DesyncGuard then
             local last = ball:GetAttribute("__ssLast")
@@ -293,7 +301,7 @@ do
 
         if ball ~= trackedBall then
             trackedBall = ball
-            hits, spam, pending = 0, false, false
+            hits, spam, pending, parried = 0, false, false, false
             if Config.Humanize then
                 ballJitter = gauss() * Config.HumanJitter
                 ballFocus  = gauss() * Config.HumanAccSpread
@@ -329,7 +337,7 @@ do
         if tti == nil then
             -- мяч формально прошёл, но всё ещё в зоне
             if dist <= Config.ParryRange and ((ppos - pos).Unit):Dot(vel.Unit) > 0 then
-                if not spam and (now - lastPress) >= Config.Cooldown then fire(now) end
+                if not parried and not pending and (now - lastPress) >= Config.Cooldown then fire(now) end
             end
             Diag.status = "уходит" return
         end
@@ -340,12 +348,14 @@ do
         local spamNow = (spam or dynOn) and aggr > 0.45 and not ballMiss
 
         if spamNow then
-            if tti <= math.max(budget * 3, Config.SpamRate) and (now - lastPress) >= Config.SpamRate then
+            if not parried and tti <= math.max(budget * 3, Config.SpamRate) and (now - lastPress) >= Config.SpamRate then
                 fire(now)
             end
             Diag.status = spam and "спам(скор)" or "спам(дин)"
             return
         end
+
+        if parried then Diag.status = "уже отбит" return end
 
         if (now - lastPress) < Config.Cooldown then Diag.status = "кулдаун" return end
         if tti > budget then Diag.status = string.format("лети %0.2f", tti) return end
@@ -362,7 +372,7 @@ do
                 Diag.status = "триггер"
                 task.delay(Config.TriggerbotDelay, function()
                     pending = false
-                    if Config.AutoParry then fire(os.clock()) end
+                    if Config.AutoParry and not parried then fire(os.clock()) end
                 end)
             end
         else
@@ -934,7 +944,7 @@ for _, t in ipairs(methGroup) do t.mark.Visible = (t.value == Config.Mode) end
 
 -- ЗАЩИТА
 section(pGuard, "ДИАГНОСТИКА")
-local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,112), BackgroundTransparency=1,
+local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,124), BackgroundTransparency=1,
     Font=Enum.Font.Code, Text="", TextSize=11, TextColor3=Color3.fromRGB(180,180,195),
     TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
 
@@ -1082,8 +1092,9 @@ task.spawn(function()
         local flag = AC.paranoid and " | ПАРАНОЙЯ" or ""
         status.Text = string.format("%dms | %s | %d/с%s", math.floor(AutoParry.getPing()), Diag.status, Diag.rate, flag)
         diagLbl.Text = string.format(
-            "статус   : %s\nмяч      : %s\nнаведён  : %s\nдист     : %.0f ст\ntti      : %.2f с\nбюджет   : %.3f с\nагрессия : %.2f\nпарри/с  : %d\nхиты     : %d\nвсего    : %d\nкиков    : %d",
+            "статус   : %s\nмяч      : %s\nнаведён  : %s\nзащёлка  : %s\nдист     : %.0f ст\ntti      : %.2f с\nбюджет   : %.3f с\nагрессия : %.2f\nпарри/с  : %d\nхиты     : %d\nвсего    : %d\nкиков    : %d",
             Diag.status, Diag.real and "да" or "нет", Diag.target and "да" or "нет",
+            Diag.latched and "закрыта" or "открыта",
             Diag.dist, Diag.tti, Diag.window, Diag.aggr, Diag.rate, Diag.hits, Diag.parries, Diag.kicks)
         logLbl.Text = AC.getLogText(8)
     end
@@ -1093,4 +1104,4 @@ if Config.FpsBoost then Fps.Set(true) end
 if Config.Korblox then Skin.SetKorblox(true) end
 if Config.Headless then Skin.SetHeadless(true) end
 
-print("[SleepScript] v6 загружен. RightShift — меню.")
+print("[SleepScript] v6.1 загружен. RightShift — меню.")
