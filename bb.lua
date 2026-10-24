@@ -1,7 +1,7 @@
 --=====================================================================
---   SleepScript  //  BLADE BALL   v6.3
+--   SleepScript  //  BLADE BALL   v6.4   [BAC-SAFE]
 --   Anti-Detection Core + Threat Filter + Rate Governor
---   FIX: никаких "пустых" парри -> нет кика за эксплойт
+--   FIX: только "свои" мячи, узкое окно, лимит 30 парри/мин
 --   Хоткей меню: RightShift
 --=====================================================================
 
@@ -34,43 +34,46 @@ local readfile  = execFn("readfile")
 local isfile    = execFn("isfile")
 
 ------------------------------------------------------------------ config
+local CFG_VER = 64
+
 local Config = {
+    __ver          = 0,
     AutoParry      = false,
-    Accuracy       = 53,
+    Accuracy       = 55,
     AccRand        = true,
-    AccRandAmt     = 8,
+    AccRandAmt     = 10,
 
     TriggerbotDelay= 0.03,
-    InstantSpeed   = 200,
-    PredictionSpam = 260,
-    DynThreshold   = true,
+    InstantSpeed   = 999,      -- выкл по умолчанию
+    PredictionSpam = 999,      -- выкл по умолчанию
+    DynThreshold   = false,
     DynHits        = 3,
 
-    ParryRange     = 12,
+    ParryRange     = 9,        -- реальный радиус парри, не 12
     PingFactor     = 1.0,
-    Cooldown       = 0.35,
+    Cooldown       = 0.40,
     SpamRate       = 0.05,
-    MinGap         = 0.08,     -- жёсткий зазор между любыми нажатиями
-    PerpTol        = 10,       -- макс. промах траектории (ст) — иначе "пустой" парри
-    StrictTarget   = true,     -- доверять только флагу Targeted от игры
+    MinGap         = 0.10,
+    PerpTol        = 6,        -- мяч должен лететь прямо в тебя
+    StrictTarget   = true,
     OnlyTarget     = true,
     MinSpeed       = 15,
     Mode           = "Keypress",
 
     -- ANTI-DETECT / ЗАЩИТА
     Humanize       = true,
-    HumanJitter    = 0.035,
-    HumanAccSpread = 0.02,
-    HumanPausePct  = 10,       -- % нажатий с человеческой "задумчивостью"
-    HumanPause     = 0.09,     -- с, размер такой задержки
-    MissChance     = 6,        -- % мячей, которые вообще не отбиваем
+    HumanJitter    = 0.05,
+    HumanAccSpread = 0.03,
+    HumanPausePct  = 15,
+    HumanPause     = 0.12,
+    MissChance     = 10,
     HoldMin        = 0.02,
     HoldMax        = 0.06,
-    MaxParryPerSec = 9,
-    MaxParryPerMin = 45,       -- главный лимит: сервер копит нажатия за минуту
-    Warmup         = 12,       -- сек "разогрева" после респавна/инжекта
+    MaxParryPerSec = 7,
+    MaxParryPerMin = 30,
+    Warmup         = 15,
     ParanoidOnKick = true,
-    ParanoidTime   = 25,
+    ParanoidTime   = 30,
     ParanoidScale  = 0.25,
     AutoTune       = true,
     Watchdog       = true,
@@ -118,11 +121,30 @@ local function loadConfig()
 end
 loadConfig()
 
-if Config.Cooldown < 0.25 then Config.Cooldown = 0.35 end
-if Config.Mode == "Remote" then Config.Mode = "Keypress" end
+-- миграция на BAC-safe
+if (Config.__ver or 0) < CFG_VER then
+    Config.__ver          = CFG_VER
+    Config.Mode           = "Keypress"
+    Config.ParryRange     = 9
+    Config.PerpTol        = 6
+    Config.Cooldown       = 0.40
+    Config.MinGap         = 0.10
+    Config.MaxParryPerMin = 30
+    Config.MaxParryPerSec = 7
+    Config.MissChance     = 10
+    Config.Warmup         = 15
+    Config.HumanJitter    = 0.05
+    Config.HumanPausePct  = 15
+    Config.StrictTarget   = true
+    Config.PredictionSpam = 999
+    Config.InstantSpeed   = 999
+    Config.DynThreshold   = false
+    saveConfig()
+end
 
 local Diag = { parries=0, kicks=0, status="idle", dist=0, hits=0, target=false, real=false,
-               window=0, tti=0, aggr=1, rate=0, rateMin=0, latched=false, serverWin=0, perp=0 }
+               window=0, tti=0, aggr=1, rate=0, rateMin=0, latched=false, serverWin=0,
+               perp=0, attr=false }
 
 local UIset = { sliders = {}, toggles = {} }
 
@@ -158,7 +180,6 @@ local function timeToImpact(p, v, q, radius)
     return t
 end
 
--- ближайшая точка траектории к игроку
 local function missDistance(p, v, q)
     local rel = q - p
     local vv = v.Magnitude
@@ -253,27 +274,26 @@ do
         return true
     end
 
-    -- самая опасная цель: минимальный TTI среди тех, что реально летят в нас
     local function getBall(hrp)
         local folder = Workspace:FindFirstChild("Balls")
         if not folder then return nil, nil end
-        local best, bestT, fallback, fbT = nil, math.huge, nil, math.huge
+        local best, bestT, fb, fbT = nil, math.huge, nil, math.huge
         for _, b in ipairs(folder:GetChildren()) do
             if b:IsA("BasePart") and b:GetAttribute("realBall") == true then
                 local vel = b.AssemblyLinearVelocity
                 if vel.Magnitude >= Config.MinSpeed then
-                    local t = timeToImpact(b.Position, vel, hrp.Position, Config.ParryRange + 3)
+                    local t = timeToImpact(b.Position, vel, hrp.Position, Config.ParryRange + 2)
                     if t then
+                        if t < fbT then fbT = t; fb = b end
                         local perp, along = missDistance(b.Position, vel, hrp.Position)
                         if along > 0 and perp <= Config.PerpTol then
                             if t < bestT then bestT = t; best = b end
                         end
-                        if t < fbT then fbT = t; fallback = b end
                     end
                 end
             end
         end
-        return (best or fallback), (best and bestT or nil)
+        return (best or fb), (best and bestT or nil)
     end
 
     local function isTargeted(char, ball, ppos, pos, vel)
@@ -346,17 +366,21 @@ do
         end
         Diag.hits = hits
 
-        --=========== ФИЛЬТР УГРОЗЫ ===========--
+        --=========== ФИЛЬТР УГРОЗЫ (BAC) ===========--
         local targeted, known = isTargeted(char, ball, ppos, pos, vel)
-        Diag.target = targeted
+        Diag.target, Diag.attr = targeted, known
+        AC.strict = (known and targeted)
 
         local perp, along = missDistance(pos, vel, ppos)
         Diag.perp = perp
 
-        if Config.StrictTarget and known and not targeted then Diag.status = "не мой" return end
+        if known then
+            if not targeted then Diag.status = "не мой" return end
+        elseif perp > Config.PerpTol then
+            Diag.status = string.format("мимо %.0f", perp) return
+        end
         if along <= 0 then Diag.status = "уже прошёл" return end
-        if perp > Config.PerpTol then Diag.status = string.format("мимо %.0f", perp) return end
-        --=====================================--
+        --===========================================--
 
         --=========== СЕРВЕРНАЯ МОДЕЛЬ ОКНА ===========--
         local aggr = AC.aggression()
@@ -453,6 +477,7 @@ do
 
     AC.kicks = 0
     AC.paranoid = false
+    AC.strict = false
     AC.log = {}
     AC.lastKickAt = 0
 
@@ -483,10 +508,14 @@ do
         return true
     end
 
+    -- при переливе минуты жмём только по строго "своим" мячам
     function AC.allowMinute(now)
         while minute[1] and now - minute[1] > 60 do table.remove(minute, 1) end
         local cap = math.max(10, math.floor(Config.MaxParryPerMin * (0.5 + 0.5 * AC.aggression())))
-        if #minute >= cap then return false end
+        if #minute >= cap then
+            if not AC.strict then return false end
+            if #minute >= cap * 1.35 then return false end
+        end
         minute[#minute+1] = now
         Diag.rateMin = #minute
         return true
@@ -517,12 +546,9 @@ do
 
     function AC.logKick(reason)
         AC.log[#AC.log+1] = {
-            t = os.time(),
-            clock = os.date("%H:%M:%S"),
-            reason = reason,
+            t = os.time(), clock = os.date("%H:%M:%S"), reason = reason,
             uptime = math.floor(os.clock()),
-            rate = Config.MaxParryPerMin,
-            cd = Config.Cooldown,
+            perMin = Config.MaxParryPerMin, cd = Config.Cooldown, tol = Config.PerpTol,
         }
         while #AC.log > 40 do table.remove(AC.log, 1) end
         saveLog()
@@ -543,26 +569,26 @@ do
         r = r:lower()
         return r:find("parry") or r:find("spam") or r:find("fast")
             or r:find("auto") or r:find("cheat") or r:find("detect")
-            or r:find("exploit")
+            or r:find("exploit") or r:find("bac")
     end
 
     local function tuneDown()
         if not Config.AutoTune then return end
-        Config.MaxParryPerMin  = math.max(18, math.floor(Config.MaxParryPerMin) - 7)
-        Config.MaxParryPerSec  = math.max(4, math.floor(Config.MaxParryPerSec) - 2)
+        Config.MaxParryPerMin  = math.max(15, math.floor(Config.MaxParryPerMin) - 6)
+        Config.MaxParryPerSec  = math.max(3, math.floor(Config.MaxParryPerSec) - 2)
         Config.Cooldown        = math.min(0.6, Config.Cooldown + 0.05)
         Config.MissChance      = math.min(22, Config.MissChance + 3)
         Config.HumanPausePct   = math.min(30, Config.HumanPausePct + 4)
-        Config.PerpTol         = math.max(6, Config.PerpTol - 1)
+        Config.PerpTol         = math.max(4, Config.PerpTol - 1)
         Config.Humanize        = true
         local s, t = UIset.sliders, UIset.toggles
-        if s["Лимит парри/мин"]  then s["Лимит парри/мин"](Config.MaxParryPerMin) end
-        if s["Лимит парри/сек"]  then s["Лимит парри/сек"](Config.MaxParryPerSec) end
-        if s["Кулдаун"]          then s["Кулдаун"](Config.Cooldown) end
-        if s["Шанс пропуска"]    then s["Шанс пропуска"](Config.MissChance) end
-        if s["Человеч. паузы"]   then s["Человеч. паузы"](Config.HumanPausePct) end
-        if s["Промах траектории"]then s["Промах траектории"](Config.PerpTol) end
-        if t["Humanizer"]        then t["Humanizer"](true) end
+        if s["Лимит парри/мин"]   then s["Лимит парри/мин"](Config.MaxParryPerMin) end
+        if s["Лимит парри/сек"]   then s["Лимит парри/сек"](Config.MaxParryPerSec) end
+        if s["Кулдаун"]           then s["Кулдаун"](Config.Cooldown) end
+        if s["Шанс пропуска"]     then s["Шанс пропуска"](Config.MissChance) end
+        if s["Человеч. паузы"]    then s["Человеч. паузы"](Config.HumanPausePct) end
+        if s["Промах траектории"] then s["Промах траектории"](Config.PerpTol) end
+        if t["Humanizer"]         then t["Humanizer"](true) end
         saveConfig()
     end
 
@@ -593,14 +619,14 @@ do
         kickStamps[#kickStamps+1] = os.clock()
         while kickStamps[1] and os.clock() - kickStamps[1] > 60 do table.remove(kickStamps, 1) end
         if #kickStamps >= 3 then
-            Config.MaxParryPerMin = 25
-            Config.MaxParryPerSec = 5
-            Config.Cooldown = 0.45
-            Config.MissChance = 14
+            Config.MaxParryPerMin = 20
+            Config.MaxParryPerSec = 4
+            Config.Cooldown = 0.5
+            Config.MissChance = 15
             Config.ParanoidTime = 60
             kickStamps = {}
-            if UIset.sliders["Лимит парри/мин"] then UIset.sliders["Лимит парри/мин"](25) end
-            if UIset.sliders["Лимит парри/сек"] then UIset.sliders["Лимит парри/сек"](5) end
+            if UIset.sliders["Лимит парри/мин"] then UIset.sliders["Лимит парри/мин"](20) end
+            if UIset.sliders["Лимит парри/сек"] then UIset.sliders["Лимит парри/сек"](4) end
             saveConfig()
         end
 
@@ -623,7 +649,7 @@ do
             local txt = tostring(msg.Text or "")
             local l = txt:lower()
             if l:find("anticheat") or l:find("anti-cheat") or l:find("parry")
-                or l:find("kicked") or l:find("detect") or l:find("exploit") then
+                or l:find("kicked") or l:find("detect") or l:find("exploit") or l:find("bac") then
                 AC.logKick("chat: " .. txt:sub(1, 80))
             end
         end)
@@ -1021,30 +1047,30 @@ end
 section(pParry, "ОСНОВНОЕ")
 toggle(pParry, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)
 slider(pParry, "Accuracy", 1, 100, Config.Accuracy, 1, "", function(v) Config.Accuracy = v end)
-note(pParry, "Позиция внутри серверного окна: 1 = жать в начале окна (запас на лаг), 100 = позже, легитнее.")
+note(pParry, "1 = жать в начале серверного окна, 100 = позже. 55-70 = безопасно.")
 toggle(pParry, "Случайный разброс Accuracy", Config.AccRand, function(v) Config.AccRand = v end)
 slider(pParry, "Разброс", 0, 30, Config.AccRandAmt, 1, "", function(v) Config.AccRandAmt = v end)
 slider(pParry, "Triggerbot delay", 0, 0.2, Config.TriggerbotDelay, 0.005, " с", function(v) Config.TriggerbotDelay = v end)
 
-section(pParry, "СКОРОСТНЫЕ РЕЖИМЫ")
-slider(pParry, "Instant speed", 1, 400, Config.InstantSpeed, 1, "", function(v) Config.InstantSpeed = v end)
-slider(pParry, "Prediction spam", 1, 400, Config.PredictionSpam, 1, "", function(v) Config.PredictionSpam = v end)
-toggle(pParry, "Dynamic threshold", Config.DynThreshold, function(v) Config.DynThreshold = v end)
-slider(pParry, "Хитов до спама", 1, 10, Config.DynHits, 1, "", function(v) Config.DynHits = v end)
-
-section(pParry, "ФИЛЬТР ЦЕЛИ")
+section(pParry, "ФИЛЬТР ЦЕЛИ (против BAC)")
 toggle(pParry, "Строго по флагу игры", Config.StrictTarget, function(v) Config.StrictTarget = v end)
-note(pParry, "Не жать, если игра не пометила мяч как наведённый на тебя.")
+note(pParry, "Не жать по чужому мячу. Держи включённым.")
 slider(pParry, "Промах траектории", 3, 20, Config.PerpTol, 1, " ст", function(v) Config.PerpTol = v end)
-note(pParry, "Если траектория мяча проходит дальше этого от тебя — парри не жмём.")
+note(pParry, "Если траектория проходит дальше этого — мяч чужой. 5-6 ст = максимум легита.")
 toggle(pParry, "Только когда целятся в меня", Config.OnlyTarget, function(v) Config.OnlyTarget = v end)
 
 section(pParry, "ТОНКАЯ НАСТРОЙКА")
 slider(pParry, "Parry range", 5, 25, Config.ParryRange, 1, " ст", function(v) Config.ParryRange = v end)
+note(pParry, "Реальный радиус парри ~8-9. Больше = лишние нажатия.")
 slider(pParry, "Ping factor", 0.0, 1.5, Config.PingFactor, 0.05, "", function(v) Config.PingFactor = v end)
-slider(pParry, "Кулдаун", 0.04, 0.6, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
+slider(pParry, "Кулдаун", 0.04, 0.7, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
 slider(pParry, "Мин. зазор", 0.02, 0.3, Config.MinGap, 0.01, " с", function(v) Config.MinGap = v end)
-slider(pParry, "Частота спама", 0.02, 0.2, Config.SpamRate, 0.01, " с", function(v) Config.SpamRate = v end)
+
+section(pParry, "РЕЖИМЫ (по умолчанию выкл)")
+slider(pParry, "Instant speed", 1, 999, Config.InstantSpeed, 1, "", function(v) Config.InstantSpeed = v end)
+slider(pParry, "Prediction spam", 1, 999, Config.PredictionSpam, 1, "", function(v) Config.PredictionSpam = v end)
+toggle(pParry, "Dynamic threshold", Config.DynThreshold, function(v) Config.DynThreshold = v end)
+slider(pParry, "Хитов до спама", 1, 10, Config.DynHits, 1, "", function(v) Config.DynHits = v end)
 
 section(pParry, "МЕТОД")
 local methGroup = {}
@@ -1055,28 +1081,27 @@ for _, t in ipairs(methGroup) do t.mark.Visible = (t.value == Config.Mode) end
 
 -- ЗАЩИТА
 section(pGuard, "ДИАГНОСТИКА")
-local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,148), BackgroundTransparency=1,
+local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,160), BackgroundTransparency=1,
     Font=Enum.Font.Code, Text="", TextSize=11, TextColor3=Color3.fromRGB(180,180,195),
     TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
 
 section(pGuard, "ЛИМИТЫ (главное)")
 slider(pGuard, "Лимит парри/мин", 10, 120, Config.MaxParryPerMin, 1, "", function(v) Config.MaxParryPerMin = v end)
-note(pGuard, "Сервер копит нажатия за минуту. Это и есть защита от кика за эксплойт.")
+note(pGuard, "BAC считает нажатия за минуту. 30 = безопасно, 45 = предел.")
 slider(pGuard, "Лимит парри/сек", 2, 25, Config.MaxParryPerSec, 1, "", function(v) Config.MaxParryPerSec = v end)
 
 section(pGuard, "HUMANIZER")
 toggle(pGuard, "Humanizer", Config.Humanize, function(v) Config.Humanize = v end)
-slider(pGuard, "Джиттер реакции", 0, 0.12, Config.HumanJitter, 0.005, " с", function(v) Config.HumanJitter = v end)
+slider(pGuard, "Джиттер реакции", 0, 0.15, Config.HumanJitter, 0.005, " с", function(v) Config.HumanJitter = v end)
 slider(pGuard, "Разброс фокуса", 0, 0.1, Config.HumanAccSpread, 0.005, " с", function(v) Config.HumanAccSpread = v end)
 slider(pGuard, "Человеч. паузы", 0, 30, Config.HumanPausePct, 1, "%", function(v) Config.HumanPausePct = v end)
-slider(pGuard, "Размер паузы", 0.02, 0.25, Config.HumanPause, 0.01, " с", function(v) Config.HumanPause = v end)
+slider(pGuard, "Размер паузы", 0.02, 0.3, Config.HumanPause, 0.01, " с", function(v) Config.HumanPause = v end)
 slider(pGuard, "Шанс пропуска", 0, 25, Config.MissChance, 1, "%", function(v) Config.MissChance = v end)
 slider(pGuard, "Держать клавишу мин", 0.005, 0.15, Config.HoldMin, 0.005, " с", function(v) Config.HoldMin = v end)
 slider(pGuard, "Держать клавишу макс", 0.01, 0.25, Config.HoldMax, 0.005, " с", function(v) Config.HoldMax = v end)
 
 section(pGuard, "РАЗОГРЕВ / ПАРАНОЙЯ")
 slider(pGuard, "Разогрев после входа", 0, 60, Config.Warmup, 1, " с", function(v) Config.Warmup = v end)
-note(pGuard, "Первые секунды после респавна жмём слябее — как живой.")
 toggle(pGuard, "Паранойя после кика", Config.ParanoidOnKick, function(v) Config.ParanoidOnKick = v end)
 toggle(pGuard, "Авто-ослабление (AutoTune)", Config.AutoTune, function(v) Config.AutoTune = v end)
 slider(pGuard, "Длительность", 5, 90, Config.ParanoidTime, 1, " с", function(v) Config.ParanoidTime = v end)
@@ -1085,7 +1110,6 @@ slider(pGuard, "Уровень легита", 0, 0.8, Config.ParanoidScale, 0.05
 section(pGuard, "СЕССИЯ")
 toggle(pGuard, "Watchdog", Config.Watchdog, function(v) Config.Watchdog = v end)
 toggle(pGuard, "Задержка после инжекта", Config.StartupDelay > 0, function(v) Config.StartupDelay = v and 3 or 0 end)
-toggle(pGuard, "Защита от лаг-спайков", Config.DtSafety, function(v) Config.DtSafety = v end)
 toggle(pGuard, "Защита от десинка", Config.DesyncGuard, function(v) Config.DesyncGuard = v end)
 toggle(pGuard, "Удерживать клавишу", Config.HoldPress, function(v) Config.HoldPress = v end)
 toggle(pGuard, "Авто-реджойн", Config.Rejoin, function(v) Config.Rejoin = v end)
@@ -1101,32 +1125,33 @@ local function preset(map)
     end
     saveConfig()
 end
-button(pGuard, "MAX LEGIT", function() preset({
-    Humanizer = true, ["Шанс пропуска"] = 15, ["Человеч. паузы"] = 22,
-    Accuracy = 75, ["Triggerbot delay"] = 0.05, ["Лимит парри/мин"] = 28,
+button(pGuard, "BAC-SAFE (рекомендую)", function() preset({
+    Humanizer = true, ["Шанс пропуска"] = 12, ["Человеч. паузы"] = 18,
+    Accuracy = 70, ["Triggerbot delay"] = 0.04, ["Лимит парри/мин"] = 26,
     ["Лимит парри/сек"] = 5, ["Кулдаун"] = 0.45, ["Мин. зазор"] = 0.15,
-    ["Промах траектории"] = 7, ["Разогрев после входа"] = 25, ["Джиттер реакции"] = 0.055,
-    ["Prediction spam"] = 999, ["Instant speed"] = 999, ["Строго по флагу игры"] = true,
+    ["Промах траектории"] = 5, ["Parry range"] = 8, ["Разогрев после входа"] = 25,
+    ["Джиттер реакции"] = 0.06, ["Prediction spam"] = 999, ["Instant speed"] = 999,
+    ["Строго по флагу игры"] = true, ["Dynamic threshold"] = false,
 }) end)
 button(pGuard, "BALANCED", function() preset({
-    Humanizer = true, ["Шанс пропуска"] = 6, ["Человеч. паузы"] = 10,
-    Accuracy = 55, ["Triggerbot delay"] = 0.03, ["Лимит парри/мин"] = 45,
-    ["Лимит парри/сек"] = 9, ["Кулдаун"] = 0.35, ["Мин. зазор"] = 0.08,
-    ["Промах траектории"] = 10, ["Разогрев после входа"] = 12, ["Джиттер реакции"] = 0.035,
-    ["Prediction spam"] = 260, ["Instant speed"] = 200,
+    Humanizer = true, ["Шанс пропуска"] = 8, ["Человеч. паузы"] = 12,
+    Accuracy = 60, ["Triggerbot delay"] = 0.03, ["Лимит парри/мин"] = 35,
+    ["Лимит парри/сек"] = 7, ["Кулдаун"] = 0.40, ["Мин. зазор"] = 0.10,
+    ["Промах траектории"] = 6, ["Parry range"] = 9, ["Разогрев после входа"] = 15,
+    ["Джиттер реакции"] = 0.05, ["Prediction spam"] = 999, ["Instant speed"] = 999,
 }) end)
 button(pGuard, "AGGRESSIVE", function() preset({
-    Humanizer = true, ["Шанс пропуска"] = 4, ["Человеч. паузы"] = 6,
-    Accuracy = 45, ["Triggerbot delay"] = 0.02, ["Лимит парри/мин"] = 60,
-    ["Лимит парри/сек"] = 12, ["Кулдаун"] = 0.28, ["Мин. зазор"] = 0.06,
-    ["Промах траектории"] = 12, ["Разогрев после входа"] = 8, ["Джиттер реакции"] = 0.025,
-    ["Prediction spam"] = 240, ["Instant speed"] = 180,
+    Humanizer = true, ["Шанс пропуска"] = 5, ["Человеч. паузы"] = 6,
+    Accuracy = 50, ["Triggerbot delay"] = 0.02, ["Лимит парри/мин"] = 50,
+    ["Лимит парри/сек"] = 11, ["Кулдаун"] = 0.30, ["Мин. зазор"] = 0.07,
+    ["Промах траектории"] = 8, ["Parry range"] = 11, ["Разогрев после входа"] = 8,
+    ["Джиттер реакции"] = 0.03, ["Prediction spam"] = 260, ["Instant speed"] = 200,
 }) end)
 button(pGuard, "RAGE", function() preset({
     Humanizer = false, ["Шанс пропуска"] = 0, ["Человеч. паузы"] = 0,
-    Accuracy = 40, ["Triggerbot delay"] = 0, ["Лимит парри/мин"] = 90,
+    Accuracy = 45, ["Triggerbot delay"] = 0, ["Лимит парри/мин"] = 90,
     ["Лимит парри/сек"] = 20, ["Кулдаун"] = 0.18, ["Мин. зазор"] = 0.04,
-    ["Промах траектории"] = 15, ["Разогрев после входа"] = 0,
+    ["Промах траектории"] = 12, ["Parry range"] = 14, ["Разогрев после входа"] = 0,
     ["Prediction spam"] = 1, ["Instant speed"] = 1, ["Строго по флагу игры"] = false,
 }) end)
 
@@ -1212,8 +1237,9 @@ task.spawn(function()
         status.Text = string.format("%dms | %s | %d/с %d/мин%s",
             math.floor(AutoParry.getPing()), Diag.status, Diag.rate, Diag.rateMin, flag)
         diagLbl.Text = string.format(
-            "статус    : %s\nмяч       : %s\nнаведён   : %s\nзащёлка   : %s\nдист      : %.0f ст\nпромах тр.: %.1f ст\ntti       : %.2f с\nнажатие   : %.3f с\nокно серв.: %.3f с\nагрессия  : %.2f\nпарри/с   : %d\nпарри/мин : %d\nвсего     : %d\nкиков     : %d",
+            "статус    : %s\nмяч       : %s\nнаведён   : %s\nфлаг игры : %s\nзащёлка   : %s\nдист      : %.0f ст\nпромах тр.: %.1f ст\ntti       : %.2f с\nнажатие   : %.3f с\nокно серв.: %.3f с\nагрессия  : %.2f\nпарри/с   : %d\nпарри/мин : %d\nвсего     : %d\nкиков     : %d",
             Diag.status, Diag.real and "да" or "нет", Diag.target and "да" or "нет",
+            Diag.attr and "есть" or "НЕТ",
             Diag.latched and "закрыта" or "открыта",
             Diag.dist, Diag.perp, Diag.tti, Diag.window, Diag.serverWin,
             Diag.aggr, Diag.rate, Diag.rateMin, Diag.parries, Diag.kicks)
@@ -1225,4 +1251,4 @@ if Config.FpsBoost then Fps.Set(true) end
 if Config.Korblox then Skin.SetKorblox(true) end
 if Config.Headless then Skin.SetHeadless(true) end
 
-print("[SleepScript] v6.3 загружен. RightShift — меню.")
+print("[SleepScript] v6.4 [BAC-SAFE] загружен. RightShift — меню.")
