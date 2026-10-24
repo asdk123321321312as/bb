@@ -1,6 +1,6 @@
 --=====================================================================
---   SleepScript  //  BLADE BALL          Injector: Real
---   Горизонтальное меню • Хоткей: RightShift
+--   SleepScript  //  BLADE BALL   v4 (BAC-safe)
+--   Хоткей меню: RightShift
 --=====================================================================
 
 local Players             = game:GetService("Players")
@@ -23,35 +23,33 @@ local function execFn(n)
     local ok, f = pcall(function() return rawget(getfenv(), n) end)
     if ok and type(f) == "function" then return f end
 end
-local gethui     = execFn("gethui") or function() return game:GetService("CoreGui") end
-local setfpscap  = execFn("setfpscap")
-local sethidden  = execFn("sethiddenproperty")
-local writefile  = execFn("writefile")
-local readfile   = execFn("readfile")
-local isfile     = execFn("isfile")
-local keypress   = execFn("keypress")
-local keyrelease = execFn("keyrelease")
+local gethui    = execFn("gethui") or function() return game:GetService("CoreGui") end
+local setfpscap = execFn("setfpscap")
+local writefile = execFn("writefile")
+local readfile  = execFn("readfile")
+local isfile    = execFn("isfile")
 
 ------------------------------------------------------------------ config
 local Config = {
     AutoParry  = false,
-    Range      = 14,      -- радиус зоны парри (на сервере)
-    Reaction   = 0.04,    -- твоя реакция, с
-    Delay      = 8,       -- искусственная задержка, мс
-    Cooldown   = 0.15,
-    MaxRate    = 5,
-    PingComp   = true,
-    Humanize   = true,
+    Mode       = "Keypress",   -- Keypress | Mouse | Remote
+    Trigger    = "Zone",       -- Zone (физика) | ETA (по времени)
+    Zone       = 14,
+    Eta        = 0.30,
+    PingFactor = 0.5,
+    Reaction   = 0.04,
+    Cooldown   = 0.12,
     OnlyTarget = true,
-    MinSpeed   = 25,
+    AutoClash  = true,
+    ClashDist  = 22,
+    MinSpeed   = 15,
 
-    FovEnabled = false,
+    FovEnabled = true,
     Fov        = 100,
     FpsBoost   = false,
     CutFx      = true,
-    UnlockFps  = true,
+    UnlockFps  = false,
 
-    SpoofProps = false,
     Rejoin     = true,
     AntiAfk    = false,
 
@@ -82,106 +80,90 @@ local function loadConfig()
 end
 loadConfig()
 
-local Diag = { parries=0, kicks=0, status="idle", t=nil, threshold=nil, ball=false }
+local Diag = { parries=0, kicks=0, status="idle", dist=0, t=nil, target=false, real=false }
 
 --=====================================================================
---  GUARD
+--  BALL / TARGET  (правильные атрибуты игры)
 --=====================================================================
-local Guard = {}
-do
-    local hist = {}
-    function Guard.rateOk()
-        local now = os.clock()
-        local n = 0
-        for i = #hist, 1, -1 do
-            if now - hist[i] <= 1 then n = n + 1 else break end
+local BallsFolder
+local function getBallsFolder()
+    if BallsFolder and BallsFolder.Parent then return BallsFolder end
+    BallsFolder = Workspace:FindFirstChild("Balls")
+    return BallsFolder
+end
+
+local function GetBall()
+    local f = getBallsFolder()
+    if f then
+        for _, v in ipairs(f:GetChildren()) do
+            if v:IsA("BasePart") and v:GetAttribute("realBall") == true then return v end
         end
-        return n < Config.MaxRate
-    end
-    function Guard.push()
-        hist[#hist+1] = os.clock()
-        if #hist > 40 then table.remove(hist, 1) end
-    end
-    function Guard.alive()
-        local c = LocalPlayer.Character
-        if not c then return false end
-        local h = c:FindFirstChildOfClass("Humanoid")
-        return h and h.Health > 0 and c:FindFirstChild("HumanoidRootPart") ~= nil
-    end
-    function Guard.isTarget(ball)
-        if not Config.OnlyTarget then return true end
-        local a = ball:GetAttribute("Target")
-        if typeof(a) == "Instance" then return a == LocalPlayer.Character end
-        for _, ch in ipairs(ball:GetChildren()) do
-            if ch:IsA("ObjectValue") and ch.Name:lower():find("target") then
-                return ch.Value == LocalPlayer.Character
-            end
+        for _, v in ipairs(f:GetChildren()) do
+            if v:IsA("BasePart") and v.AssemblyLinearVelocity.Magnitude > 15 then return v end
         end
-        return true
+        return nil
     end
+    for _, v in ipairs(Workspace:GetChildren()) do
+        if v:IsA("BasePart") and v:GetAttribute("realBall") == true then return v end
+    end
+    return nil
+end
+
+local function IsTargeted(char)
+    if not char then return false, false end
+    local a = char:GetAttribute("Targeted")
+    if a ~= nil then return a == true, true end
+    if char:FindFirstChild("Highlight") then return true, true end
+    return false, false     -- атрибута нет — вернём "неизвестно"
 end
 
 --=====================================================================
---  AUTO PARRY  (физика: время входа мяча в зону)
+--  AUTO PARRY
 --=====================================================================
 local AutoParry = {}
 do
-    local ball, lastPos, lastClock, lastBall
-    local parried, lastFire = false, 0
+    local lastClick, lastBall, parrying = 0, nil, false
     local pings = {}
 
-    local function refresh()
-        ball = nil
-        local c = Workspace:FindFirstChild("Ball")
-        if c and c:IsA("BasePart") then ball = c return end
-        for _, d in ipairs(Workspace:GetChildren()) do
-            if d:IsA("BasePart") and d.Name:lower():find("ball") then ball = d return end
-        end
-    end
-    refresh()
-    Workspace.DescendantAdded:Connect(function(d)
-        if d:IsA("BasePart") and d.Name:lower():find("ball") then ball = d parried = false end
-    end)
-    Workspace.DescendantRemoving:Connect(function(d) if d == ball then ball = nil end end)
-
-    local remotes = {}
-    local function scan()
-        remotes = {}
-        local loose = {}
-        for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-            if d:IsA("RemoteEvent") then
-                local n = d.Name:lower()
-                if d.Name == "Parry" then remotes[#remotes+1] = d
-                elseif n:find("parry") or n:find("deflect") then loose[#loose+1] = d end
-            end
-        end
-        for _, d in ipairs(loose) do remotes[#remotes+1] = d end
-    end
-    scan()
-    ReplicatedStorage.DescendantAdded:Connect(function(d) if d:IsA("RemoteEvent") then scan() end end)
-
-    -- сглаженный пинг
     local function getPing()
         local ok, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
         v = (ok and typeof(v) == "number") and v or 60
         pings[#pings+1] = v
         if #pings > 12 then table.remove(pings, 1) end
-        local sum = 0
-        for _, p in ipairs(pings) do sum = sum + p end
-        return sum / #pings
+        local s = 0
+        for _, p in ipairs(pings) do s = s + p end
+        return s / #pings
     end
     AutoParry.getPing = getPing
 
-    -- точное время до входа мяча в сферу радиуса R вокруг игрока
+    local function press()
+        if Config.Mode == "Remote" then
+            local r = ReplicatedStorage:FindFirstChild("Parry", true)
+            if r and r:IsA("RemoteEvent") then pcall(function() r:FireServer() end) return end
+        end
+        if Config.Mode == "Mouse" then
+            pcall(function()
+                VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true,  game, 0)
+                VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+            end)
+        else
+            pcall(function()
+                VirtualInputManager:SendKeyEvent(true,  Enum.KeyCode.F, false, false)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, false)
+            end)
+        end
+    end
+
+    -- время до входа мяча в сферу R вокруг игрока
     local function timeToEnter(bp, bv, pp, R)
         local r = bp - pp
         local a = bv:Dot(bv)
         if a < 1e-4 then return nil end
         local c = r:Dot(r) - R*R
-        if c <= 0 then return 0 end                 -- уже внутри зоны
+        if c <= 0 then return 0 end
         local b = 2 * r:Dot(bv)
         local disc = b*b - 4*a*c
-        if disc < 0 then return nil end             -- траектория пройдёт мимо
+        if disc < 0 then return nil end
         local sq = math.sqrt(disc)
         local t1 = (-b - sq) / (2*a)
         local t2 = (-b + sq) / (2*a)
@@ -190,74 +172,82 @@ do
         return nil
     end
 
-    local function pressF()
-        if keypress and keyrelease then
-            pcall(keypress, 70) pcall(keyrelease, 70)
-        else
-            pcall(function()
-                VirtualInputManager:SendKeyEvent(true,  Enum.KeyCode.F, false, false)
-                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, false)
-            end)
-        end
-    end
-    local function fire()
-        if Config.Method == "Remote" or Config.Method == "Both" then
-            if remotes[1] then pcall(function() remotes[1]:FireServer() end) end
-        end
-        if Config.Method == "Input" or Config.Method == "Both" then pressF() end
+    local function send(ball, clash)
+        local now = os.clock()
+        local cd = clash and Config.Cooldown or Config.Cooldown
+        if not clash and lastBall == ball and (now - lastClick) < 0.5 then return end
+        if (now - lastClick) < cd then return end
+        if parrying then return end
+
+        parrying  = true
+        lastClick = now
+        lastBall  = ball
+        Diag.parries = Diag.parries + 1
+        Diag.status  = "ПАРРИ"
+        press()
+        task.delay(cd, function() parrying = false end)
     end
 
     local function step()
         if not Config.AutoParry then Diag.status = "выкл" return end
-        if not Guard.alive() then Diag.status = "мёртв" return end
-        if not ball or not ball.Parent then refresh() end
-        if not ball then Diag.status = "нет мяча" Diag.ball = false return end
-        Diag.ball = true
-        if ball ~= lastBall then lastBall = ball parried = false end
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then Diag.status = "мёртв" return end
 
-        local now = os.clock()
-        local pos = ball.Position
+        local ball = GetBall()
+        if not ball then Diag.status = "нет мяча" Diag.real = false return end
+        Diag.real = true
 
-        local vel = ball.AssemblyLinearVelocity
-        if vel.Magnitude < 2 and lastPos and lastClock and now > lastClock then
-            vel = (pos - lastPos) / (now - lastClock)
-        end
-        lastPos, lastClock = pos, now
-
+        local pos, ppos = ball.Position, hrp.Position
+        local vel  = ball.AssemblyLinearVelocity
         local speed = vel.Magnitude
-        if speed < Config.MinSpeed then parried = false Diag.status = "медленно" return end
-        if now - lastFire < Config.Cooldown then Diag.status = "кулдаун" return end
+        local dist = (ppos - pos).Magnitude
+        Diag.dist = dist
+        if speed < Config.MinSpeed then Diag.status = "стоит" return end
 
-        local hrp = LocalPlayer.Character.HumanoidRootPart
-        local t = timeToEnter(pos, vel, hrp.Position, Config.Range)
-        if not t then
-            local dist = (pos - hrp.Position).Magnitude
-            if dist <= Config.Range then t = 0 end
+        local targeted, known = IsTargeted(char)
+        Diag.target = targeted
+
+        -- если атрибута нет — считаем по направлению
+        if not known then
+            local dot = ((ppos - pos).Unit):Dot(vel.Unit)
+            targeted = dot > 0.3
+            Diag.target = targeted
         end
-        Diag.t = t
-        if not t then parried = false Diag.status = "мимо" return end
 
-        local pingSec = Config.PingComp and (getPing() / 1000) * 0.5 or 0
-        local threshold = pingSec + Config.Reaction + (Config.Delay / 1000)
-        if Config.Humanize then threshold = threshold + math.random() * 0.012 end
-        Diag.threshold = threshold
+        if Config.OnlyTarget and not targeted then Diag.status = "не мой" return end
 
-        if t > threshold then Diag.status = "летит" return end
-        if parried then Diag.status = "ждём" return end
-        if not Guard.rateOk() then Diag.status = "лимит" return end
-        if not Guard.isTarget(ball) then Diag.status = "не мой" return end
+        local pingSec = (getPing() / 1000) * Config.PingFactor
+        local buf = pingSec + Config.Reaction
 
-        parried, lastFire = true, now
-        Diag.parries = Diag.parries + 1
-        Diag.status = "ПАРРИ"
-        Guard.push()
-        if Config.Delay > 0 then task.delay(Config.Delay / 1000, fire) else fire() end
+        -- клэш: мяч близко и висит
+        if Config.AutoClash and targeted and dist <= Config.ClashDist and speed < 60 then
+            Diag.status = "клэш"
+            send(ball, true)
+            return
+        end
+
+        local fire
+        if Config.Trigger == "ETA" then
+            local eta = dist / math.max(speed, 1)
+            Diag.t = eta
+            fire = eta <= (Config.Eta + buf)
+        else
+            local t = timeToEnter(pos, vel, ppos, Config.Zone)
+            Diag.t = t
+            fire = t ~= nil and t <= buf
+        end
+
+        if not fire then Diag.status = "летит" return end
+        send(ball, false)
     end
 
     RunService.RenderStepped:Connect(function()
         local ok, err = pcall(step)
         if not ok then Diag.status = "ошибка" warn("[SleepScript]", err) end
     end)
+
+    LocalPlayer.CharacterAdded:Connect(function() lastBall = nil parrying = false end)
 end
 
 --=====================================================================
@@ -305,34 +295,8 @@ do
 end
 
 --=====================================================================
---  BYPASS / SESSION
+--  SESSION
 --=====================================================================
-local Bypass = {}
-do
-    local running = false
-    local function apply()
-        if not sethidden then return end
-        pcall(sethidden, LocalPlayer, "MaxSimulationRadius", 1000)
-        pcall(sethidden, LocalPlayer, "SimulationRadius", 1000)
-    end
-    function Bypass.Set(on)
-        if on then
-            apply()
-            if not running then
-                running = true
-                task.spawn(function()
-                    while true do task.wait(2) if Config.SpoofProps then apply() end end
-                end)
-            end
-        end
-    end
-    function Bypass.Off()
-        if not sethidden then return end
-        pcall(sethidden, LocalPlayer, "MaxSimulationRadius", 100)
-        pcall(sethidden, LocalPlayer, "SimulationRadius", 100)
-    end
-end
-
 local Session = {}
 do
     local busy = false
@@ -435,7 +399,7 @@ do
 end
 
 --=====================================================================
---  UI  (горизонтальная)
+--  UI (горизонтальная)
 --=====================================================================
 local Accent = Config.Accent
 local AP, AT, AG, TL = {}, {}, {}, {}
@@ -469,26 +433,25 @@ end
 local gui = new("ScreenGui", {Name="SleepScript", ResetOnSpawn=false, IgnoreGuiInset=true,
     ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=999, Parent=gethui()})
 
-local OPEN = UDim2.fromOffset(520, 320)
+local OPEN = UDim2.fromOffset(540, 330)
 local main = new("Frame", {Name="Main", Parent=gui, AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0),
-    Size=UDim2.fromOffset(520, 40), BackgroundColor3=Color3.fromRGB(15,15,19), BorderSizePixel=0, ClipsDescendants=true})
+    Size=UDim2.fromOffset(540, 40), BackgroundColor3=Color3.fromRGB(15,15,19), BorderSizePixel=0, ClipsDescendants=true})
 new("UICorner", {CornerRadius=UDim.new(0,12), Parent=main})
 reg(new("UIStroke", {Thickness=1.4, Transparency=0.25, Color=Accent, Parent=main}), "Color")
 
 local header = new("Frame", {Parent=main, Size=UDim2.new(1,0,0,34), BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0})
 regG(new("UIGradient", {Parent=header, Color=ColorSequence.new(Accent, Accent:Lerp(Color3.new(0,0,0),0.45))}))
-new("TextLabel", {Parent=header, BackgroundTransparency=1, Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-180,1,0),
+new("TextLabel", {Parent=header, BackgroundTransparency=1, Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-190,1,0),
     Font=Enum.Font.GothamBold, Text="SleepScript", TextSize=14, TextColor3=Color3.new(1,1,1),
     TextXAlignment=Enum.TextXAlignment.Left})
 local status = new("TextLabel", {Parent=header, BackgroundTransparency=1, AnchorPoint=Vector2.new(1,0), Position=UDim2.new(1,-14,0,0),
-    Size=UDim2.new(0,160,1,0), Font=Enum.Font.GothamMedium, Text="", TextSize=10.5,
+    Size=UDim2.new(0,170,1,0), Font=Enum.Font.GothamMedium, Text="", TextSize=10.5,
     TextColor3=Color3.fromRGB(235,235,245), TextXAlignment=Enum.TextXAlignment.Right})
 
 local body = new("Frame", {Parent=main, Position=UDim2.new(0,0,0,34), Size=UDim2.new(1,0,1,-34), BackgroundTransparency=1})
-local sidebar = new("Frame", {Parent=body, Size=UDim2.new(0,124,1,0), BackgroundColor3=Color3.fromRGB(18,18,23), BorderSizePixel=0})
-local pages = new("Frame", {Parent=body, Position=UDim2.new(0,124,0,0), Size=UDim2.new(1,-124,1,0),
+local sidebar = new("Frame", {Parent=body, Size=UDim2.new(0,128,1,0), BackgroundColor3=Color3.fromRGB(18,18,23), BorderSizePixel=0})
+local pages = new("Frame", {Parent=body, Position=UDim2.new(0,128,0,0), Size=UDim2.new(1,-128,1,0),
     BackgroundTransparency=1, ClipsDescendants=true})
-
 local indicator = new("Frame", {Parent=sidebar, Size=UDim2.new(0,3,0,20), Position=UDim2.new(0,0,0,0),
     BackgroundColor3=Accent, BorderSizePixel=0, ZIndex=3})
 reg(indicator)
@@ -654,50 +617,58 @@ local function colorPicker(parent)
     UserInputService.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
 end
 
---=====================================================================
---  ВКЛАДКИ
---=====================================================================
 local pParry  = makeTab("ПАРРИ", 1)
 local pVisual = makeTab("ВИЗУАЛ", 2)
 local pAnti   = makeTab("АНТИЧИТ", 3)
 local pSkin   = makeTab("СКИН", 4)
 local pMenu   = makeTab("МЕНЮ", 5)
 
-section(pParry, "ОСНОВНОЕ")
-toggle(pParry, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)
-slider(pParry, "Зона парри", 8, 32, Config.Range, 1, " ст", function(v) Config.Range = v end)
-slider(pParry, "Реакция", 0.0, 0.2, Config.Reaction, 0.005, " с", function(v) Config.Reaction = v end)
-slider(pParry, "Задержка", 0, 60, Config.Delay, 1, " мс", function(v) Config.Delay = v end)
-slider(pParry, "Кулдаун", 0.05, 0.4, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
-section(pParry, "ТОЧНОСТЬ")
-toggle(pParry, "Компенсация пинга", Config.PingComp, function(v) Config.PingComp = v end)
-toggle(pParry, "Хуманизация", Config.Humanize, function(v) Config.Humanize = v end)
-toggle(pParry, "Только мой мяч", Config.OnlyTarget, function(v) Config.OnlyTarget = v end)
-section(pParry, "МЕТОД")
-local function methodBtn(parent, m, label)
+local function radio(parent, group, value, label, onPick)
     local b = new("TextButton", {Parent=parent, Size=UDim2.new(1,0,0,26), BackgroundColor3=Color3.fromRGB(24,24,30),
         BorderSizePixel=0, Text="  "..label, Font=Enum.Font.GothamMedium, TextSize=11,
-        TextColor3=Color3.fromRGB(216,216,226), TextXAlignment=Enum.TextXAlignment.Left, AutoButtonColor=false,
-        LayoutOrder=nextOrd()})
+        TextColor3=Color3.fromRGB(216,216,226), TextXAlignment=Enum.TextXAlignment.Left,
+        AutoButtonColor=false, LayoutOrder=nextOrd()})
     new("UICorner", {CornerRadius=UDim.new(0,6), Parent=b})
     local mark = new("Frame", {Parent=b, AnchorPoint=Vector2.new(1,0.5), Position=UDim2.new(1,-10,0.5,0),
-        Size=UDim2.fromOffset(8,8), BackgroundColor3=Accent, BorderSizePixel=0, Visible=(Config.Method==m)})
+        Size=UDim2.fromOffset(8,8), BackgroundColor3=Accent, BorderSizePixel=0, Visible=false})
     new("UICorner", {CornerRadius=UDim.new(1,0), Parent=mark})
     reg(mark)
     b.MouseButton1Click:Connect(function()
-        Config.Method = m
-        for _, t in ipairs(tabs["ПАРРИ"].page:GetChildren()) do
-            if t:IsA("TextButton") then
-                local mk = t:FindFirstChildOfClass("Frame")
-                if mk and mk.Size == UDim2.fromOffset(8,8) then mk.Visible = (t.Text:gsub("%s","") == m) end
-            end
+        for _, t in ipairs(group) do
+            t.mark.Visible = (t.value == value)
         end
+        onPick(value)
         saveConfig()
     end)
+    local entry = {mark=mark, value=value}
+    group[#group+1] = entry
+    mark.Visible = false
+    return entry
 end
-methodBtn(pParry, "Input",  "Input — клавиша F (безопасно)")
-methodBtn(pParry, "Remote", "Remote — прямой ремоут")
-methodBtn(pParry, "Both",   "Both — оба")
+
+section(pParry, "ОСНОВНОЕ")
+toggle(pParry, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)
+toggle(pParry, "Только по мне", Config.OnlyTarget, function(v) Config.OnlyTarget = v end)
+toggle(pParry, "Auto Clash", Config.AutoClash, function(v) Config.AutoClash = v end)
+slider(pParry, "Клэш-дистанция", 10, 40, Config.ClashDist, 1, " ст", function(v) Config.ClashDist = v end)
+
+section(pParry, "РЕЖИМ СРАБАТЫВАНИЯ")
+local trigGroup = {}
+radio(pParry, trigGroup, "Zone", "Zone — по зоне (точно)", function(v) Config.Trigger = v end)
+radio(pParry, trigGroup, "ETA",  "ETA — по времени полёта",  function(v) Config.Trigger = v end)
+for _, t in ipairs(trigGroup) do t.mark.Visible = (t.value == Config.Trigger) end
+slider(pParry, "Зона", 6, 40, Config.Zone, 1, " ст", function(v) Config.Zone = v end)
+slider(pParry, "ETA", 0.05, 0.8, Config.Eta, 0.01, " с", function(v) Config.Eta = v end)
+slider(pParry, "Реакция", 0.0, 0.2, Config.Reaction, 0.005, " с", function(v) Config.Reaction = v end)
+slider(pParry, "Кулдаун", 0.05, 0.4, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
+slider(pParry, "Коэф. пинга", 0.0, 0.8, Config.PingFactor, 0.05, "", function(v) Config.PingFactor = v end)
+
+section(pParry, "МЕТОД (ремоут не трогаем)")
+local methGroup = {}
+radio(pParry, methGroup, "Keypress", "Keypress — клавиша F", function(v) Config.Mode = v end)
+radio(pParry, methGroup, "Mouse",    "Mouse — ЛКМ",          function(v) Config.Mode = v end)
+radio(pParry, methGroup, "Remote",   "Remote — прямой (риск)", function(v) Config.Mode = v end)
+for _, t in ipairs(methGroup) do t.mark.Visible = (t.value == Config.Mode) end
 
 section(pVisual, "КАМЕРА")
 toggle(pVisual, "FOV", Config.FovEnabled, function(v) Config.FovEnabled = v end)
@@ -708,41 +679,31 @@ toggle(pVisual, "Убирать эффекты", Config.CutFx, function(v) Confi
 toggle(pVisual, "Разблокировать FPS", Config.UnlockFps, function(v) Config.UnlockFps = v if Config.FpsBoost then Fps.Set(true) end end)
 
 section(pAnti, "ДИАГНОСТИКА")
-local diagLbl = new("TextLabel", {Parent=pAnti, Size=UDim2.new(1,0,0,78), BackgroundTransparency=1,
+local diagLbl = new("TextLabel", {Parent=pAnti, Size=UDim2.new(1,0,0,88), BackgroundTransparency=1,
     Font=Enum.Font.Code, Text="", TextSize=11, TextColor3=Color3.fromRGB(180,180,195),
     TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
-section(pAnti, "ЗАЩИТА")
-toggle(pAnti, "Anti-Kick Guard", Config.AntiKick, function(v) Config.AntiKick = v end)
-slider(pAnti, "Лимит парри/сек", 2, 10, Config.MaxRate, 1, "", function(v) Config.MaxRate = v end)
-toggle(pAnti, "Спуф свойств", Config.SpoofProps, function(v) Config.SpoofProps = v if v then Bypass.Set(true) else Bypass.Off() end end)
 section(pAnti, "СЕССИЯ")
 toggle(pAnti, "Авто-реджойн", Config.Rejoin, function(v) Config.Rejoin = v end)
 toggle(pAnti, "Анти-АФК", Config.AntiAfk, function(v) Config.AntiAfk = v end)
 button(pAnti, "РЕ-ДЖОЙН СЕЙЧАС", function() Session.rejoin() end)
 button(pAnti, "БЕЗОПАСНЫЙ РЕЖИМ", function()
-    Config.Method = "Input" Config.SpoofProps = false Config.Range = 14
-    Config.Humanize = true Config.OnlyTarget = true Config.MaxRate = 5
-    Config.FovEnabled = false Config.FpsBoost = false Config.UnlockFps = false
-    Bypass.Off() Fps.Set(false)
-    for _, t in ipairs(tabs["ПАРРИ"].page:GetChildren()) do
-        if t:IsA("TextButton") then
-            local mk = t:FindFirstChildOfClass("Frame")
-            if mk and mk.Size == UDim2.fromOffset(8,8) then mk.Visible = (t.Text:gsub("%s","") == "Input") end
-        end
-    end
-    saveConfig()
+    Config.Mode = "Keypress" Config.Trigger = "Zone" Config.Zone = 14
+    Config.OnlyTarget = true Config.AutoClash = true Config.PingFactor = 0.5
+    Config.Reaction = 0.04 Config.Cooldown = 0.12
+    Config.FpsBoost = false Config.UnlockFps = false
+    Fps.Set(false) saveConfig()
 end)
+note(pAnti, "Не хукаем ремоуты, не стреляем в декой, один парри на мяч — это и есть обход BAC.")
 
 section(pSkin, "АВАТАР")
 toggle(pSkin, "Korblox (нога)", Config.Korblox, function(v) Config.Korblox = v Skin.SetKorblox(v) end)
 toggle(pSkin, "Headless (без головы)", Config.Headless, function(v) Config.Headless = v Skin.SetHeadless(v) end)
-note(pSkin, "Скины чисто клиентские — BAC их не видит.")
 
 section(pMenu, "ЦВЕТ")
 colorPicker(pMenu)
 section(pMenu, "ИНФО")
 note(pMenu, "RightShift — скрыть/показать меню.")
-note(pMenu, "Autoparry считает точное время входа мяча в зону и жмёт под пинг.")
+note(pMenu, "Тестируй в обычном матче — в Training Mode парри часто не работает.")
 
 --=====================================================================
 --  WINDOW
@@ -756,11 +717,11 @@ reg(bubble)
 
 local function openMenu()
     visible = true bubble.Visible = false main.Visible = true
-    main.Size = UDim2.fromOffset(520,40) tw(main, 0.35, {Size=OPEN})
+    main.Size = UDim2.fromOffset(540,40) tw(main, 0.35, {Size=OPEN})
 end
 local function closeMenu()
     visible = false
-    tw(main, 0.25, {Size=UDim2.fromOffset(520,40)})
+    tw(main, 0.25, {Size=UDim2.fromOffset(540,40)})
     task.delay(0.26, function() if not visible then main.Visible = false bubble.Visible = true end end)
 end
 bubble.MouseButton1Click:Connect(openMenu)
@@ -789,26 +750,22 @@ task.defer(function()
     t.btn.TextColor3 = Color3.new(1,1,1)
     t.btn.BackgroundColor3 = Color3.fromRGB(30,30,38)
     t.page.Visible = true
-    indicator.Position = UDim2.new(0,0,0, 12 + 4)
+    indicator.Position = UDim2.new(0,0,0, 16)
 end)
 
 task.spawn(function()
     while true do
-        task.wait(0.4)
-        status.Text = string.format("%dms  |  парри %d  |  киков %d",
-            math.floor(AutoParry.getPing()), Diag.parries, Diag.kicks)
+        task.wait(0.35)
+        status.Text = string.format("%dms | %s | кик %d", math.floor(AutoParry.getPing()), Diag.status, Diag.kicks)
         diagLbl.Text = string.format(
-            "статус    : %s\nмяч       : %s\nпинг      : %d мс\nвход t    : %s\nпорог     : %s\nпарри/кик : %d / %d",
-            Diag.status, Diag.ball and "да" or "нет", math.floor(AutoParry.getPing()),
-            Diag.t and string.format("%.3f с", Diag.t) or "—",
-            Diag.threshold and string.format("%.3f с", Diag.threshold) or "—",
-            Diag.parries, Diag.kicks)
+            "статус : %s\nмяч    : %s\nнаведён: %s\nдист   : %.0f ст\nвход t : %s\nпарри  : %d\nкиков  : %d",
+            Diag.status, Diag.real and "да" or "нет", Diag.target and "да" or "нет",
+            Diag.dist, Diag.t and string.format("%.3f", Diag.t) or "—", Diag.parries, Diag.kicks)
     end
 end)
 
 if Config.FpsBoost then Fps.Set(true) end
-if Config.SpoofProps then Bypass.Set(true) end
 if Config.Korblox then Skin.SetKorblox(true) end
 if Config.Headless then Skin.SetHeadless(true) end
 
-print("[SleepScript] загружен. RightShift — меню.")
+print("[SleepScript] v4 (BAC-safe) загружен. RightShift — меню.")
