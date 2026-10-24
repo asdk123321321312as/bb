@@ -1,5 +1,6 @@
 --=====================================================================
---   SleepScript  //  BLADE BALL   v4 (BAC-safe)
+--   SleepScript  //  BLADE BALL   v5
+--   Autoparry: Accuracy / Triggerbot / Instant / PredictionSpam / Dynamic
 --   Хоткей меню: RightShift
 --=====================================================================
 
@@ -31,32 +32,44 @@ local isfile    = execFn("isfile")
 
 ------------------------------------------------------------------ config
 local Config = {
-    AutoParry  = false,
-    Mode       = "Keypress",   -- Keypress | Mouse | Remote
-    Trigger    = "Zone",       -- Zone (физика) | ETA (по времени)
-    Zone       = 14,
-    Eta        = 0.30,
-    PingFactor = 0.5,
-    Reaction   = 0.04,
-    Cooldown   = 0.12,
-    OnlyTarget = true,
-    AutoClash  = true,
-    ClashDist  = 22,
-    MinSpeed   = 15,
+    AutoParry      = false,
+    Accuracy       = 53,       -- 1-100, выше = позже парри
+    AccRand        = true,
+    AccRandAmt     = 8,
 
-    FovEnabled = true,
-    Fov        = 100,
-    FpsBoost   = false,
-    CutFx      = true,
-    UnlockFps  = false,
+    TriggerbotDelay= 0.03,     -- 0-1 c
+    InstantSpeed   = 200,      -- 1-350, скорость, при которой парри мгновенный
+    PredictionSpam = 260,      -- 1-350, скорость, при которой включается спам
+    DynThreshold   = true,     -- считать хиты до автоспама
+    DynHits        = 3,        -- сколько парри по мячу до спама
 
-    Rejoin     = true,
-    AntiAfk    = false,
+    ParryRange     = 12,
+    PingFactor     = 0.5,
+    Reaction       = 0.04,
+    Cooldown       = 0.10,
+    SpamRate       = 0.05,
+    OnlyTarget     = true,
+    MinSpeed       = 15,
+    Mode           = "Keypress",
 
-    Korblox    = false,
-    Headless   = false,
+    StartupDelay   = 3,        -- пауза после инжекта
+    DtSafety       = true,     -- защита от лаг-спайков
+    DesyncGuard    = true,     -- защита от телепорта мяча
+    HoldPress      = false,    -- держать клавишу кадр
 
-    Accent     = Color3.fromRGB(0, 170, 255),
+    FovEnabled     = false,
+    Fov            = 100,
+    FpsBoost       = false,
+    CutFx          = true,
+    UnlockFps      = false,
+
+    Rejoin         = true,
+    AntiAfk        = false,
+
+    Korblox        = false,
+    Headless       = false,
+
+    Accent         = Color3.fromRGB(0, 170, 255),
 }
 
 local CFG_PATH = "SleepScript.json"
@@ -80,25 +93,20 @@ local function loadConfig()
 end
 loadConfig()
 
-local Diag = { parries=0, kicks=0, status="idle", dist=0, t=nil, target=false, real=false }
+local Diag = { parries=0, kicks=0, status="idle", dist=0, hits=0, target=false, real=false, window=0 }
 
 --=====================================================================
---  BALL / TARGET  (правильные атрибуты игры)
+--  BALL / TARGET
 --=====================================================================
 local BallsFolder
-local function getBallsFolder()
-    if BallsFolder and BallsFolder.Parent then return BallsFolder end
-    BallsFolder = Workspace:FindFirstChild("Balls")
-    return BallsFolder
-end
-
 local function GetBall()
-    local f = getBallsFolder()
-    if f then
-        for _, v in ipairs(f:GetChildren()) do
+    if BallsFolder and not BallsFolder.Parent then BallsFolder = nil end
+    if not BallsFolder then BallsFolder = Workspace:FindFirstChild("Balls") end
+    if BallsFolder then
+        for _, v in ipairs(BallsFolder:GetChildren()) do
             if v:IsA("BasePart") and v:GetAttribute("realBall") == true then return v end
         end
-        for _, v in ipairs(f:GetChildren()) do
+        for _, v in ipairs(BallsFolder:GetChildren()) do
             if v:IsA("BasePart") and v.AssemblyLinearVelocity.Magnitude > 15 then return v end
         end
         return nil
@@ -114,7 +122,7 @@ local function IsTargeted(char)
     local a = char:GetAttribute("Targeted")
     if a ~= nil then return a == true, true end
     if char:FindFirstChild("Highlight") then return true, true end
-    return false, false     -- атрибута нет — вернём "неизвестно"
+    return false, false
 end
 
 --=====================================================================
@@ -122,7 +130,11 @@ end
 --=====================================================================
 local AutoParry = {}
 do
-    local lastClick, lastBall, parrying = 0, nil, false
+    local bootTime   = os.clock()
+    local lastFrame  = os.clock()
+    local lastPress  = 0
+    local lastBallPos, trackedBall, hits, spam = nil, nil, 0, false
+    local pending, held = false, false
     local pings = {}
 
     local function getPing()
@@ -136,60 +148,52 @@ do
     end
     AutoParry.getPing = getPing
 
+    local function down()
+        if Config.Mode == "Mouse" then
+            pcall(function() VirtualInputManager:SendMouseButtonEvent(0,0,0,true, game, 0) end)
+        else
+            pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, false) end)
+        end
+    end
+    local function up()
+        if Config.Mode == "Mouse" then
+            pcall(function() VirtualInputManager:SendMouseButtonEvent(0,0,0,false, game, 0) end)
+        else
+            pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, false) end)
+        end
+    end
+
     local function press()
         if Config.Mode == "Remote" then
             local r = ReplicatedStorage:FindFirstChild("Parry", true)
-            if r and r:IsA("RemoteEvent") then pcall(function() r:FireServer() end) return end
+            if r and r:IsA("RemoteEvent") then pcall(function() r:FireServer() end) end
+            return
         end
-        if Config.Mode == "Mouse" then
-            pcall(function()
-                VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true,  game, 0)
-                VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-            end)
+        if Config.HoldPress then
+            down() held = true
         else
-            pcall(function()
-                VirtualInputManager:SendKeyEvent(true,  Enum.KeyCode.F, false, false)
-                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, false)
-            end)
+            down() up()
         end
     end
 
-    -- время до входа мяча в сферу R вокруг игрока
-    local function timeToEnter(bp, bv, pp, R)
-        local r = bp - pp
-        local a = bv:Dot(bv)
-        if a < 1e-4 then return nil end
-        local c = r:Dot(r) - R*R
-        if c <= 0 then return 0 end
-        local b = 2 * r:Dot(bv)
-        local disc = b*b - 4*a*c
-        if disc < 0 then return nil end
-        local sq = math.sqrt(disc)
-        local t1 = (-b - sq) / (2*a)
-        local t2 = (-b + sq) / (2*a)
-        if t1 > 0 then return t1 end
-        if t2 > 0 then return t2 end
-        return nil
-    end
-
-    local function send(ball, clash)
-        local now = os.clock()
-        local cd = clash and Config.Cooldown or Config.Cooldown
-        if not clash and lastBall == ball and (now - lastClick) < 0.5 then return end
-        if (now - lastClick) < cd then return end
-        if parrying then return end
-
-        parrying  = true
-        lastClick = now
-        lastBall  = ball
+    local function fire()
+        lastPress = os.clock()
+        hits = hits + 1
         Diag.parries = Diag.parries + 1
-        Diag.status  = "ПАРРИ"
+        Diag.hits = hits
         press()
-        task.delay(cd, function() parrying = false end)
     end
 
     local function step()
+        local now = os.clock()
+        local dt = now - lastFrame
+        lastFrame = now
+
+        if held and (now - lastPress) > 0.03 then up() held = false end
+
         if not Config.AutoParry then Diag.status = "выкл" return end
+        if now - bootTime < Config.StartupDelay then Diag.status = "старт" return end
+
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then Diag.status = "мёртв" return end
@@ -199,47 +203,78 @@ do
         Diag.real = true
 
         local pos, ppos = ball.Position, hrp.Position
-        local vel  = ball.AssemblyLinearVelocity
+        local vel = ball.AssemblyLinearVelocity
         local speed = vel.Magnitude
         local dist = (ppos - pos).Magnitude
         Diag.dist = dist
+
+        if Config.DesyncGuard and lastBallPos then
+            if (pos - lastBallPos).Magnitude > 150 then
+                lastBallPos = pos Diag.status = "десинк" return
+            end
+        end
+        lastBallPos = pos
+
         if speed < Config.MinSpeed then Diag.status = "стоит" return end
 
+        if ball ~= trackedBall then trackedBall = ball hits = 0 spam = false pending = false end
+        Diag.hits = hits
+
         local targeted, known = IsTargeted(char)
+        if not known then targeted = ((ppos - pos).Unit):Dot(vel.Unit) > 0.3 end
         Diag.target = targeted
-
-        -- если атрибута нет — считаем по направлению
-        if not known then
-            local dot = ((ppos - pos).Unit):Dot(vel.Unit)
-            targeted = dot > 0.3
-            Diag.target = targeted
-        end
-
         if Config.OnlyTarget and not targeted then Diag.status = "не мой" return end
 
         local pingSec = (getPing() / 1000) * Config.PingFactor
-        local buf = pingSec + Config.Reaction
+        local window = Config.ParryRange + speed * (pingSec + Config.Reaction)
+        if Config.DtSafety and dt > 0.04 then window = window + speed * dt end
 
-        -- клэш: мяч близко и висит
-        if Config.AutoClash and targeted and dist <= Config.ClashDist and speed < 60 then
-            Diag.status = "клэш"
-            send(ball, true)
+        local acc = Config.Accuracy
+        if Config.AccRand then
+            acc = acc + math.random(-Config.AccRandAmt, Config.AccRandAmt)
+        end
+        acc = math.clamp(acc, 1, 100)
+        window = window * (1 - (acc / 100) * 0.55)
+        if window < 3 then window = 3 end
+        Diag.window = window
+
+        if speed >= Config.PredictionSpam then spam = true end
+        local instant = speed >= Config.InstantSpeed
+        local dynOn = Config.DynThreshold and hits >= Config.DynHits
+
+        -- СПАМ
+        if spam or dynOn then
+            if dist <= window and (now - lastPress) >= Config.SpamRate then fire() end
+            Diag.status = spam and "спам(скор)" or "спам(дин)"
             return
         end
 
-        local fire
-        if Config.Trigger == "ETA" then
-            local eta = dist / math.max(speed, 1)
-            Diag.t = eta
-            fire = eta <= (Config.Eta + buf)
-        else
-            local t = timeToEnter(pos, vel, ppos, Config.Zone)
-            Diag.t = t
-            fire = t ~= nil and t <= buf
+        if dist > window then Diag.status = "летит" return end
+        if ((ppos - pos).Unit):Dot(vel.Unit) <= 0 then Diag.status = "уходит" return end
+
+        -- ИНСТАНТ
+        if instant then
+            if (now - lastPress) >= Config.Cooldown then fire() end
+            Diag.status = "инстант"
+            return
         end
 
-        if not fire then Diag.status = "летит" return end
-        send(ball, false)
+        if (now - lastPress) < Config.Cooldown then Diag.status = "кулдаун" return end
+
+        -- ТРИГГЕРБОТ
+        if Config.TriggerbotDelay > 0 then
+            if not pending then
+                pending = true
+                Diag.status = "триггер"
+                task.delay(Config.TriggerbotDelay, function()
+                    pending = false
+                    fire()
+                end)
+            end
+        else
+            Diag.status = "ПАРРИ"
+            fire()
+        end
     end
 
     RunService.RenderStepped:Connect(function()
@@ -247,7 +282,17 @@ do
         if not ok then Diag.status = "ошибка" warn("[SleepScript]", err) end
     end)
 
-    LocalPlayer.CharacterAdded:Connect(function() lastBall = nil parrying = false end)
+    -- если юзер сам жмёт F/ЛКМ — не даблкликаем
+    UserInputService.InputBegan:Connect(function(i, gp)
+        if gp then return end
+        if i.KeyCode == Enum.KeyCode.F or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            lastPress = os.clock()
+        end
+    end)
+
+    LocalPlayer.CharacterAdded:Connect(function()
+        trackedBall = nil hits = 0 spam = false pending = false
+    end)
 end
 
 --=====================================================================
@@ -346,8 +391,7 @@ do
             head.Transparency = 1
             for _, d in ipairs(head:GetChildren()) do
                 if d:IsA("BasePart") or d:IsA("Decal") or d:IsA("SpecialMesh") then
-                    origHead[d] = origHead[d] or d.Transparency
-                    d.Transparency = 1
+                    origHead[d] = origHead[d] or d.Transparency d.Transparency = 1
                 end
             end
             for _, a in ipairs(char:GetChildren()) do
@@ -377,9 +421,7 @@ do
             if on then
                 local mesh = leg:FindFirstChild("SleepKorblox")
                 if not mesh then
-                    mesh = Instance.new("SpecialMesh")
-                    mesh.Name = "SleepKorblox"
-                    mesh.Parent = leg
+                    mesh = Instance.new("SpecialMesh") mesh.Name = "SleepKorblox" mesh.Parent = leg
                 end
                 mesh.MeshId, mesh.TextureId, mesh.Scale = KORBLOX_MESH, "", Vector3.new(1,1,1)
                 origColor[leg] = origColor[leg] or leg.Color
@@ -399,7 +441,7 @@ do
 end
 
 --=====================================================================
---  UI (горизонтальная)
+--  UI
 --=====================================================================
 local Accent = Config.Accent
 local AP, AT, AG, TL = {}, {}, {}, {}
@@ -433,27 +475,26 @@ end
 local gui = new("ScreenGui", {Name="SleepScript", ResetOnSpawn=false, IgnoreGuiInset=true,
     ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=999, Parent=gethui()})
 
-local OPEN = UDim2.fromOffset(540, 330)
+local OPEN = UDim2.fromOffset(560, 350)
 local main = new("Frame", {Name="Main", Parent=gui, AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0),
-    Size=UDim2.fromOffset(540, 40), BackgroundColor3=Color3.fromRGB(15,15,19), BorderSizePixel=0, ClipsDescendants=true})
+    Size=UDim2.fromOffset(560, 40), BackgroundColor3=Color3.fromRGB(15,15,19), BorderSizePixel=0, ClipsDescendants=true})
 new("UICorner", {CornerRadius=UDim.new(0,12), Parent=main})
 reg(new("UIStroke", {Thickness=1.4, Transparency=0.25, Color=Accent, Parent=main}), "Color")
 
 local header = new("Frame", {Parent=main, Size=UDim2.new(1,0,0,34), BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0})
 regG(new("UIGradient", {Parent=header, Color=ColorSequence.new(Accent, Accent:Lerp(Color3.new(0,0,0),0.45))}))
-new("TextLabel", {Parent=header, BackgroundTransparency=1, Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-190,1,0),
+new("TextLabel", {Parent=header, BackgroundTransparency=1, Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-200,1,0),
     Font=Enum.Font.GothamBold, Text="SleepScript", TextSize=14, TextColor3=Color3.new(1,1,1),
     TextXAlignment=Enum.TextXAlignment.Left})
 local status = new("TextLabel", {Parent=header, BackgroundTransparency=1, AnchorPoint=Vector2.new(1,0), Position=UDim2.new(1,-14,0,0),
-    Size=UDim2.new(0,170,1,0), Font=Enum.Font.GothamMedium, Text="", TextSize=10.5,
+    Size=UDim2.new(0,180,1,0), Font=Enum.Font.GothamMedium, Text="", TextSize=10.5,
     TextColor3=Color3.fromRGB(235,235,245), TextXAlignment=Enum.TextXAlignment.Right})
 
 local body = new("Frame", {Parent=main, Position=UDim2.new(0,0,0,34), Size=UDim2.new(1,0,1,-34), BackgroundTransparency=1})
-local sidebar = new("Frame", {Parent=body, Size=UDim2.new(0,128,1,0), BackgroundColor3=Color3.fromRGB(18,18,23), BorderSizePixel=0})
-local pages = new("Frame", {Parent=body, Position=UDim2.new(0,128,0,0), Size=UDim2.new(1,-128,1,0),
+local sidebar = new("Frame", {Parent=body, Size=UDim2.new(0,130,1,0), BackgroundColor3=Color3.fromRGB(18,18,23), BorderSizePixel=0})
+local pages = new("Frame", {Parent=body, Position=UDim2.new(0,130,0,0), Size=UDim2.new(1,-130,1,0),
     BackgroundTransparency=1, ClipsDescendants=true})
-local indicator = new("Frame", {Parent=sidebar, Size=UDim2.new(0,3,0,20), Position=UDim2.new(0,0,0,0),
-    BackgroundColor3=Accent, BorderSizePixel=0, ZIndex=3})
+local indicator = new("Frame", {Parent=sidebar, Size=UDim2.new(0,3,0,20), BackgroundColor3=Accent, BorderSizePixel=0, ZIndex=3})
 reg(indicator)
 
 local ord, tabs = 0, {}
@@ -462,7 +503,7 @@ local function makePage()
     local p = new("ScrollingFrame", {Parent=pages, Size=UDim2.new(1,0,1,0), BackgroundTransparency=1,
         BorderSizePixel=0, ScrollBarThickness=3, CanvasSize=UDim2.new(), AutomaticCanvasSize=Enum.AutomaticSize.Y, Visible=false})
     reg(p, "ScrollBarImageColor3")
-    new("UIListLayout", {Parent=p, Padding=UDim.new(0,6), SortOrder=Enum.SortOrder.LayoutOrder})
+    new("UIListLayout", {Parent=p, Padding=UDim.new(0,5), SortOrder=Enum.SortOrder.LayoutOrder})
     new("UIPadding", {Parent=p, PaddingLeft=UDim.new(0,12), PaddingRight=UDim.new(0,12),
         PaddingTop=UDim.new(0,10), PaddingBottom=UDim.new(0,12)})
     return p
@@ -487,7 +528,7 @@ local function makeTab(name, i)
             t.page.Visible = on
             if on then t.page.Position = UDim2.new(0,10,0,0) tw(t.page, 0.18, {Position=UDim2.new(0,0,0,0)}) end
         end
-        tw(indicator, 0.2, {Position=UDim2.new(0,0,0, y + 4), Size=UDim2.new(0,3,0,20)})
+        tw(indicator, 0.2, {Position=UDim2.new(0,0,0, y + 4)})
     end)
     return page
 end
@@ -497,9 +538,9 @@ local function section(parent, text)
         Text=text, TextSize=10.5, LayoutOrder=nextOrd(), TextColor3=Color3.fromRGB(125,125,142),
         TextXAlignment=Enum.TextXAlignment.Left})
 end
-local function note(parent, text)
-    new("TextLabel", {Parent=parent, Size=UDim2.new(1,0,0,16), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
-        Text=text, TextSize=10, LayoutOrder=nextOrd(), TextColor3=Color3.fromRGB(145,145,160),
+local function note(parent, text, h)
+    new("TextLabel", {Parent=parent, Size=UDim2.new(1,0,0,h or 15), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
+        Text=text, TextSize=9.5, LayoutOrder=nextOrd(), TextColor3=Color3.fromRGB(138,138,152),
         TextXAlignment=Enum.TextXAlignment.Left, TextWrapped=true})
 end
 local function toggle(parent, label, default, cb)
@@ -529,14 +570,14 @@ local function toggle(parent, label, default, cb)
     btn.MouseButton1Click:Connect(function() state = not state render(true) cb(state) saveConfig() end)
 end
 local function slider(parent, label, min, max, default, step, suffix, cb)
-    local holder = new("Frame", {Parent=parent, Size=UDim2.new(1,0,0,36), BackgroundTransparency=1, LayoutOrder=nextOrd()})
+    local holder = new("Frame", {Parent=parent, Size=UDim2.new(1,0,0,34), BackgroundTransparency=1, LayoutOrder=nextOrd()})
     new("TextLabel", {Parent=holder, BackgroundTransparency=1, Size=UDim2.new(0.72,0,0,15), Font=Enum.Font.GothamMedium,
         Text=label, TextSize=12, TextColor3=Color3.fromRGB(216,216,226), TextXAlignment=Enum.TextXAlignment.Left})
     local val = new("TextLabel", {Parent=holder, BackgroundTransparency=1, Position=UDim2.new(0.72,0,0,0), Size=UDim2.new(0.28,0,0,15),
         Font=Enum.Font.GothamBold, Text=tostring(default)..(suffix or ""), TextSize=12, TextColor3=Accent,
         TextXAlignment=Enum.TextXAlignment.Right})
     regT(val)
-    local track = new("Frame", {Parent=holder, Position=UDim2.new(0,0,0,22), Size=UDim2.new(1,0,0,5),
+    local track = new("Frame", {Parent=holder, Position=UDim2.new(0,0,0,21), Size=UDim2.new(1,0,0,5),
         BackgroundColor3=Color3.fromRGB(40,40,48), BorderSizePixel=0})
     new("UICorner", {CornerRadius=UDim.new(1,0), Parent=track})
     local fill = new("Frame", {Parent=track, Size=UDim2.new(0,0,1,0), BackgroundColor3=Accent, BorderSizePixel=0})
@@ -545,7 +586,7 @@ local function slider(parent, label, min, max, default, step, suffix, cb)
     local knob = new("Frame", {Parent=track, AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0,0,0.5,0),
         Size=UDim2.fromOffset(11,11), BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0, ZIndex=3})
     new("UICorner", {CornerRadius=UDim.new(1,0), Parent=knob})
-    local hit = new("TextButton", {Parent=holder, Position=UDim2.new(0,0,0,14), Size=UDim2.new(1,0,0,20),
+    local hit = new("TextButton", {Parent=holder, Position=UDim2.new(0,0,0,13), Size=UDim2.new(1,0,0,20),
         BackgroundTransparency=1, Text=""})
     local value = default
     local function apply(v, f)
@@ -554,8 +595,8 @@ local function slider(parent, label, min, max, default, step, suffix, cb)
         local rel = (value-min)/(max-min)
         fill.Size = UDim2.new(rel,0,1,0)
         knob.Position = UDim2.new(rel,0,0.5,0)
-        local shown = (step and step >= 1) and math.floor(value) or value
-        val.Text = tostring(shown)..(suffix or "")
+        local shown = (step and step >= 1) and math.floor(value) or string.format("%.3g", value)
+        val.Text = shown..(suffix or "")
         if f then cb(value) end
     end
     apply(default, false)
@@ -585,10 +626,8 @@ local function button(parent, text, cb)
     b.MouseButton1Click:Connect(cb)
 end
 local function colorPicker(parent)
-    local holder = new("Frame", {Parent=parent, Size=UDim2.new(1,0,0,54), BackgroundTransparency=1, LayoutOrder=nextOrd()})
-    new("TextLabel", {Parent=holder, BackgroundTransparency=1, Size=UDim2.new(1,0,0,16), Font=Enum.Font.GothamMedium,
-        Text="Цвет интерфейса", TextSize=12, TextColor3=Color3.fromRGB(216,216,226), TextXAlignment=Enum.TextXAlignment.Left})
-    local sw = new("Frame", {Parent=holder, Position=UDim2.new(0,0,0,18), Size=UDim2.new(1,0,0,16), BackgroundTransparency=1})
+    local holder = new("Frame", {Parent=parent, Size=UDim2.new(1,0,0,52), BackgroundTransparency=1, LayoutOrder=nextOrd()})
+    local sw = new("Frame", {Parent=holder, Position=UDim2.new(0,0,0,16), Size=UDim2.new(1,0,0,16), BackgroundTransparency=1})
     new("UIListLayout", {Parent=sw, FillDirection=Enum.FillDirection.Horizontal, Padding=UDim.new(0,6)})
     for _, c in ipairs({Color3.fromRGB(0,170,255), Color3.fromRGB(140,80,255), Color3.fromRGB(255,70,120),
         Color3.fromRGB(0,220,150), Color3.fromRGB(255,180,40), Color3.fromRGB(255,90,60),
@@ -596,10 +635,8 @@ local function colorPicker(parent)
         local s = new("TextButton", {Parent=sw, Size=UDim2.fromOffset(16,16), BackgroundColor3=c, BorderSizePixel=0, Text="", AutoButtonColor=false})
         new("UICorner", {CornerRadius=UDim.new(1,0), Parent=s})
         s.MouseButton1Click:Connect(function() setAccent(c) end)
-        s.MouseEnter:Connect(function() tw(s, 0.12, {Size=UDim2.fromOffset(18,18)}) end)
-        s.MouseLeave:Connect(function() tw(s, 0.12, {Size=UDim2.fromOffset(16,16)}) end)
     end
-    local hue = new("TextButton", {Parent=holder, Position=UDim2.new(0,0,0,40), Size=UDim2.new(1,0,0,9),
+    local hue = new("TextButton", {Parent=holder, Position=UDim2.new(0,0,0,38), Size=UDim2.new(1,0,0,9),
         BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0, Text=""})
     new("UICorner", {CornerRadius=UDim.new(1,0), Parent=hue})
     new("UIGradient", {Parent=hue, Color=ColorSequence.new{
@@ -618,8 +655,8 @@ local function colorPicker(parent)
 end
 
 local pParry  = makeTab("ПАРРИ", 1)
-local pVisual = makeTab("ВИЗУАЛ", 2)
-local pAnti   = makeTab("АНТИЧИТ", 3)
+local pAnti   = makeTab("АНТИЧИТ", 2)
+local pVisual = makeTab("ВИЗУАЛ", 3)
 local pSkin   = makeTab("СКИН", 4)
 local pMenu   = makeTab("МЕНЮ", 5)
 
@@ -633,43 +670,75 @@ local function radio(parent, group, value, label, onPick)
         Size=UDim2.fromOffset(8,8), BackgroundColor3=Accent, BorderSizePixel=0, Visible=false})
     new("UICorner", {CornerRadius=UDim.new(1,0), Parent=mark})
     reg(mark)
-    b.MouseButton1Click:Connect(function()
-        for _, t in ipairs(group) do
-            t.mark.Visible = (t.value == value)
-        end
-        onPick(value)
-        saveConfig()
-    end)
     local entry = {mark=mark, value=value}
     group[#group+1] = entry
-    mark.Visible = false
+    b.MouseButton1Click:Connect(function()
+        for _, t in ipairs(group) do t.mark.Visible = (t.value == value) end
+        onPick(value) saveConfig()
+    end)
     return entry
 end
 
+-- ПАРРИ
 section(pParry, "ОСНОВНОЕ")
 toggle(pParry, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)
-toggle(pParry, "Только по мне", Config.OnlyTarget, function(v) Config.OnlyTarget = v end)
-toggle(pParry, "Auto Clash", Config.AutoClash, function(v) Config.AutoClash = v end)
-slider(pParry, "Клэш-дистанция", 10, 40, Config.ClashDist, 1, " ст", function(v) Config.ClashDist = v end)
+slider(pParry, "Accuracy", 1, 100, Config.Accuracy, 1, "", function(v) Config.Accuracy = v end)
+note(pParry, "Выше = позже парри (ближе к мячу). 50-60 — оптимально.")
+toggle(pParry, "Случайный разброс Accuracy", Config.AccRand, function(v) Config.AccRand = v end)
+slider(pParry, "Разброс", 0, 30, Config.AccRandAmt, 1, "", function(v) Config.AccRandAmt = v end)
+slider(pParry, "Triggerbot delay", 0, 1, Config.TriggerbotDelay, 0.01, " с", function(v) Config.TriggerbotDelay = v end)
+note(pParry, "Задержка перед нажатием — имитация человеческой реакции.")
 
-section(pParry, "РЕЖИМ СРАБАТЫВАНИЯ")
-local trigGroup = {}
-radio(pParry, trigGroup, "Zone", "Zone — по зоне (точно)", function(v) Config.Trigger = v end)
-radio(pParry, trigGroup, "ETA",  "ETA — по времени полёта",  function(v) Config.Trigger = v end)
-for _, t in ipairs(trigGroup) do t.mark.Visible = (t.value == Config.Trigger) end
-slider(pParry, "Зона", 6, 40, Config.Zone, 1, " ст", function(v) Config.Zone = v end)
-slider(pParry, "ETA", 0.05, 0.8, Config.Eta, 0.01, " с", function(v) Config.Eta = v end)
+section(pParry, "СКОРОСТНЫЕ РЕЖИМЫ")
+slider(pParry, "Instant speed", 1, 350, Config.InstantSpeed, 1, "", function(v) Config.InstantSpeed = v end)
+note(pParry, "При скорости мяча выше — парри мгновенно, без задержки и предсказания.")
+slider(pParry, "Prediction spam", 1, 350, Config.PredictionSpam, 1, "", function(v) Config.PredictionSpam = v end)
+note(pParry, "При скорости выше — спам предсказаний (серия нажатий по мячу).")
+
+section(pParry, "DYNAMIC THRESHOLD")
+toggle(pParry, "Включить", Config.DynThreshold, function(v) Config.DynThreshold = v end)
+slider(pParry, "Хитов до спама", 1, 10, Config.DynHits, 1, "", function(v) Config.DynHits = v end)
+note(pParry, "Считает парри по одному мячу; после N попаданий включает автоспам.")
+
+section(pParry, "ТОНКАЯ НАСТРОЙКА")
+slider(pParry, "Parry range", 5, 40, Config.ParryRange, 1, " ст", function(v) Config.ParryRange = v end)
+slider(pParry, "Ping factor", 0.0, 0.8, Config.PingFactor, 0.05, "", function(v) Config.PingFactor = v end)
 slider(pParry, "Реакция", 0.0, 0.2, Config.Reaction, 0.005, " с", function(v) Config.Reaction = v end)
-slider(pParry, "Кулдаун", 0.05, 0.4, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
-slider(pParry, "Коэф. пинга", 0.0, 0.8, Config.PingFactor, 0.05, "", function(v) Config.PingFactor = v end)
+slider(pParry, "Кулдаун", 0.04, 0.3, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
+slider(pParry, "Частота спама", 0.02, 0.2, Config.SpamRate, 0.01, " с", function(v) Config.SpamRate = v end)
+toggle(pParry, "Только когда целятся в меня", Config.OnlyTarget, function(v) Config.OnlyTarget = v end)
 
-section(pParry, "МЕТОД (ремоут не трогаем)")
+section(pParry, "МЕТОД")
 local methGroup = {}
-radio(pParry, methGroup, "Keypress", "Keypress — клавиша F", function(v) Config.Mode = v end)
-radio(pParry, methGroup, "Mouse",    "Mouse — ЛКМ",          function(v) Config.Mode = v end)
-radio(pParry, methGroup, "Remote",   "Remote — прямой (риск)", function(v) Config.Mode = v end)
+radio(pParry, methGroup, "Keypress", "Keypress — F (безопасно)", function(v) Config.Mode = v end)
+radio(pParry, methGroup, "Mouse",    "Mouse — ЛКМ",              function(v) Config.Mode = v end)
+radio(pParry, methGroup, "Remote",   "Remote — прямой",          function(v) Config.Mode = v end)
 for _, t in ipairs(methGroup) do t.mark.Visible = (t.value == Config.Mode) end
 
+-- АНТИЧИТ
+section(pAnti, "ДИАГНОСТИКА")
+local diagLbl = new("TextLabel", {Parent=pAnti, Size=UDim2.new(1,0,0,100), BackgroundTransparency=1,
+    Font=Enum.Font.Code, Text="", TextSize=11, TextColor3=Color3.fromRGB(180,180,195),
+    TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
+section(pAnti, "ОБХОД BAC")
+toggle(pAnti, "Задержка после инжекта", true, function(v) Config.StartupDelay = v and 3 or 0 end)
+toggle(pAnti, "Защита от лаг-спайков", Config.DtSafety, function(v) Config.DtSafety = v end)
+toggle(pAnti, "Защита от десинка мяча", Config.DesyncGuard, function(v) Config.DesyncGuard = v end)
+toggle(pAnti, "Удерживать клавишу", Config.HoldPress, function(v) Config.HoldPress = v end)
+note(pAnti, "Никаких хуков, ремоут не трогаем, один парри на мяч, ручной F не даблкликается.", 26)
+button(pAnti, "СТЕЛС-РЕЖИМ", function()
+    Config.Mode = "Keypress" Config.OnlyTarget = true Config.DynThreshold = false
+    Config.InstantSpeed = 350 Config.PredictionSpam = 350
+    Config.ParryRange = 12 Config.Accuracy = 50 Config.AccRand = true
+    Config.TriggerbotDelay = 0.03 Config.FpsBoost = false Config.UnlockFps = false
+    Fps.Set(false) saveConfig()
+end)
+section(pAnti, "СЕССИЯ")
+toggle(pAnti, "Авто-реджойн", Config.Rejoin, function(v) Config.Rejoin = v end)
+toggle(pAnti, "Анти-АФК", Config.AntiAfk, function(v) Config.AntiAfk = v end)
+button(pAnti, "РЕ-ДЖОЙН СЕЙЧАС", function() Session.rejoin() end)
+
+-- ВИЗУАЛ
 section(pVisual, "КАМЕРА")
 toggle(pVisual, "FOV", Config.FovEnabled, function(v) Config.FovEnabled = v end)
 slider(pVisual, "Значение FOV", 70, 120, Config.Fov, 1, "", function(v) Config.Fov = v end)
@@ -678,32 +747,17 @@ toggle(pVisual, "FPS Boost", Config.FpsBoost, function(v) Config.FpsBoost = v Fp
 toggle(pVisual, "Убирать эффекты", Config.CutFx, function(v) Config.CutFx = v if Config.FpsBoost then Fps.Set(true) end end)
 toggle(pVisual, "Разблокировать FPS", Config.UnlockFps, function(v) Config.UnlockFps = v if Config.FpsBoost then Fps.Set(true) end end)
 
-section(pAnti, "ДИАГНОСТИКА")
-local diagLbl = new("TextLabel", {Parent=pAnti, Size=UDim2.new(1,0,0,88), BackgroundTransparency=1,
-    Font=Enum.Font.Code, Text="", TextSize=11, TextColor3=Color3.fromRGB(180,180,195),
-    TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
-section(pAnti, "СЕССИЯ")
-toggle(pAnti, "Авто-реджойн", Config.Rejoin, function(v) Config.Rejoin = v end)
-toggle(pAnti, "Анти-АФК", Config.AntiAfk, function(v) Config.AntiAfk = v end)
-button(pAnti, "РЕ-ДЖОЙН СЕЙЧАС", function() Session.rejoin() end)
-button(pAnti, "БЕЗОПАСНЫЙ РЕЖИМ", function()
-    Config.Mode = "Keypress" Config.Trigger = "Zone" Config.Zone = 14
-    Config.OnlyTarget = true Config.AutoClash = true Config.PingFactor = 0.5
-    Config.Reaction = 0.04 Config.Cooldown = 0.12
-    Config.FpsBoost = false Config.UnlockFps = false
-    Fps.Set(false) saveConfig()
-end)
-note(pAnti, "Не хукаем ремоуты, не стреляем в декой, один парри на мяч — это и есть обход BAC.")
-
+-- СКИН
 section(pSkin, "АВАТАР")
 toggle(pSkin, "Korblox (нога)", Config.Korblox, function(v) Config.Korblox = v Skin.SetKorblox(v) end)
 toggle(pSkin, "Headless (без головы)", Config.Headless, function(v) Config.Headless = v Skin.SetHeadless(v) end)
 
+-- МЕНЮ
 section(pMenu, "ЦВЕТ")
 colorPicker(pMenu)
 section(pMenu, "ИНФО")
 note(pMenu, "RightShift — скрыть/показать меню.")
-note(pMenu, "Тестируй в обычном матче — в Training Mode парри часто не работает.")
+note(pMenu, "Тестируй в обычном матче, не в Training Mode.")
 
 --=====================================================================
 --  WINDOW
@@ -717,11 +771,11 @@ reg(bubble)
 
 local function openMenu()
     visible = true bubble.Visible = false main.Visible = true
-    main.Size = UDim2.fromOffset(540,40) tw(main, 0.35, {Size=OPEN})
+    main.Size = UDim2.fromOffset(560,40) tw(main, 0.35, {Size=OPEN})
 end
 local function closeMenu()
     visible = false
-    tw(main, 0.25, {Size=UDim2.fromOffset(540,40)})
+    tw(main, 0.25, {Size=UDim2.fromOffset(560,40)})
     task.delay(0.26, function() if not visible then main.Visible = false bubble.Visible = true end end)
 end
 bubble.MouseButton1Click:Connect(openMenu)
@@ -750,17 +804,17 @@ task.defer(function()
     t.btn.TextColor3 = Color3.new(1,1,1)
     t.btn.BackgroundColor3 = Color3.fromRGB(30,30,38)
     t.page.Visible = true
-    indicator.Position = UDim2.new(0,0,0, 16)
+    indicator.Position = UDim2.new(0,0,0,16)
 end)
 
 task.spawn(function()
     while true do
-        task.wait(0.35)
+        task.wait(0.3)
         status.Text = string.format("%dms | %s | кик %d", math.floor(AutoParry.getPing()), Diag.status, Diag.kicks)
         diagLbl.Text = string.format(
-            "статус : %s\nмяч    : %s\nнаведён: %s\nдист   : %.0f ст\nвход t : %s\nпарри  : %d\nкиков  : %d",
+            "статус : %s\nмяч    : %s\nнаведён: %s\nдист   : %.0f ст\nокно   : %.0f ст\nхиты   : %d\nпарри  : %d\nкиков  : %d",
             Diag.status, Diag.real and "да" or "нет", Diag.target and "да" or "нет",
-            Diag.dist, Diag.t and string.format("%.3f", Diag.t) or "—", Diag.parries, Diag.kicks)
+            Diag.dist, Diag.window, Diag.hits, Diag.parries, Diag.kicks)
     end
 end)
 
@@ -768,4 +822,4 @@ if Config.FpsBoost then Fps.Set(true) end
 if Config.Korblox then Skin.SetKorblox(true) end
 if Config.Headless then Skin.SetHeadless(true) end
 
-print("[SleepScript] v4 (BAC-safe) загружен. RightShift — меню.")
+print("[SleepScript] v5 загружен. RightShift — меню.")
