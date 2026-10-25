@@ -1,1456 +1,1005 @@
---=====================================================================
---   SleepScript  //  BLADE BALL   v7.0
---   Isolation build: 3 режима BAC, чистый режим, автолестница
---   Хоткей меню: RightShift
---=====================================================================
+--[[
+=====================================================================
+   SleepScript  |  Blade Ball
+   Меню: Z — свернуть / развернуть окно
+   Автопарри: RightShift (быстрый тумблер)
+   Работает на Real и любом executor'е с API: getgenv, gethui, protect_gui
+=====================================================================
+]]
 
 local Players             = game:GetService("Players")
 local RunService          = game:GetService("RunService")
 local UserInputService    = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local TweenService        = game:GetService("TweenService")
 local Lighting            = game:GetService("Lighting")
-local Workspace           = game:GetService("Workspace")
-local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local Stats               = game:GetService("Stats")
-local HttpService         = game:GetService("HttpService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local VirtualUser         = game:GetService("VirtualUser")
-local TeleportService     = game:GetService("TeleportService")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local CoreGui             = game:GetService("CoreGui")
-local TextChatService     = game:GetService("TextChatService")
+local HttpService         = game:GetService("HttpService")
 
-local LocalPlayer = Players.LocalPlayer
+local LP  = Players.LocalPlayer
+local function cam() return workspace.CurrentCamera end
 
------------------------------------------------------------------- executor
-local function execFn(n)
-    local ok, f = pcall(function() return rawget(getfenv(), n) end)
-    if ok and type(f) == "function" then return f end
-end
-local gethui     = execFn("gethui") or function() return CoreGui end
-local setfpscap  = execFn("setfpscap")
-local writefile  = execFn("writefile")
-local readfile   = execFn("readfile")
-local isfile     = execFn("isfile")
-local getgc      = execFn("getgc")
-local keypress   = execFn("keypress")
-local keyrelease = execFn("keyrelease")
+--=============================================================
+--  КОНФИГ
+--=============================================================
+local SS = getgenv().SleepScript or {}
+getgenv().SleepScript = SS
 
------------------------------------------------------------------- config
-local Config = {
-    AutoParry      = false,
-    Accuracy       = 65,
-    AccRand        = true,
-    AccRandAmt     = 10,
+local DEFAULTS = {
+    MenuOpen = true,
+    -- AutoParry
+    AutoParry = false, PingBased = true, PingBasedOffset = 1.95,
+    DistanceToParry = 0.65, EmergencyRadius = 10,
+    ClashDistance = 22, ClashSpeed = 0.01, NormalSpeed = 0.05,
+    ParryVisuals = true,
+    -- Visuals
+    FOV = 70, CustomSky = false, SkyId = "rbxassetid://159454299",
+    Headless = false, Korblox = false, KorbloxMesh = "rbxassetid://139607718",
+    -- Perf
+    Bypass = true, FPSBoost = false, NoEffects = false, NoAccessories = false, FPSCap = 240,
+    -- Overlay
+    Overlay = true,
+    -- Skin
+    SkinLock = true,
+}
+for k, v in pairs(DEFAULTS) do if SS[k] == nil then SS[k] = v end end
 
-    TriggerbotDelay= 0.03,
-    InstantSpeed   = 999,
-    PredictionSpam = 999,
-    DynThreshold   = false,
-    DynHits        = 3,
-
-    ParryRange     = 8,
-    PingFactor     = 1.0,
-    Cooldown       = 0.5,
-    SpamRate       = 0.05,
-    MinGap         = 0.15,
-    PerpTol        = 6,
-    StrictTarget   = true,
-    RequireAttr    = true,
-    OnlyTarget     = true,
-    MinSpeed       = 15,
-    Mode           = "Keypress",
-    AutoMethod     = true,
-
-    -- ЗАЩИТА
-    BacBypassMode  = "full",     -- off | light | full
-    WriteAttr      = true,
-    Humanize       = true,
-    HumanJitter    = 0.07,
-    HumanAccSpread = 0.03,
-    HumanPausePct  = 18,
-    HumanPause     = 0.12,
-    MissChance     = 10,
-    HoldMin        = 0.03,
-    HoldMax        = 0.07,
-    MaxParryPerSec = 4,
-    MaxParryPerMin = 20,
-    Warmup         = 20,
-    ParanoidOnKick = true,
-    ParanoidTime   = 30,
-    ParanoidScale  = 0.25,
-    AutoTune       = true,
-    Watchdog       = true,
-    RejoinAttempts = 5,
-    StartupDelay   = 5,
-    DtSafety       = true,
-    DesyncGuard    = false,
-    HoldPress      = true,
-
-    FovEnabled     = false,
-    Fov            = 100,
-    FpsBoost       = false,
-    CutFx          = false,
-    UnlockFps      = false,
-
-    Rejoin         = true,
-    AntiAfk        = true,
-
-    Korblox        = false,
-    Headless       = false,
-
-    Accent         = Color3.fromRGB(0, 170, 255),
+--=============================================================
+--  ЦВЕТА / ХЕЛПЕРЫ
+--=============================================================
+local C = {
+    bg      = Color3.fromRGB(11, 13, 20),
+    bg2     = Color3.fromRGB(18, 21, 31),
+    card    = Color3.fromRGB(22, 26, 38),
+    accent  = Color3.fromRGB(124, 92, 255),
+    accent2 = Color3.fromRGB(0, 229, 192),
+    text    = Color3.fromRGB(236, 239, 250),
+    dim     = Color3.fromRGB(132, 140, 162),
+    off     = Color3.fromRGB(38, 43, 58),
+    stroke  = Color3.fromRGB(48, 54, 74),
 }
 
-local CFG_PATH = "SleepScript.json"
-local LOG_PATH = "SleepScript_kicks.json"
-
-local function saveConfig()
-    if not writefile then return end
-    local t = {}
-    for k, v in pairs(Config) do
-        if typeof(v) == Color3 then t[k] = {r=v.R, g=v.G, b=v.B, __c=true} else t[k] = v end
-    end
-    pcall(writefile, CFG_PATH, HttpService:JSONEncode(t))
-end
-local function loadConfig()
-    if not (readfile and isfile) then return end
-    pcall(function()
-        if not isfile(CFG_PATH) then return end
-        for k, v in pairs(HttpService:JSONDecode(readfile(CFG_PATH))) do
-            if type(v) == "table" and v.__c then Config[k] = Color3.new(v.r, v.g, v.b)
-            elseif Config[k] ~= nil then Config[k] = v end
-        end
-    end)
-end
-loadConfig()
-
-if Config.Cooldown < 0.3 then Config.Cooldown = 0.5 end
-if Config.Mode == "Remote" then Config.Mode = "Keypress" end
-if Config.BacBypass == false then Config.BacBypassMode = "off" end
-
-local Diag = { parries=0, kicks=0, status="idle", dist=0, hits=0, target=false, real=false,
-               window=0, tti=0, aggr=1, rate=0, rateMin=0, latched=false, serverWin=0, perp=0,
-               bypass="", att=0, landed=0, attr=false, clean=false }
-
-local UIset = { sliders = {}, toggles = {}, refresh = function() end }
-
------------------------------------------------------------------- utils
-local function gauss()
-    local u1 = math.random()
-    local u2 = math.random()
-    if u1 < 1e-9 then u1 = 1e-9 end
-    return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+local function new(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props or {}) do o[k] = v end
+    if parent then o.Parent = parent end
+    return o
 end
 
-local function timeToImpact(p, v, q, radius)
-    local d = p - q
-    local dist = d.Magnitude
-    if dist <= radius then return 0 end
-    local a = v:Dot(v)
-    if a < 1e-6 then return nil end
-    local b = 2 * v:Dot(d)
-    local disc = b * b - 4 * a * (dist * dist - radius * radius)
-    if disc < 0 then return nil end
-    local t = (-b - math.sqrt(disc)) / (2 * a)
-    if t < 0 then return nil end
-    local g = Vector3.new(0, -Workspace.Gravity, 0)
-    for _ = 1, 4 do
-        local rel = (p + v * t + g * 0.5 * t * t) - q
-        local dd = rel.Magnitude
-        if dd < 1e-4 then break end
-        local deriv = rel:Dot(v + g * t) / dd
-        if math.abs(deriv) < 1e-4 then break end
-        t = t - (dd - radius) / deriv
-        if t < 0 then t = 0 break end
-    end
-    return t
-end
+local function corner(o, r) new("UICorner", {CornerRadius = UDim.new(0, r or 10)}, o) end
 
-local function missDistance(p, v, q)
-    local rel = q - p
-    local vv = v.Magnitude
-    if vv < 1e-4 then return rel.Magnitude, 0 end
-    local vhat = v / vv
-    local along = rel:Dot(vhat)
-    return (rel - vhat * along).Magnitude, along
-end
-
-local AC = {}
-
---=====================================================================
---  BAC BYPASS  (3 режима + периодический ре-скан)
---=====================================================================
-do
-    local killed, seen = {}, {}
-    local newCount = 0
-
-    local function kill(inst, tag)
-        if not inst then return end
-        local key = (tag or "") .. inst.Name
-        if seen[key] then return end
-        seen[key] = true
-        killed[#killed+1] = key
-        newCount = newCount + 1
-        pcall(function() inst:Destroy() end)
-    end
-
-    function AC.bypassBAC(silent)
-        newCount = 0
-        local mode = Config.BacBypassMode
-        if mode == "off" then
-            Diag.bypass = "выкл"
-            return 0
-        end
-        local rs = ReplicatedStorage
-
-        if mode == "full" then
-            local sec = rs:FindFirstChild("Security")
-            if sec then
-                for _, d in ipairs(sec:GetDescendants()) do
-                    if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
-                        kill(d, "Security.")
-                    end
-                end
-                kill(sec, "")
-            end
-            for _, d in ipairs(rs:GetChildren()) do
-                local n = d.Name:lower()
-                if d ~= sec and (n:find("anticheat") or n:find("anti_cheat") or n:find("bac")) then
-                    kill(d, "rs.")
-                end
-            end
-        end
-
-        local ps = LocalPlayer:FindFirstChild("PlayerScripts")
-        if ps then
-            for _, d in ipairs(ps:GetDescendants()) do
-                local n = d.Name:lower()
-                if (n:find("devicecheck") or n:find("anticheat") or n:find("anti_cheat")
-                    or n:find("security") or n:find("bac") or n:find("detector"))
-                   and (d:IsA("LocalScript") or d:IsA("ModuleScript")) then
-                    kill(d, "ps.")
-                end
-            end
-        end
-
-        if mode == "full" and getgc then
-            local hits = 0
-            pcall(function()
-                for _, v in pairs(getgc(true)) do
-                    if type(v) == "table" then
-                        for _, k in ipairs({"AntiCheat", "AntiCheatEnabled", "BAC", "BACEnabled"}) do
-                            if rawget(v, k) == true then rawset(v, k, false) hits = hits + 1 end
-                        end
-                    end
-                end
+local function makeDraggable(frame, handle)
+    handle = handle or frame
+    local dragging, dragInput, dragStart, startPos
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging, dragStart, startPos = true, input.Position, frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
             end)
-            if hits > 0 and not seen["gc"] then seen["gc"] = true killed[#killed+1] = "gc:" .. hits end
-        end
-
-        if not silent then
-            Diag.bypass = (#killed > 0) and ("[" .. mode .. "] " .. table.concat(killed, ", ")) or ("[" .. mode .. "] не найдено")
-        end
-        return newCount
-    end
-
-    function AC.bypassText()
-        return Diag.bypass ~= "" and Diag.bypass or "не запускался"
-    end
-
-    local ORDER = {"Keypress", "KeypressAlt", "Mouse", "Exec", "Remote"}
-    function AC.nextMethod()
-        local i = 1
-        for k, v in ipairs(ORDER) do if v == Config.Mode then i = k end end
-        Config.Mode = ORDER[(i % #ORDER) + 1]
-        Diag.att, Diag.landed = 0, 0
-        UIset.refresh()
-        AC.logKick("auto-method -> " .. Config.Mode)
-        saveConfig()
-        return Config.Mode
-    end
-end
-
---=====================================================================
---  AUTO PARRY
---=====================================================================
-local AutoParry = {}
-do
-    local bootTime   = os.clock()
-    local lastFrame  = os.clock()
-    local lastPress  = 0
-    local trackedBall, hits, spam = nil, 0, false
-    local pending, held, holdDur, parried = false, false, 0.03, false
-    local ballJitter, ballFocus, ballSkip = 0, 0, false
-    local pings = {}
-    local posHist = {}
-    local probe, attempts, landed = nil, 0, 0
-    local methodTried = false
-
-    local cachedRemote, cachedRelease
-    local function getRemote()
-        if cachedRemote and cachedRemote.Parent then return cachedRemote, cachedRelease end
-        local rem = ReplicatedStorage:FindFirstChild("Remotes")
-        if rem then
-            for _, d in ipairs(rem:GetDescendants()) do
-                if d:IsA("RemoteEvent") then
-                    local n = d.Name:lower()
-                    if n == "parrybuttonpress" then cachedRemote = d
-                    elseif n == "parrybuttonrelease" then cachedRelease = d end
-                end
-            end
-        end
-        if not cachedRemote then
-            for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-                if d:IsA("RemoteEvent") and d.Name:lower() == "parrybuttonpress" then cachedRemote = d end
-            end
-        end
-        return cachedRemote, cachedRelease
-    end
-
-    local function getPing()
-        local ok, v = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-        v = (ok and typeof(v) == "number") and v or 60
-        pings[#pings+1] = v
-        if #pings > 12 then table.remove(pings, 1) end
-        local s = 0
-        for _, p in ipairs(pings) do s = s + p end
-        return s / #pings
-    end
-    AutoParry.getPing = getPing
-
-    local function ballVel(ball)
-        local now = os.clock()
-        local av = ball.AssemblyLinearVelocity
-        local h = posHist[ball]
-        local v = av
-        if v.Magnitude < 1 and h then
-            local dt = now - h.t
-            if dt > 0.001 and dt < 0.2 then
-                local d = (ball.Position - h.p) / dt
-                if d.Magnitude > 1 then v = d end
-            end
-        end
-        if v.Magnitude < 1 then
-            local z = ball:FindFirstChild("zoomies")
-            if z and z:IsA("LinearVelocity") then v = z.VectorVelocity end
-        end
-        posHist[ball] = {p = ball.Position, t = now}
-        return v
-    end
-
-    local function screenCenter()
-        local cam = Workspace.CurrentCamera
-        local vs = cam and cam.ViewportSize or Vector2.new(1280, 720)
-        return math.floor(vs.X / 2), math.floor(vs.Y / 2)
-    end
-
-    local function rawDown()
-        local m = Config.Mode
-        if m == "Mouse" then
-            local x, y = screenCenter()
-            pcall(function() VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0) end)
-        elseif m == "Exec" and keypress then
-            pcall(keypress, Enum.KeyCode.F)
-        elseif m == "KeypressAlt" then
-            pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, true, false) end)
-        else
-            pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, false) end)
-        end
-    end
-    local function rawUp()
-        local m = Config.Mode
-        if m == "Mouse" then
-            local x, y = screenCenter()
-            pcall(function() VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
-        elseif m == "Exec" and keyrelease then
-            pcall(keyrelease, Enum.KeyCode.F)
-        else
-            pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, false) end)
-        end
-    end
-
-    local function press()
-        if Config.Mode == "Remote" then
-            local r, rel = getRemote()
-            if r then pcall(function() r:FireServer() end) end
-            if rel and not Config.HoldPress then
-                task.delay(holdDur, function() pcall(function() rel:FireServer() end) end)
-            end
-            return
-        end
-        if Config.HoldPress then rawDown() held = true else rawDown() rawUp() end
-    end
-
-    function AutoParry.test()
-        holdDur = 0.05
-        lastPress = os.clock()
-        if Config.Mode == "Remote" then press() else rawDown() held = true end
-    end
-
-    local function fire(now)
-        if parried then return false end
-        if now - lastPress < Config.MinGap then return false end
-        if not AC.allowRate(now) then return false end
-        if not AC.allowMinute(now) then return false end
-        lastPress = now
-        parried = true
-        hits = hits + 1
-        Diag.parries = Diag.parries + 1
-        Diag.hits = hits
-        holdDur = Config.HoldMin + math.random() * (Config.HoldMax - Config.HoldMin)
-        press()
-        if trackedBall then probe = {b = trackedBall, t = now} end
-        attempts = attempts + 1
-        Diag.att, Diag.landed = attempts, landed
-        return true
-    end
-
-    local function getBall(hrp)
-        local folder = Workspace:FindFirstChild("Balls")
-        if not folder then return nil, nil end
-        local best, bestT, fb, fbT = nil, math.huge, nil, math.huge
-        for _, b in ipairs(folder:GetChildren()) do
-            if b:IsA("BasePart") and b:GetAttribute("realBall") == true then
-                local vel = ballVel(b)
-                if vel.Magnitude >= Config.MinSpeed then
-                    local t = timeToImpact(b.Position, vel, hrp.Position, Config.ParryRange + 3)
-                    if t then
-                        local perp, along = missDistance(b.Position, vel, hrp.Position)
-                        if along > 0 and perp <= Config.PerpTol and t < bestT then
-                            bestT, best = t, b
-                        end
-                        if t < fbT then fbT, fb = t, b end
-                    end
-                end
-            end
-        end
-        return (best or fb), (best and bestT or nil)
-    end
-
-    local function isTargeted(char, ball, ppos, pos, vel)
-        local t = ball:GetAttribute("target")
-        if t ~= nil then return (t == LocalPlayer.Name or t == LocalPlayer), true end
-        local tc = char:GetAttribute("Targeted")
-        if tc ~= nil then return tc == true, true end
-        if char:FindFirstChild("Highlight") then return true, true end
-        local tb = ball:GetAttribute("Targeted")
-        if tb ~= nil then return tb == true, true end
-        return ((ppos - pos).Unit):Dot(vel.Unit) > 0.3, false
-    end
-
-    function AutoParry.reset()
-        if held then rawUp(); held = false end
-        pending, trackedBall, hits, spam, parried = false, nil, 0, false, false
-        Diag.latched = false
-    end
-
-    function AutoParry.zeroStats()
-        attempts, landed = 0, 0
-        Diag.att, Diag.landed = 0, 0
-        methodTried = false
-    end
-
-    local function step()
-        local now = os.clock()
-        local dt = now - lastFrame
-        lastFrame = now
-        AutoParry.lastStep = now
-
-        if held and (now - lastPress) > holdDur then rawUp(); held = false end
-
-        local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-
-        if probe then
-            local pb = probe.b
-            if not pb or not pb.Parent or not hrp then
-                probe = nil
-            else
-                local rel = hrp.Position - pb.Position
-                local d = rel.Magnitude
-                local dir = rel.Unit:Dot(pb.AssemblyLinearVelocity.Unit)
-                if d < Config.ParryRange + 20 and dir < -0.2 then
-                    landed = landed + 1
-                    Diag.landed = landed
-                    probe = nil
-                elseif now - probe.t > 0.7 then
-                    probe = nil
-                end
-            end
-            if Config.AutoMethod and not methodTried and attempts >= 12 and landed == 0 then
-                methodTried = true
-                AC.nextMethod()
-            end
-            if attempts > 40 then attempts, landed = attempts - 40, math.max(0, landed - 40) end
-        end
-
-        if not Config.AutoParry then Diag.status = "выкл" return end
-        if now - bootTime < Config.StartupDelay then Diag.status = "старт" return end
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if not hrp or not hum or hum.Health <= 0 then Diag.status = "мёртв" return end
-
-        local ball, tti = getBall(hrp)
-        if not ball then Diag.status = "нет мяча" Diag.real = false Diag.tti = 0 return end
-        Diag.real = true
-
-        local pos, ppos = ball.Position, hrp.Position
-        local vel = ballVel(ball)
-        local speed = vel.Magnitude
-        local dist = (ppos - pos).Magnitude
-        Diag.dist, Diag.tti = dist, tti or -1
-
-        if parried and dist > Config.ParryRange + 12 then parried = false end
-        Diag.latched = parried
-
-        if Config.DesyncGuard and Config.WriteAttr then
-            local last = ball:GetAttribute("__ssLast")
-            if last and (pos - last).Magnitude > 150 then
-                ball:SetAttribute("__ssLast", pos)
-                Diag.status = "десинк" return
-            end
-            ball:SetAttribute("__ssLast", pos)
-        end
-
-        if speed < Config.MinSpeed then Diag.status = "стоит" return end
-
-        if ball ~= trackedBall then
-            trackedBall = ball
-            hits, spam, pending, parried = 0, false, false, false
-            if Config.Humanize then
-                ballJitter = gauss() * Config.HumanJitter
-                ballFocus  = gauss() * Config.HumanAccSpread
-                ballSkip   = math.random() * 100 < Config.MissChance
-            else
-                ballJitter, ballFocus, ballSkip = 0, 0, false
-            end
-        end
-        Diag.hits = hits
-
-        local targeted, known = isTargeted(char, ball, ppos, pos, vel)
-        Diag.target, Diag.attr = targeted, known
-
-        local perp, along = missDistance(pos, vel, ppos)
-        Diag.perp = perp
-
-        if Config.RequireAttr and not known then Diag.status = "нет атрибута" return end
-        if Config.StrictTarget and known and not targeted then Diag.status = "не мой" return end
-        if along <= 0 then Diag.status = "уже прошёл" return end
-        if perp > Config.PerpTol then Diag.status = string.format("мимо %.0f", perp) return end
-
-        local aggr = AC.aggression()
-        local warm = math.max(0, 1 - (now - bootTime) / math.max(Config.Warmup, 0.1))
-        if warm > 0 then aggr = math.min(aggr, 0.5 + 0.5 * (1 - warm)) end
-        Diag.aggr = aggr
-
-        if ballSkip and aggr > 0.4 then Diag.status = "пропуск" return end
-
-        local acc = Config.Accuracy
-        if Config.AccRand then acc = acc + math.random(-Config.AccRandAmt, Config.AccRandAmt) end
-        acc = math.clamp(acc, 1, 100)
-
-        local instant = speed >= Config.InstantSpeed and warm <= 0
-        local delay   = (instant and aggr > 0.6) and 0 or Config.TriggerbotDelay
-        local up      = (getPing() / 1000) * 0.5 * Config.PingFactor
-        local inR     = (Config.ParryRange * 2) / math.max(speed, 1)
-        local jit     = (ballJitter + ballFocus) * (2 - aggr)
-        if math.random() * 100 < Config.HumanPausePct then
-            jit = jit + Config.HumanPause * math.random()
-        end
-
-        local early  = up + delay
-        local late   = math.max(early - inR * 0.7, 0.004)
-        local k      = acc / 100
-        local budget = early + (late - early) * k + jit
-        budget = math.max(math.min(budget, early), 0.004)
-        Diag.window, Diag.serverWin = budget, early
-
-        if tti == nil then
-            if dist <= Config.ParryRange and along > 0 then
-                if not parried and not pending and (now - lastPress) >= Config.Cooldown then fire(now) end
-            end
-            Diag.status = "в зоне" return
-        end
-
-        if speed >= Config.PredictionSpam then spam = true end
-        local spamNow = (spam or (Config.DynThreshold and hits >= Config.DynHits)) and aggr > 0.45
-
-        if spamNow then
-            if not parried and tti <= budget and (now - lastPress) >= Config.SpamRate then fire(now) end
-            Diag.status = "спам"
-            return
-        end
-
-        if parried then Diag.status = "уже отбит" return end
-        if (now - lastPress) < Config.Cooldown then Diag.status = "кулдаун" return end
-        if tti > budget then Diag.status = string.format("лети %0.2f", tti) return end
-
-        if delay == 0 then
-            fire(now)
-            Diag.status = "ПАРРИ"
-        else
-            if not pending then
-                pending = true
-                Diag.status = "триггер"
-                task.delay(delay, function()
-                    pending = false
-                    if Config.AutoParry and not parried then fire(os.clock()) end
-                end)
-            end
-        end
-    end
-
-    RunService.RenderStepped:Connect(function()
-        local ok, err = pcall(step)
-        if not ok then Diag.status = "ошибка" warn("[SleepScript]", err) end
-    end)
-
-    UserInputService.InputBegan:Connect(function(i, gp)
-        if gp then return end
-        if i.KeyCode == Enum.KeyCode.F or i.UserInputType == Enum.UserInputType.MouseButton1 then
-            lastPress = os.clock()
         end
     end)
-
-    LocalPlayer.CharacterAdded:Connect(function()
-        task.wait(0.2)
-        AutoParry.reset()
-        bootTime = os.clock()
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
     end)
-end
-
---=====================================================================
---  ANTI-DETECTION CORE
---=====================================================================
-do
-    local rate, minute = {}, {}
-    local paranoidUntil = 0
-    local busy, attempt = false, 0
-    local lastJob = game.JobId
-    local kickStamps = {}
-
-    AC.kicks = 0
-    AC.paranoid = false
-    AC.log = {}
-    AC.lastKickAt = 0
-
-    if readfile and isfile then
-        pcall(function()
-            if isfile(LOG_PATH) then AC.log = HttpService:JSONDecode(readfile(LOG_PATH)) end
-        end)
-    end
-
-    local function saveLog()
-        if writefile then pcall(writefile, LOG_PATH, HttpService:JSONEncode(AC.log)) end
-    end
-
-    function AC.aggression()
-        if not AC.paranoid then return 1 end
-        local left = paranoidUntil - os.clock()
-        if left <= 0 then AC.paranoid = false return 1 end
-        local s = Config.ParanoidScale
-        return s + (1 - s) * (1 - left / math.max(Config.ParanoidTime, 0.1))
-    end
-
-    function AC.allowRate(now)
-        while rate[1] and now - rate[1] > 1 do table.remove(rate, 1) end
-        local cap = math.max(2, math.floor(Config.MaxParryPerSec * (0.4 + 0.6 * AC.aggression())))
-        if #rate >= cap then return false end
-        rate[#rate+1] = now
-        Diag.rate = #rate
-        return true
-    end
-
-    function AC.allowMinute(now)
-        while minute[1] and now - minute[1] > 60 do table.remove(minute, 1) end
-        local cap = math.max(10, math.floor(Config.MaxParryPerMin * (0.5 + 0.5 * AC.aggression())))
-        if #minute >= cap then return false end
-        minute[#minute+1] = now
-        Diag.rateMin = #minute
-        return true
-    end
-
-    function AC.enterParanoid()
-        if not Config.ParanoidOnKick then return end
-        AC.paranoid = true
-        paranoidUntil = os.clock() + Config.ParanoidTime
-    end
-
-    function AC.readReason()
-        local parts = {}
-        for _, root in ipairs({CoreGui, gethui()}) do
-            local p = root and root:FindFirstChild("RobloxPromptGui")
-            if p then
-                for _, d in ipairs(p:GetDescendants()) do
-                    if d:IsA("TextLabel") and d.Text ~= "" and #d.Text < 220 then
-                        parts[#parts+1] = d.Text
-                    end
-                end
-            end
-        end
-        local s = table.concat(parts, " | ")
-        if s == "" then s = "unknown" end
-        return s
-    end
-
-    function AC.logKick(reason)
-        AC.log[#AC.log+1] = {
-            t = os.time(), clock = os.date("%H:%M:%S"), reason = reason,
-            uptime = math.floor(os.clock()), mode = Config.Mode,
-            bypass = Config.BacBypassMode,
-            flags = string.format("pm%d ps%d cd%.2f r%.0f tol%d h%d w%d",
-                Config.MaxParryPerMin, Config.MaxParryPerSec, Config.Cooldown,
-                Config.ParryRange, Config.PerpTol, Config.HoldPress and 1 or 0, Config.Warmup),
-        }
-        while #AC.log > 40 do table.remove(AC.log, 1) end
-        saveLog()
-    end
-
-    function AC.getLogText(n)
-        local out = {}
-        local from = math.max(1, #AC.log - (n or 8) + 1)
-        for i = #AC.log, from, -1 do
-            local e = AC.log[i]
-            out[#out+1] = string.format("%s %s", e.clock, tostring(e.reason):sub(1, 40))
-            if e.flags then out[#out+1] = "   " .. e.flags end
-        end
-        if #out == 0 then return "пусто" end
-        return table.concat(out, "\n")
-    end
-
-    local function looksLikeKick(r)
-        r = r:lower()
-        return r:find("parry") or r:find("spam") or r:find("fast")
-            or r:find("auto") or r:find("cheat") or r:find("detect") or r:find("exploit")
-    end
-
-    local function tuneDown()
-        if not Config.AutoTune then return end
-        Config.MaxParryPerMin = math.max(12, math.floor(Config.MaxParryPerMin) - 5)
-        Config.MaxParryPerSec = math.max(3, math.floor(Config.MaxParryPerSec) - 1)
-        Config.Cooldown       = math.min(0.7, Config.Cooldown + 0.05)
-        Config.MissChance     = math.min(25, Config.MissChance + 3)
-        Config.PerpTol        = math.max(4, Config.PerpTol - 1)
-        Config.Humanize       = true
-        local s = UIset.sliders
-        if s["Лимит парри/мин"] then s["Лимит парри/мин"](Config.MaxParryPerMin) end
-        if s["Лимит парри/сек"] then s["Лимит парри/сек"](Config.MaxParryPerSec) end
-        if s["Кулдаун"] then s["Кулдаун"](Config.Cooldown) end
-        if s["Промах траектории"] then s["Промах траектории"](Config.PerpTol) end
-        if UIset.toggles["Humanizer"] then UIset.toggles["Humanizer"](true) end
-        saveConfig()
-    end
-
-    function AC.rejoin(reason)
-        if busy then return end
-        busy = true
-        attempt = attempt + 1
-        local wait = math.min(2 ^ (attempt - 1), 20)
-        task.wait(1 + math.random() * 0.6)
-        local ok = pcall(function()
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, lastJob, LocalPlayer)
-        end)
-        if not ok then pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end) end
-        task.wait(wait)
-        busy = false
-        if attempt >= Config.RejoinAttempts then attempt = 0 end
-    end
-
-    function AC.onKick(reason)
-        AC.kicks = AC.kicks + 1
-        AC.lastKickAt = os.clock()
-        Diag.kicks = AC.kicks
-        AC.logKick(reason)
-        AutoParry.reset()
-        AC.enterParanoid()
-        if looksLikeKick(reason) then tuneDown() end
-
-        kickStamps[#kickStamps+1] = os.clock()
-        while kickStamps[1] and os.clock() - kickStamps[1] > 120 do table.remove(kickStamps, 1) end
-        if #kickStamps >= 3 and not Diag.clean then
-            kickStamps = {}
-            AC.cleanMode()
-        end
-
-        if Config.Rejoin then AC.rejoin(reason) end
-    end
-
-    function AC.antiAfk()
-        local cam = Workspace.CurrentCamera
-        if not cam then return end
-        pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:Button2Down(Vector2.new(0,0), cam.CFrame)
-            task.wait(0.35)
-            VirtualUser:Button2Up(Vector2.new(0,0), cam.CFrame)
-        end)
-    end
-
-    pcall(function()
-        TextChatService.MessageReceived:Connect(function(msg)
-            local txt = tostring(msg.Text or "")
-            local l = txt:lower()
-            if l:find("anticheat") or l:find("anti-cheat") or l:find("parry")
-                or l:find("kicked") or l:find("detect") or l:find("exploit") then
-                AC.logKick("chat: " .. txt:sub(1, 72))
-            end
-        end)
-    end)
-
-    LocalPlayer.AncestryChanged:Connect(function(_, parent)
-        if parent == nil then AC.onKick(AC.readReason()) end
-    end)
-    LocalPlayer.Idled:Connect(function()
-        if Config.AntiAfk then AC.antiAfk() end
-    end)
-
-    -- чистый режим: только парри, всё остальное выключено
-    function AC.cleanMode()
-        Diag.clean = true
-        Config.BacBypassMode = "off"
-        Config.FpsBoost = false
-        Config.CutFx = false
-        Config.UnlockFps = false
-        Config.FovEnabled = false
-        Config.Korblox = false
-        Config.Headless = false
-        Config.DesyncGuard = false
-        Config.WriteAttr = false
-        Config.Humanize = true
-        Config.HumanJitter = 0.07
-        Config.HumanPausePct = 18
-        Config.MissChance = 12
-        Config.MaxParryPerMin = 15
-        Config.MaxParryPerSec = 3
-        Config.Cooldown = 0.55
-        Config.MinGap = 0.2
-        Config.ParryRange = 7
-        Config.PerpTol = 5
-        Config.Accuracy = 70
-        Config.Warmup = 25
-        Config.StartupDelay = 6
-        Config.PredictionSpam = 999
-        Config.InstantSpeed = 999
-        Config.DynThreshold = false
-        Config.TriggerbotDelay = 0.04
-        Config.ParanoidOnKick = true
-        Fps.Set(false)
-        Skin.SetKorblox(false)
-        Skin.SetHeadless(false)
-        UIset.refresh()
-        AC.logKick("-> ЧИСТЫЙ РЕЖИМ")
-        saveConfig()
-    end
-
-    task.spawn(function()
-        local tick = 0
-        while true do
-            task.wait(0.5)
-            tick = tick + 1
-            if Config.Watchdog then
-                local idle = os.clock() - (AutoParry.lastStep or os.clock())
-                if Config.AutoParry and idle > 1.2 then
-                    AutoParry.reset()
-                    Diag.status = "watchdog"
-                end
-                if game.JobId ~= lastJob then
-                    lastJob = game.JobId
-                    attempt = 0
-                    AutoParry.reset()
-                    if Config.BacBypassMode ~= "off" then task.wait(2) AC.bypassBAC() end
-                end
-            end
-            -- периодический ре-скан BAC
-            if tick % 10 == 0 and Config.BacBypassMode ~= "off" then
-                local n = AC.bypassBAC(true)
-                if n and n > 0 then AC.logKick("bac: снесено ещё " .. n) end
-            end
-            if AC.paranoid and os.clock() > paranoidUntil then AC.paranoid = false end
-            Diag.aggr = AC.aggression()
-            while minute[1] and os.clock() - minute[1] > 60 do table.remove(minute, 1) end
-            Diag.rateMin = #minute
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local d = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                       startPos.Y.Scale, startPos.Y.Offset + d.Y)
         end
     end)
 end
 
---=====================================================================
---  FOV + FPS
---=====================================================================
-RunService.RenderStepped:Connect(function()
-    if not Config.FovEnabled then return end
-    local cam = Workspace.CurrentCamera
-    if cam and cam.FieldOfView ~= Config.Fov then cam.FieldOfView = Config.Fov end
+--=============================================================
+--  СОЗДАНИЕ GUI
+--=============================================================
+if getgenv().SleepScriptGui then getgenv().SleepScriptGui:Destroy() end
+if getgenv().SleepScriptOverlay then getgenv().SleepScriptOverlay:Destroy() end
+
+local gui = new("ScreenGui", {
+    Name = "SleepScript", ResetOnSpawn = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true,
+})
+getgenv().SleepScriptGui = gui
+
+pcall(function()
+    if syn and syn.protect_gui then syn.protect_gui(gui) end
+end)
+if not gui.Parent then
+    gui.Parent = (gethui and gethui()) or CoreGui
+end
+
+-- тень
+local shadow = new("Frame", {
+    Parent = gui, Size = UDim2.fromOffset(560, 360),
+    Position = UDim2.new(0.5, -280, 0.5, -180),
+    BackgroundColor3 = Color3.new(0,0,0), BackgroundTransparency = 0.55,
+    BorderSizePixel = 0,
+})
+corner(shadow, 16)
+
+local main = new("Frame", {
+    Parent = gui, Name = "Main",
+    Size = UDim2.fromOffset(560, 360),
+    Position = UDim2.new(0.5, -280, 0.5, -180),
+    BackgroundColor3 = C.bg, BorderSizePixel = 0,
+    ClipsDescendants = true, Active = true,
+})
+corner(main, 14)
+new("UIGradient", {Rotation = 20, Color = ColorSequence.new(C.bg, C.bg2)}, main)
+new("UIStroke", {Color = C.stroke, Thickness = 1, Transparency = 0.3}, main)
+makeDraggable(main)
+
+-- хедер
+local header = new("Frame", {
+    Parent = main, Size = UDim2.new(1, 0, 0, 52),
+    BackgroundTransparency = 1, Active = true,
+})
+makeDraggable(main, header)
+
+new("TextLabel", {
+    Parent = header, Size = UDim2.new(1, -120, 0, 18), Position = UDim2.fromOffset(18, 12),
+    BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = "SleepScript",
+    TextSize = 17, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
+})
+local sub = new("TextLabel", {
+    Parent = header, Size = UDim2.new(1, -120, 0, 14), Position = UDim2.fromOffset(18, 30),
+    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.0",
+    TextSize = 11, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
+})
+new("UIGradient", {Color = ColorSequence.new(C.accent, C.accent2)}, sub)
+
+-- кнопка свернуть
+local minBtn = new("TextButton", {
+    Parent = header, Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, -76, 0, 12),
+    BackgroundColor3 = C.off, Text = "—", Font = Enum.Font.GothamBold,
+    TextSize = 15, TextColor3 = C.text, AutoButtonColor = false,
+})
+corner(minBtn, 8)
+
+local closeBtn = new("TextButton", {
+    Parent = header, Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, -42, 0, 12),
+    BackgroundColor3 = C.off, Text = "×", Font = Enum.Font.GothamBold,
+    TextSize = 17, TextColor3 = C.text, AutoButtonColor = false,
+})
+corner(closeBtn, 8)
+
+-- сайдбар
+local sidebar = new("Frame", {
+    Parent = main, Size = UDim2.new(0, 150, 1, -62), Position = UDim2.fromOffset(0, 62),
+    BackgroundColor3 = C.bg, BackgroundTransparency = 0.35, BorderSizePixel = 0,
+})
+new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder})
+new("UIPadding", {
+    PaddingTop = UDim.new(0, 6), PaddingLeft = UDim.new(0, 10),
+    PaddingRight = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
+})
+
+-- контейнер страниц
+local contentHolder = new("Frame", {
+    Parent = main, Size = UDim2.new(1, -160, 1, -74), Position = UDim2.fromOffset(155, 64),
+    BackgroundTransparency = 1,
+})
+
+local pages, tabs, currentTab = {}, {}, nil
+local order = 0
+local function nextOrder() order += 1; return order end
+
+local function CreatePage()
+    local p = new("ScrollingFrame", {
+        Parent = contentHolder, Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+        CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = C.accent,
+        Visible = false,
+    })
+    new("UIListLayout", {Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder})
+    return p
+end
+
+local function CreateTab(name, display)
+    local btn = new("TextButton", {
+        Parent = sidebar, Size = UDim2.new(1, 0, 0, 30), LayoutOrder = nextOrder(),
+        BackgroundColor3 = C.off, BackgroundTransparency = 0.55,
+        Text = "  " .. (display or name), Font = Enum.Font.GothamMedium,
+        TextSize = 13, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
+        AutoButtonColor = false,
+    })
+    corner(btn, 8)
+    btn.MouseButton1Click:Connect(function()
+        for n, p in pairs(pages) do p.Visible = (n == name) end
+        for n, b in pairs(tabs) do
+            TweenService:Create(b, TweenInfo.new(0.18), {
+                BackgroundColor3 = (n == name) and C.accent or C.off,
+                BackgroundTransparency = (n == name) and 0 or 0.55,
+                TextColor3 = (n == name) and Color3.new(1,1,1) or C.dim,
+            }):Play()
+        end
+        currentTab = name
+    end)
+    tabs[name] = btn
+    pages[name] = CreatePage()
+    return pages[name]
+end
+
+local function CreateSection(parent, title)
+    local sec = new("Frame", {
+        Parent = parent, Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = nextOrder(),
+        BackgroundColor3 = C.card, BackgroundTransparency = 0.25, BorderSizePixel = 0,
+    })
+    corner(sec, 10)
+    new("UIStroke", {Color = C.stroke, Transparency = 0.55, Thickness = 1}, sec)
+    new("UIPadding", {
+        PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
+        PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10),
+    })
+    new("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder})
+    if title then
+        new("TextLabel", {
+            Parent = sec, Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1,
+            Font = Enum.Font.GothamBold, Text = title, TextSize = 12,
+            TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
+            LayoutOrder = nextOrder(),
+        })
+    end
+    return sec
+end
+
+local Sync = {}  -- реестр для синхронизации тумблеров с хоткеями
+
+local function CreateToggle(parent, name, default, callback)
+    local row = new("Frame", {
+        Parent = parent, Size = UDim2.new(1, 0, 0, 24),
+        BackgroundTransparency = 1, LayoutOrder = nextOrder(),
+    })
+    new("TextLabel", {
+        Parent = row, Size = UDim2.new(1, -50, 1, 0), BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham, Text = name, TextSize = 12,
+        TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    local btn = new("TextButton", {
+        Parent = row, Size = UDim2.fromOffset(38, 20),
+        Position = UDim2.new(1, -38, 0.5, -10),
+        BackgroundColor3 = default and C.accent or C.off,
+        Text = "", AutoButtonColor = false,
+    })
+    corner(btn, 10)
+    local knob = new("Frame", {
+        Parent = btn, Size = UDim2.fromOffset(16, 16),
+        Position = default and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8),
+        BackgroundColor3 = Color3.fromRGB(255,255,255), BorderSizePixel = 0,
+    })
+    corner(knob, 8)
+
+    local state = default
+    local function render(fire)
+        TweenService:Create(btn, TweenInfo.new(0.2), {
+            BackgroundColor3 = state and C.accent or C.off }):Play()
+        TweenService:Create(knob, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Position = state and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8) }):Play()
+        if fire and callback then callback(state) end
+    end
+    btn.MouseButton1Click:Connect(function() state = not state; render(true) end)
+    local obj = { Set = function(v, fire) state = v; render(fire) end, Get = function() return state end }
+    Sync[name] = obj
+    return obj
+end
+
+local function CreateSlider(parent, name, min, max, default, decimals, callback)
+    local holder = new("Frame", {
+        Parent = parent, Size = UDim2.new(1, 0, 0, 36),
+        BackgroundTransparency = 1, LayoutOrder = nextOrder(),
+    })
+    new("TextLabel", {
+        Parent = holder, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham, Text = name, TextSize = 12,
+        TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    local val = new("TextLabel", {
+        Parent = holder, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium, Text = tostring(default), TextSize = 12,
+        TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Right,
+    })
+    local bar = new("TextButton", {
+        Parent = holder, Size = UDim2.new(1, 0, 0, 6), Position = UDim2.new(0, 0, 1, -8),
+        BackgroundColor3 = C.off, Text = "", AutoButtonColor = false,
+    })
+    corner(bar, 3)
+    local fill = new("Frame", {Parent = bar, Size = UDim2.new(0, 0, 1, 0),
+        BackgroundColor3 = C.accent, BorderSizePixel = 0})
+    corner(fill, 3)
+    local knob = new("Frame", {Parent = bar, Size = UDim2.fromOffset(12, 12),
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
+        BackgroundColor3 = Color3.fromRGB(255,255,255), BorderSizePixel = 0})
+    corner(knob, 6)
+
+    local value = default
+    local function set(v, fire)
+        value = math.clamp(v, min, max)
+        local a = (value - min) / (max - min)
+        fill.Size = UDim2.new(a, 0, 1, 0)
+        knob.Position = UDim2.new(a, 0, 0.5, 0)
+        local m = 10 ^ (decimals or 0)
+        val.Text = tostring(math.floor(value * m + 0.5) / m)
+        if fire and callback then callback(value) end
+    end
+    local dragging = false
+    local function update(input)
+        local a = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+        set(min + (max - min) * a, true)
+    end
+    bar.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then dragging = true; update(i) end
+    end)
+    bar.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement
+        or i.UserInputType == Enum.UserInputType.Touch) then update(i) end
+    end)
+    set(default, false)
+    return { Set = function(v) set(v, false) end, Get = function() return value end }
+end
+
+local function CreateButton(parent, name, callback, col)
+    local btn = new("TextButton", {
+        Parent = parent, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = nextOrder(),
+        BackgroundColor3 = col or C.off, Text = name,
+        Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = C.text,
+        AutoButtonColor = false,
+    })
+    corner(btn, 8)
+    btn.MouseButton1Click:Connect(callback)
+    btn.MouseEnter:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = C.accent}):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = col or C.off}):Play()
+    end)
+    return btn
+end
+
+local function CreateTextbox(parent, placeholder, default, callback)
+    local box = new("TextBox", {
+        Parent = parent, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = nextOrder(),
+        BackgroundColor3 = C.off, Text = default or "", PlaceholderText = placeholder,
+        Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = C.text,
+        PlaceholderColor3 = C.dim, ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left,
+    })
+    corner(box, 8)
+    new("UIPadding", {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)}, box)
+    box.FocusLost:Connect(function() if callback then callback(box.Text) end end)
+    return box
+end
+
+--=============================================================
+--  СТРАНИЦЫ
+--=============================================================
+local pageParry  = CreateTab("AutoParry", "AutoParry")
+local pageVis    = CreateTab("Visuals",   "Visuals")
+local pageSkin   = CreateTab("Skin",      "Скин меча")
+local pagePerf   = CreateTab("Bypass",    "Bypass / FPS")
+local pageOv     = CreateTab("Overlay",   "Оверлей")
+
+--============ AUTOPARRY ============
+local s1 = CreateSection(pageParry, "PARRY")
+CreateToggle(s1, "AutoParry", SS.AutoParry, function(v) SS.AutoParry = v end)
+CreateToggle(s1, "ParryVisuals", SS.ParryVisuals, function(v) SS.ParryVisuals = v end)
+
+local s2 = CreateSection(pageParry, "ТАЙМИНГ")
+CreateToggle(s2, "PingBased", SS.PingBased, function(v) SS.PingBased = v end)
+CreateSlider(s2, "PingBasedOffset", 0, 5, SS.PingBasedOffset, 2, function(v) SS.PingBasedOffset = v end)
+CreateSlider(s2, "DistanceToParry", 0.05, 3, SS.DistanceToParry, 2, function(v) SS.DistanceToParry = v end)
+CreateSlider(s2, "EmergencyRadius", 1, 30, SS.EmergencyRadius, 0, function(v) SS.EmergencyRadius = v end)
+
+local s3 = CreateSection(pageParry, "КЛАШ")
+CreateSlider(s3, "ClashDistance", 5, 60, SS.ClashDistance, 0, function(v) SS.ClashDistance = v end)
+CreateSlider(s3, "ClashSpeed", 0.01, 0.2, SS.ClashSpeed, 2, function(v) SS.ClashSpeed = v end)
+CreateSlider(s3, "NormalSpeed", 0.01, 0.3, SS.NormalSpeed, 2, function(v) SS.NormalSpeed = v end)
+
+--============ VISUALS ============
+local v1 = CreateSection(pageVis, "КАМЕРА")
+CreateSlider(v1, "Field of View", 40, 120, SS.FOV, 0, function(v)
+    SS.FOV = v
+    if cam() then cam().FieldOfView = v end
 end)
 
-local Fps = {}
-do
-    local saved, hooked = {}, false
-    local function hide(o) if saved[o] == nil then saved[o] = o.Enabled end o.Enabled = false end
-    local function fx(o)
-        return o:IsA("ParticleEmitter") or o:IsA("Trail") or o:IsA("Beam")
-            or o:IsA("Smoke") or o:IsA("Fire") or o:IsA("Sparkles")
+local v2 = CreateSection(pageVis, "НЕБО")
+CreateToggle(v2, "CustomSky", SS.CustomSky, function(v)
+    SS.CustomSky = v
+    if v then ApplySky(SS.SkyId) else ApplySky(nil) end
+end)
+local skyBtns = new("Frame", {Parent = v2, Size = UDim2.new(1, 0, 0, 26),
+    BackgroundTransparency = 1, LayoutOrder = nextOrder()})
+new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder})
+
+local SKIES = {
+    Sunset = "rbxassetid://159454299",
+    Night  = "rbxassetid://57055771",
+    Cloudy = "rbxassetid://271042910",
+    Space  = "rbxassetid://133883647",
+}
+local i = 0
+for nm, id in pairs(SKIES) do
+    i += 1
+    local b = new("TextButton", {
+        Parent = skyBtns, Size = UDim2.fromOffset(62, 24), LayoutOrder = i,
+        BackgroundColor3 = C.off, Text = nm, Font = Enum.Font.Gotham,
+        TextSize = 11, TextColor3 = C.text, AutoButtonColor = false,
+    })
+    corner(b, 7)
+    b.MouseButton1Click:Connect(function()
+        SS.SkyId = id
+        if SS.CustomSky then ApplySky(id) end
+    end)
+end
+CreateTextbox(v2, "Свой Sky ID", SS.SkyId, function(t)
+    if t ~= "" then SS.SkyId = t; if SS.CustomSky then ApplySky(t) end end
+end)
+
+local v3 = CreateSection(pageVis, "ТЕЛО")
+CreateToggle(v3, "Headless", SS.Headless, function(v) SS.Headless = v; ApplyBody() end)
+CreateToggle(v3, "Korblox", SS.Korblox, function(v) SS.Korblox = v; ApplyBody() end)
+CreateTextbox(v3, "Korblox Mesh ID", SS.KorbloxMesh, function(t)
+    SS.KorbloxMesh = t
+    if SS.Korblox then ApplyBody() end
+end)
+
+--============ SKIN ============
+local sk1 = CreateSection(pageSkin, "ПОИСК")
+local searchBox = CreateTextbox(sk1, "Поиск скина...", "", function(t) RenderSkinList(t) end)
+CreateButton(sk1, "Обновить список скинов", function() BuildSkinDatabase(); RenderSkinList(searchBox.Text) end)
+CreateToggle(sk1, "SkinLock (не сбрасывать)", SS.SkinLock, function(v) SS.SkinLock = v end)
+CreateButton(sk1, "Сбросить скин", function() ApplySkin(nil, nil) end, Color3.fromRGB(70, 40, 40))
+
+local sk2 = CreateSection(pageSkin, "СПИСОК")
+local listFrame = new("ScrollingFrame", {
+    Parent = sk2, Size = UDim2.new(1, 0, 0, 190), LayoutOrder = nextOrder(),
+    BackgroundTransparency = 1, BorderSizePixel = 0,
+    CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollBarThickness = 3, ScrollBarImageColor3 = C.accent,
+})
+new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder})
+
+local sk3 = CreateSection(pageSkin, "ВРУЧНУЮ")
+CreateTextbox(sk3, "MeshId", "", function(t)
+    SS._mMesh = t; if t ~= "" then ApplySkin(t, SS._mTex) end
+end)
+CreateTextbox(sk3, "TextureId", "", function(t)
+    SS._mTex = t; if t ~= "" then ApplySkin(SS._mMesh, t) end
+end)
+
+--============ BYPASS / FPS ============
+local p1 = CreateSection(pagePerf, "АНТИЧИТ")
+CreateToggle(p1, "Bypass", SS.Bypass, function(v) SS.Bypass = v; ApplyBypass(v) end)
+new("TextLabel", {
+    Parent = p1, Size = UDim2.new(1, 0, 0, 28), BackgroundTransparency = 1,
+    Font = Enum.Font.Gotham, TextWrapped = true, TextSize = 11, TextColor3 = C.dim,
+    Text = "Блокирует кик, защищает GUI от античита, разрешает локальные CFrame-правки.",
+    LayoutOrder = nextOrder(),
+})
+
+local p2 = CreateSection(pagePerf, "ПРОИЗВОДИТЕЛЬНОСТЬ")
+CreateToggle(p2, "FPS Boost", SS.FPSBoost, function(v) SS.FPSBoost = v; ApplyFPSBoost(v) end)
+CreateToggle(p2, "Убрать эффекты", SS.NoEffects, function(v) SS.NoEffects = v; ApplyEffects(v) end)
+CreateToggle(p2, "Убрать аксессуары других", SS.NoAccessories, function(v) SS.NoAccessories = v; ApplyAccessories(v) end)
+CreateSlider(p2, "FPS Cap", 30, 360, SS.FPSCap, 0, function(v)
+    SS.FPSCap = v
+    pcall(function() if setfpscap then setfpscap(v) end end)
+end)
+
+--============ OVERLAY ============
+local o1 = CreateSection(pageOv, "ОТДЕЛЬНОЕ МЕНЮ")
+CreateToggle(o1, "Overlay (FPS / Ping)", SS.Overlay, function(v)
+    SS.Overlay = v
+    if getgenv().SleepScriptOverlay then getgenv().SleepScriptOverlay.Enabled = v end
+end)
+CreateToggle(o1, "График", SS.OverlayGraph ~= false, function(v) SS.OverlayGraph = v end)
+
+local o2 = CreateSection(pageOv, "КОНФИГ")
+CreateButton(o2, "Сохранить конфиг", function()
+    local ok = pcall(function()
+        writefile("SleepScript.json", HttpService:JSONEncode(SS))
+    end)
+    print(ok and "[SleepScript] Конфиг сохранён" or "[SleepScript] writefile недоступен")
+end)
+CreateButton(o2, "Загрузить конфиг", function()
+    local ok, data = pcall(function() return readfile("SleepScript.json") end)
+    if ok and data then
+        local t = HttpService:JSONDecode(data)
+        for k, v in pairs(t) do SS[k] = v end
+        print("[SleepScript] Конфиг загружен — перезапусти скрипт")
     end
-    function Fps.Set(on)
-        if on then
-            pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
-            if Config.UnlockFps then pcall(function() setfpscap(240) end) end
-            Lighting.GlobalShadows = false
-            Lighting.FogEnd = 1e5
-            pcall(function() Workspace.Terrain.Decoration = false end)
-            if Config.CutFx then
-                for _, d in ipairs(Workspace:GetDescendants()) do if fx(d) then hide(d) end end
-                if not hooked then
-                    hooked = true
-                    Workspace.DescendantAdded:Connect(function(d)
-                        if Config.FpsBoost and Config.CutFx and fx(d) then hide(d) end
+end)
+
+--=============================================================
+--  ЛОГИКА: МЕНЮ / СВОРАЧИВАНИЕ
+--=============================================================
+local function setMenuOpen(open)
+    if open then
+        main.Visible = true
+        main.Size = UDim2.fromOffset(46, 46)
+        TweenService:Create(main, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+            {Size = UDim2.fromOffset(560, 360)}):Play()
+        TweenService:Create(shadow, TweenInfo.new(0.3), {Size = UDim2.fromOffset(560, 360)}):Play()
+    else
+        TweenService:Create(main, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+            {Size = UDim2.fromOffset(46, 46)}):Play()
+        TweenService:Create(shadow, TweenInfo.new(0.22), {Size = UDim2.fromOffset(46, 46)}):Play()
+    end
+end
+
+local function collapseToggle()
+    SS.MenuOpen = not SS.MenuOpen
+    setMenuOpen(SS.MenuOpen)
+end
+minBtn.MouseButton1Click:Connect(collapseToggle)
+closeBtn.MouseButton1Click:Connect(collapseToggle)
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if UserInputService:GetFocusedTextBox() then return end
+    if input.KeyCode == Enum.KeyCode.Z then
+        collapseToggle()
+    elseif input.KeyCode == Enum.KeyCode.RightShift then
+        SS.AutoParry = not SS.AutoParry
+        if Sync["AutoParry"] then Sync["AutoParry"].Set(SS.AutoParry, false) end
+    end
+end)
+
+setMenuOpen(SS.MenuOpen)
+
+--=============================================================
+--  ЛОГИКА: НЕБО
+--=============================================================
+local function ApplySky(id)
+    local old = Lighting:FindFirstChild("SleepSky")
+    if old then old:Destroy() end
+    local orig = Lighting:FindFirstChildOfClass("Sky")
+    if orig then orig.Enabled = not (id ~= nil) end
+    if not id or id == "" then return end
+    local sky = new("Sky", {Name = "SleepSky", Parent = Lighting})
+    for _, p in pairs({"SkyboxBk","SkyboxDn","SkyboxFt","SkyboxLf","SkyboxRt","SkyboxUp"}) do
+        sky[p] = id
+    end
+end
+
+--=============================================================
+--  ЛОГИКА: HEADLESS / KORBLOX
+--=============================================================
+local function ApplyBody()
+    local ch = LP.Character
+    if not ch then return end
+    local head = ch:FindFirstChild("Head")
+    if head then
+        head.Transparency = SS.Headless and 1 or 0
+        for _, d in pairs(head:GetDescendants()) do
+            if d:IsA("Decal") or d:IsA("Texture") then
+                d.Transparency = SS.Headless and 1 or 0
+            end
+        end
+    end
+    if SS.Korblox then
+        local leg = ch:FindFirstChild("Right Leg")
+        if leg then
+            local mesh = leg:FindFirstChildOfClass("SpecialMesh")
+            if mesh then mesh.MeshId = SS.KorbloxMesh; mesh.TextureId = "" end
+            local dec = leg:FindFirstChildOfClass("Decal")
+            if dec then dec.Transparency = 1 end
+        else
+            for _, n in ipairs({"RightUpperLeg", "RightLowerLeg", "RightFoot"}) do
+                local part = ch:FindFirstChild(n)
+                if part and part:IsA("MeshPart") then
+                    pcall(function()
+                        part.MeshId = SS.KorbloxMesh
+                        part.TextureID = ""
                     end)
                 end
             end
-        else
-            for d, v in pairs(saved) do pcall(function() if d.Parent then d.Enabled = v end end) end
-            saved = {}
-            pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
-            pcall(function() setfpscap(60) end)
-            Lighting.GlobalShadows = true
-            pcall(function() Workspace.Terrain.Decoration = true end)
+        end
+    else
+        pcall(function() ch:FindFirstChild("Right Leg") end)
+    end
+end
+
+--=============================================================
+--  ЛОГИКА: FPS BOOST / ЭФФЕКТЫ
+--=============================================================
+local backup = {}
+local function ApplyFPSBoost(on)
+    if on then
+        backup = {
+            shadows = Lighting.GlobalShadows,
+            fog = Lighting.FogEnd,
+            diff = Lighting.EnvironmentDiffuseScale,
+            spec = Lighting.EnvironmentSpecularScale,
+        }
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 100000
+        Lighting.EnvironmentDiffuseScale = 0
+        Lighting.EnvironmentSpecularScale = 0
+        for _, v in pairs(Lighting:GetChildren()) do
+            if v:IsA("PostEffect") then v.Enabled = false end
+        end
+        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+        pcall(function() if setfpscap then setfpscap(SS.FPSCap) end end)
+    else
+        if backup.shadows ~= nil then
+            Lighting.GlobalShadows = backup.shadows
+            Lighting.FogEnd = backup.fog
+            Lighting.EnvironmentDiffuseScale = backup.diff
+            Lighting.EnvironmentSpecularScale = backup.spec
+        end
+        for _, v in pairs(Lighting:GetChildren()) do
+            if v:IsA("PostEffect") then v.Enabled = true end
+        end
+        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
+    end
+end
+
+local function ApplyEffects(on)
+    for _, v in pairs(workspace:GetDescendants()) do
+        if v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Beam") then
+            v.Enabled = not on
         end
     end
 end
 
---=====================================================================
---  SKIN
---=====================================================================
-local Skin = {}
-do
-    local KORBLOX_MESH = "rbxassetid://139607718"
-    local origHead, origAcc, origColor = {}, {}, {}
-    local function headAcc(a, head)
-        local h = a:FindFirstChild("Handle")
-        local w = h and h:FindFirstChildOfClass("Weld")
-        return w and w.Part1 == head
-    end
-    function Skin.SetHeadless(on)
-        local char = LocalPlayer.Character
-        local head = char and char:FindFirstChild("Head")
-        if not head then return end
-        if on then
-            origHead[head] = origHead[head] or head.Transparency
-            head.Transparency = 1
-            for _, d in ipairs(head:GetChildren()) do
-                if d:IsA("BasePart") or d:IsA("Decal") or d:IsA("SpecialMesh") then
-                    origHead[d] = origHead[d] or d.Transparency d.Transparency = 1
+local function ApplyAccessories(on)
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= LP and plr.Character then
+            for _, v in pairs(plr.Character:GetChildren()) do
+                if v:IsA("Accessory") or v:IsA("Hat") then
+                    v.Transparency = on and 1 or 0
+                    for _, d in pairs(v:GetDescendants()) do
+                        if d:IsA("BasePart") or d:IsA("Decal") then d.Transparency = on and 1 or 0 end
+                    end
                 end
             end
-            for _, a in ipairs(char:GetChildren()) do
-                if a:IsA("Accessory") and headAcc(a, head) then
-                    local h = a:FindFirstChild("Handle")
-                    if h then origAcc[h] = origAcc[h] or h.Transparency h.Transparency = 1 end
+        end
+    end
+end
+
+--=============================================================
+--  ЛОГИКА: BYPASS
+--=============================================================
+local oldNamecall
+local function ApplyBypass(on)
+    if not (getrawmetatable and setreadonly and newcclosure) then return end
+    local mt = getrawmetatable(game)
+    if not oldNamecall then oldNamecall = mt.__namecall end
+    setreadonly(mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        if method == "Kick" and self == LP and SS.Bypass then return end
+        if method == "SetPrimaryPartCFrame" and SS.Bypass then
+            local ok, err = pcall(oldNamecall, self, ...)
+            if ok then return end
+        end
+        return oldNamecall(self, ...)
+    end)
+    setreadonly(mt, true)
+end
+
+--=============================================================
+--  ЛОГИКА: СКИНЫ
+--=============================================================
+local SkinDB = {}
+
+local function ExtractSkin(inst)
+    local mesh, tex
+    for _, d in pairs(inst:GetDescendants()) do
+        if not mesh and d:IsA("SpecialMesh") and d.MeshId ~= "" then mesh = d.MeshId end
+        if not mesh and d:IsA("MeshPart") and d.MeshId ~= "" then mesh = d.MeshId end
+        if not tex and d:IsA("Decal") and d.Texture ~= "" then tex = d.Texture end
+        if not tex and d:IsA("Texture") and d.Texture ~= "" then tex = d.Texture end
+        if not tex and d:IsA("SpecialMesh") and d.TextureId ~= "" then tex = d.TextureId end
+        if mesh and tex then break end
+    end
+    if mesh or tex then
+        local nm = inst.Name:gsub("^Sword_", ""):gsub("_Sword$", ""):gsub("Sword", ""):gsub("_", " ")
+        if nm == "" or nm == " " then nm = inst.Name end
+        table.insert(SkinDB, {Name = nm, Mesh = mesh, Tex = tex, Ref = inst})
+    end
+end
+
+local function BuildSkinDatabase()
+    SkinDB = {}
+    local roots = {}
+    local function push(c) if c and typeof(c) == "Instance" then table.insert(roots, c) end end
+    push(ReplicatedStorage:FindFirstChild("Swords"))
+    push(ReplicatedStorage:FindFirstChild("SwordSkins"))
+    push(ReplicatedStorage:FindFirstChild("Skins"))
+    local assets = ReplicatedStorage:FindFirstChild("Assets")
+    if assets then
+        push(assets:FindFirstChild("Swords"))
+        push(assets:FindFirstChild("Skins"))
+        push(assets:FindFirstChild("SwordSkins"))
+    end
+    for _, root in ipairs(roots) do
+        for _, ch in ipairs(root:GetChildren()) do
+            pcall(function() ExtractSkin(ch) end)
+        end
+    end
+    -- сортировка
+    table.sort(SkinDB, function(a, b) return a.Name < b.Name end)
+    print("[SleepScript] Найдено скинов: " .. #SkinDB)
+end
+
+local function getSword()
+    local ch = LP.Character
+    if not ch then return nil end
+    return ch:FindFirstChild("Sword") or ch:FindFirstChildOfClass("Tool")
+end
+
+local function ApplySkin(mesh, tex)
+    local sword = getSword()
+    if not sword then return end
+    for _, d in pairs(sword:GetDescendants()) do
+        if d:IsA("SpecialMesh") then
+            if mesh then d.MeshId = mesh end
+            if tex then d.TextureId = tex end
+        elseif d:IsA("MeshPart") then
+            if mesh then pcall(function() d.MeshId = mesh end) end
+        elseif d:IsA("Decal") or d:IsA("Texture") then
+            if tex then d.Texture = tex end
+        end
+    end
+end
+
+local listOrder = 0
+function RenderSkinList(filter)
+    filter = filter or ""
+    for _, v in ipairs(listFrame:GetChildren()) do
+        if v:IsA("TextButton") then v:Destroy() end
+    end
+    listOrder = 0
+    for _, skin in ipairs(SkinDB) do
+        if filter == "" or skin.Name:lower():find(filter:lower(), 1, true) then
+            listOrder += 1
+            local b = new("TextButton", {
+                Parent = listFrame, Size = UDim2.new(1, -4, 0, 24), LayoutOrder = listOrder,
+                BackgroundColor3 = C.off, Text = "  " .. skin.Name,
+                Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = C.text,
+                TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false,
+            })
+            corner(b, 6)
+            b.MouseButton1Click:Connect(function()
+                SS._curMesh, SS._curTex = skin.Mesh, skin.Tex
+                ApplySkin(skin.Mesh, skin.Tex)
+                TweenService:Create(b, TweenInfo.new(0.2), {BackgroundColor3 = C.accent}):Play()
+                task.delay(0.4, function()
+                    TweenService:Create(b, TweenInfo.new(0.3), {BackgroundColor3 = C.off}):Play()
+                end)
+            end)
+        end
+    end
+end
+
+BuildSkinDatabase()
+RenderSkinList("")
+
+--=============================================================
+--  АВТОПАРРИ (ядро)
+--=============================================================
+local LastClick, LastBallHit, IsParrying, frameCounter = 0, nil, false, 0
+local BallsFolder = workspace:FindFirstChild("Balls") or workspace:WaitForChild("Balls", 5)
+
+local NetworkStats = Stats:FindFirstChild("Network")
+    and Stats.Network:FindFirstChild("ServerStatsItem")
+    and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
+
+local r, m
+if SS.ParryVisuals then
+    r = new("Part", {Name = "SleepParryCircle", Parent = workspace,
+        Anchored = true, CanCollide = false, Transparency = 0.3,
+        Material = Enum.Material.Neon, Size = Vector3.new(1,1,1)})
+    m = new("SpecialMesh", {MeshId = "rbxassetid://3270017"}, r)
+end
+
+local function GetBall()
+    if not BallsFolder then return nil end
+    local children = BallsFolder:GetChildren()
+    for i = 1, #children do
+        local v = children[i]
+        if v:GetAttribute("realBall") == true then return v end
+    end
+    for i = 1, #children do
+        local v = children[i]
+        if v:IsA("BasePart") and v.AssemblyLinearVelocity.Magnitude > 15 then return v end
+    end
+    return nil
+end
+
+local function IsTargeted()
+    if not LP.Character then return false end
+    return LP.Character:GetAttribute("Targeted") == true
+        or LP.Character:FindFirstChild("Highlight") ~= nil
+end
+
+local function SendClick(isClashing, ball)
+    if not SS.AutoParry or IsParrying then return end
+    local now = tick()
+    local cd = isClashing and SS.ClashSpeed or SS.NormalSpeed
+    if not isClashing and LastBallHit == ball and (now - LastClick) < 0.5 then return end
+    if (now - LastClick) < cd then return end
+    IsParrying, LastClick, LastBallHit = true, now, ball
+    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+    task.delay(cd, function() IsParrying = false end)
+end
+
+local function UpdateVisuals(root, distance, state)
+    if not SS.ParryVisuals or not r then return end
+    r.CFrame = root.CFrame * CFrame.new(0, -2.6, 0) * CFrame.Angles(math.rad(90), 0, 0)
+    local targetSize = math.clamp(distance * 0.8, 5, 65)
+    m.Scale = m.Scale:Lerp(Vector3.new(targetSize, targetSize, 0.5), 0.5)
+    if state == "clash" then
+        r.Color, r.Transparency = Color3.fromRGB(255, 0, 0), 0.05
+    elseif state == "target" then
+        r.Color, r.Transparency = Color3.fromRGB(0, 255, 255), 0.1
+    else
+        r.Color, r.Transparency = Color3.fromRGB(150, 240, 255), 0.5
+    end
+end
+
+RunService.PostSimulation:Connect(function()
+    if not SS.AutoParry then
+        if r then r.Transparency = 1 end
+        return
+    end
+    local Char = LP.Character
+    local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+    if not Root then if r then r.Transparency = 1 end return end
+
+    local Ball = GetBall()
+    if not Ball then if r then r.Transparency = 1 end return end
+
+    local BallPos, PlayerPos = Ball.Position, Root.Position
+    local Velocity = Ball.AssemblyLinearVelocity
+    local Speed = Velocity.Magnitude
+    local Distance = (PlayerPos - BallPos).Magnitude
+    local dot = (PlayerPos - BallPos).Unit:Dot(Velocity.Unit)
+
+    if dot < 0 then LastBallHit = nil end
+
+    local Targeted = IsTargeted()
+    local IsClashing = Targeted and Distance <= SS.ClashDistance
+
+    frameCounter += 1
+    if r and frameCounter % 2 == 0 then
+        r.Transparency = 0.3
+        UpdateVisuals(Root, Distance, IsClashing and "clash" or (Targeted and "target" or "neutral"))
+    end
+
+    if IsClashing then
+        SendClick(true, Ball)
+    elseif Targeted and dot > 0 then
+        local Ping = (NetworkStats and NetworkStats.Value / 1000) or 0.04
+        local TimeToHit = Distance / math.max(Speed, 1)
+        local Threshold = SS.DistanceToParry + (SS.PingBased and Ping * SS.PingBasedOffset or 0)
+        if Speed > 150 then Threshold *= 1.15 end
+        if TimeToHit <= Threshold or Distance <= SS.EmergencyRadius then
+            SendClick(false, Ball)
+        end
+    end
+end)
+
+LP.CharacterAdded:Connect(function()
+    LastBallHit, IsParrying = nil, false
+    task.wait(1)
+    ApplyBody()
+    if SS._curMesh or SS._curTex then
+        task.wait(0.5)
+        ApplySkin(SS._curMesh, SS._curTex)
+    end
+end)
+
+--=============================================================
+--  ОВЕРЛЕЙ FPS / PING
+--=============================================================
+local ov = new("ScreenGui", {
+    Name = "SleepScriptOverlay", ResetOnSpawn = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true,
+    Enabled = SS.Overlay,
+})
+getgenv().SleepScriptOverlay = ov
+pcall(function() if syn and syn.protect_gui then syn.protect_gui(ov) end end)
+if not ov.Parent then ov.Parent = (gethui and gethui()) or CoreGui end
+
+local panel = new("Frame", {
+    Parent = ov, Size = UDim2.fromOffset(170, 74), Position = UDim2.new(0, 20, 0, 90),
+    BackgroundColor3 = C.bg, BackgroundTransparency = 0.15, BorderSizePixel = 0,
+})
+corner(panel, 10)
+new("UIStroke", {Color = C.accent, Transparency = 0.5, Thickness = 1}, panel)
+new("UIPadding", {PaddingTop = UDim.new(0, 8), PaddingLeft = UDim.new(0, 10),
+    PaddingRight = UDim.new(0, 10)}, panel)
+makeDraggable(panel)
+
+new("TextLabel", {
+    Parent = panel, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1,
+    Font = Enum.Font.GothamBold, Text = "SleepScript", TextSize = 11,
+    TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
+})
+local fpsLbl = new("TextLabel", {
+    Parent = panel, Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 16),
+    BackgroundTransparency = 1, Font = Enum.Font.Code, Text = "FPS  0",
+    TextSize = 15, TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
+})
+local pingLbl = new("TextLabel", {
+    Parent = panel, Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 36),
+    BackgroundTransparency = 1, Font = Enum.Font.Code, Text = "PING  0 ms",
+    TextSize = 15, TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Left,
+})
+local graph = new("Frame", {
+    Parent = panel, Size = UDim2.new(1, 0, 0, 8), Position = UDim2.new(0, 0, 1, -10),
+    BackgroundColor3 = C.off, BorderSizePixel = 0, ClipsDescendants = true,
+})
+corner(graph, 4)
+
+local frames, lastClock = 0, os.clock()
+local hist = {}
+RunService.RenderStepped:Connect(function()
+    frames += 1
+    if os.clock() - lastClock >= 0.5 then
+        local fps = math.floor(frames / (os.clock() - lastClock) + 0.5)
+        frames, lastClock = 0, os.clock()
+        if ov.Enabled then
+            fpsLbl.Text = "FPS  " .. fps
+            fpsLbl.TextColor3 = fps >= 60 and C.accent2
+                or (fps >= 30 and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(255, 90, 90))
+            local ping = NetworkStats and math.floor(NetworkStats.Value) or 0
+            pingLbl.Text = "PING  " .. ping .. " ms"
+            pingLbl.TextColor3 = ping < 80 and C.accent2
+                or (ping < 150 and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(255, 90, 90))
+            table.insert(hist, fps)
+            if #hist > 24 then table.remove(hist, 1) end
+            for _, v in ipairs(graph:GetChildren()) do
+                if v:IsA("Frame") then v:Destroy() end
+            end
+            if SS.OverlayGraph ~= false then
+                for i, v in ipairs(hist) do
+                    new("Frame", {
+                        Parent = graph, Size = UDim2.new(1/24, -1, math.clamp(v / 240, 0.05, 1), 0),
+                        Position = UDim2.new((i-1)/24, 0, 1, 0), AnchorPoint = Vector2.new(0, 1),
+                        BackgroundColor3 = C.accent2, BorderSizePixel = 0,
+                    })
                 end
             end
-        else
-            for o, v in pairs(origHead) do pcall(function() o.Transparency = v end) end
-            for o, v in pairs(origAcc)  do pcall(function() o.Transparency = v end) end
-            origHead, origAcc = {}, {}
         end
     end
-    local function legs(char)
-        local t = {}
-        for _, n in ipairs({"Right Leg","RightLeg","RightUpperLeg","RightLowerLeg"}) do
-            local p = char:FindFirstChild(n)
-            if p then t[#t+1] = p end
-        end
-        return t
-    end
-    function Skin.SetKorblox(on)
-        local char = LocalPlayer.Character
-        if not char then return end
-        for _, leg in ipairs(legs(char)) do
-            if on then
-                local mesh = leg:FindFirstChild("SleepKorblox")
-                if not mesh then
-                    mesh = Instance.new("SpecialMesh") mesh.Name = "SleepKorblox" mesh.Parent = leg
-                end
-                mesh.MeshId, mesh.TextureId, mesh.Scale = KORBLOX_MESH, "", Vector3.new(1,1,1)
-                origColor[leg] = origColor[leg] or leg.Color
-                leg.Color = Color3.fromRGB(27,27,30)
-            else
-                local mesh = leg:FindFirstChild("SleepKorblox")
-                if mesh then mesh:Destroy() end
-                if origColor[leg] then leg.Color = origColor[leg] end
-            end
-        end
-    end
-    LocalPlayer.CharacterAdded:Connect(function()
-        task.wait(0.6)
-        if Config.Korblox  then Skin.SetKorblox(true)  end
-        if Config.Headless then Skin.SetHeadless(true) end
-    end)
-end
-
---=====================================================================
---  UI
---=====================================================================
-local Accent = Config.Accent
-local AP, AT, AG, TL = {}, {}, {}, {}
-
-local function new(class, props)
-    local i = Instance.new(class)
-    if props then
-        for k, v in pairs(props) do if k ~= "Parent" then i[k] = v end end
-        if props.Parent then i.Parent = props.Parent end
-    end
-    return i
-end
-local function tw(o, t, p)
-    local a = TweenService:Create(o, TweenInfo.new(t, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), p)
-    a:Play() return a
-end
-local function reg(o, p) AP[#AP+1] = {o=o, p=p or "BackgroundColor3"} end
-local function regT(o) AT[#AT+1] = o end
-local function regG(g) AG[#AG+1] = g end
-
-local function setAccent(col)
-    Accent, Config.Accent = col, col
-    local info = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-    for _, e in ipairs(AP) do if e.o and e.o.Parent then TweenService:Create(e.o, info, {[e.p]=col}):Play() end end
-    for _, o in ipairs(AT) do if o and o.Parent then TweenService:Create(o, info, {TextColor3=col}):Play() end end
-    for _, g in ipairs(AG) do if g and g.Parent then g.Color = ColorSequence.new(col, col:Lerp(Color3.new(0,0,0),0.45)) end end
-    for _, t in ipairs(TL) do if t.state() then t.track.BackgroundColor3 = col end end
-    saveConfig()
-end
-
-local gui = new("ScreenGui", {Name="SleepScript", ResetOnSpawn=false, IgnoreGuiInset=true,
-    ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=999, Parent=gethui()})
-
-local OPEN = UDim2.fromOffset(560, 380)
-local main = new("Frame", {Name="Main", Parent=gui, AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0),
-    Size=UDim2.fromOffset(560, 40), BackgroundColor3=Color3.fromRGB(15,15,19), BorderSizePixel=0, ClipsDescendants=true})
-new("UICorner", {CornerRadius=UDim.new(0,12), Parent=main})
-reg(new("UIStroke", {Thickness=1.4, Transparency=0.25, Color=Accent, Parent=main}), "Color")
-
-local header = new("Frame", {Parent=main, Size=UDim2.new(1,0,0,34), BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0})
-regG(new("UIGradient", {Parent=header, Color=ColorSequence.new(Accent, Accent:Lerp(Color3.new(0,0,0),0.45))}))
-new("TextLabel", {Parent=header, BackgroundTransparency=1, Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-240,1,0),
-    Font=Enum.Font.GothamBold, Text="SleepScript", TextSize=14, TextColor3=Color3.new(1,1,1),
-    TextXAlignment=Enum.TextXAlignment.Left})
-local status = new("TextLabel", {Parent=header, BackgroundTransparency=1, AnchorPoint=Vector2.new(1,0), Position=UDim2.new(1,-14,0,0),
-    Size=UDim2.new(0,220,1,0), Font=Enum.Font.GothamMedium, Text="", TextSize=10.5,
-    TextColor3=Color3.fromRGB(235,235,245), TextXAlignment=Enum.TextXAlignment.Right})
-
-local body = new("Frame", {Parent=main, Position=UDim2.new(0,0,0,34), Size=UDim2.new(1,0,1,-34), BackgroundTransparency=1})
-local sidebar = new("Frame", {Parent=body, Size=UDim2.new(0,130,1,0), BackgroundColor3=Color3.fromRGB(18,18,23), BorderSizePixel=0})
-local pages = new("Frame", {Parent=body, Position=UDim2.new(0,130,0,0), Size=UDim2.new(1,-130,1,0),
-    BackgroundTransparency=1, ClipsDescendants=true})
-local indicator = new("Frame", {Parent=sidebar, Size=UDim2.new(0,3,0,20), BackgroundColor3=Accent, BorderSizePixel=0, ZIndex=3})
-reg(indicator)
-
-local ord, tabs = 0, {}
-local function nextOrd() ord = ord + 1 return ord end
-local function makePage()
-    local p = new("ScrollingFrame", {Parent=pages, Size=UDim2.new(1,0,1,0), BackgroundTransparency=1,
-        BorderSizePixel=0, ScrollBarThickness=3, CanvasSize=UDim2.new(), AutomaticCanvasSize=Enum.AutomaticSize.Y, Visible=false})
-    reg(p, "ScrollBarImageColor3")
-    new("UIListLayout", {Parent=p, Padding=UDim.new(0,5), SortOrder=Enum.SortOrder.LayoutOrder})
-    new("UIPadding", {Parent=p, PaddingLeft=UDim.new(0,12), PaddingRight=UDim.new(0,12),
-        PaddingTop=UDim.new(0,10), PaddingBottom=UDim.new(0,12)})
-    return p
-end
-local function makeTab(name, i)
-    local y = (i-1) * 32 + 12
-    local btn = new("TextButton", {Parent=sidebar, Position=UDim2.new(0,0,0,y), Size=UDim2.new(1,0,0,28),
-        BackgroundColor3=Color3.fromRGB(24,24,30), BorderSizePixel=0, Text="   "..name,
-        Font=Enum.Font.GothamMedium, TextSize=12, TextColor3=Color3.fromRGB(120,120,135),
-        TextXAlignment=Enum.TextXAlignment.Left, AutoButtonColor=false})
-    new("UICorner", {CornerRadius=UDim.new(0,7), Parent=btn})
-    local page = makePage()
-    tabs[name] = {btn=btn, page=page}
-    btn.MouseEnter:Connect(function() if not btn:GetAttribute("active") then tw(btn, 0.15, {BackgroundColor3=Color3.fromRGB(30,30,38)}) end end)
-    btn.MouseLeave:Connect(function() if not btn:GetAttribute("active") then tw(btn, 0.15, {BackgroundColor3=Color3.fromRGB(24,24,30)}) end end)
-    btn.MouseButton1Click:Connect(function()
-        for k, t in pairs(tabs) do
-            local on = (k == name)
-            t.btn:SetAttribute("active", on)
-            t.btn.TextColor3 = on and Color3.new(1,1,1) or Color3.fromRGB(120,120,135)
-            t.btn.BackgroundColor3 = on and Color3.fromRGB(30,30,38) or Color3.fromRGB(24,24,30)
-            t.page.Visible = on
-            if on then t.page.Position = UDim2.new(0,10,0,0) tw(t.page, 0.18, {Position=UDim2.new(0,0,0,0)}) end
-        end
-        tw(indicator, 0.2, {Position=UDim2.new(0,0,0, y + 4)})
-    end)
-    return page
-end
-
-local function section(parent, text)
-    new("TextLabel", {Parent=parent, Size=UDim2.new(1,0,0,18), BackgroundTransparency=1, Font=Enum.Font.GothamBold,
-        Text=text, TextSize=10.5, LayoutOrder=nextOrd(), TextColor3=Color3.fromRGB(125,125,142),
-        TextXAlignment=Enum.TextXAlignment.Left})
-end
-local function note(parent, text, h)
-    new("TextLabel", {Parent=parent, Size=UDim2.new(1,0,0,h or 15), BackgroundTransparency=1, Font=Enum.Font.GothamMedium,
-        Text=text, TextSize=9.5, LayoutOrder=nextOrd(), TextColor3=Color3.fromRGB(138,138,152),
-        TextXAlignment=Enum.TextXAlignment.Left, TextWrapped=true})
-end
-local function toggle(parent, label, default, cb)
-    local btn = new("TextButton", {Parent=parent, Size=UDim2.new(1,0,0,30), BackgroundColor3=Color3.fromRGB(24,24,30),
-        BorderSizePixel=0, Text="", AutoButtonColor=false, LayoutOrder=nextOrd()})
-    new("UICorner", {CornerRadius=UDim.new(0,8), Parent=btn})
-    new("UIStroke", {Thickness=1, Color=Color3.fromRGB(46,46,56), Transparency=0.35, Parent=btn})
-    new("TextLabel", {Parent=btn, BackgroundTransparency=1, Position=UDim2.new(0,12,0,0), Size=UDim2.new(0.7,0,1,0),
-        Font=Enum.Font.GothamMedium, Text=label, TextSize=12, TextColor3=Color3.fromRGB(216,216,226),
-        TextXAlignment=Enum.TextXAlignment.Left})
-    local track = new("Frame", {Parent=btn, AnchorPoint=Vector2.new(1,0.5), Position=UDim2.new(1,-12,0.5,0),
-        Size=UDim2.fromOffset(36,18), BackgroundColor3=Color3.fromRGB(46,46,56), BorderSizePixel=0})
-    new("UICorner", {CornerRadius=UDim.new(1,0), Parent=track})
-    local knob = new("Frame", {Parent=track, AnchorPoint=Vector2.new(0,0.5), Position=UDim2.new(0,2,0.5,0),
-        Size=UDim2.fromOffset(14,14), BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0})
-    new("UICorner", {CornerRadius=UDim.new(1,0), Parent=knob})
-    local state = default
-    local function render(a)
-        local target = state and UDim2.new(0,20,0.5,0) or UDim2.new(0,2,0.5,0)
-        local col = state and Accent or Color3.fromRGB(46,46,56)
-        if a then tw(knob, 0.18, {Position=target}) tw(track, 0.18, {BackgroundColor3=col})
-        else knob.Position = target track.BackgroundColor3 = col end
-    end
-    render(false)
-    TL[#TL+1] = {track=track, state=function() return state end}
-    btn.MouseEnter:Connect(function() tw(btn, 0.15, {BackgroundColor3=Color3.fromRGB(32,32,40)}) end)
-    btn.MouseLeave:Connect(function() tw(btn, 0.15, {BackgroundColor3=Color3.fromRGB(24,24,30)}) end)
-    btn.MouseButton1Click:Connect(function() state = not state render(true) cb(state) saveConfig() end)
-    UIset.toggles[label] = function(v)
-        if state ~= v then state = v render(true) cb(v) saveConfig() end
-    end
-end
-local function slider(parent, label, min, max, default, step, suffix, cb)
-    local holder = new("Frame", {Parent=parent, Size=UDim2.new(1,0,0,34), BackgroundTransparency=1, LayoutOrder=nextOrd()})
-    new("TextLabel", {Parent=holder, BackgroundTransparency=1, Size=UDim2.new(0.72,0,0,15), Font=Enum.Font.GothamMedium,
-        Text=label, TextSize=12, TextColor3=Color3.fromRGB(216,216,226), TextXAlignment=Enum.TextXAlignment.Left})
-    local val = new("TextLabel", {Parent=holder, BackgroundTransparency=1, Position=UDim2.new(0.72,0,0,0), Size=UDim2.new(0.28,0,0,15),
-        Font=Enum.Font.GothamBold, Text=tostring(default)..(suffix or ""), TextSize=12, TextColor3=Accent,
-        TextXAlignment=Enum.TextXAlignment.Right})
-    regT(val)
-    local track = new("Frame", {Parent=holder, Position=UDim2.new(0,0,0,21), Size=UDim2.new(1,0,0,5),
-        BackgroundColor3=Color3.fromRGB(40,40,48), BorderSizePixel=0})
-    new("UICorner", {CornerRadius=UDim.new(1,0), Parent=track})
-    local fill = new("Frame", {Parent=track, Size=UDim2.new(0,0,1,0), BackgroundColor3=Accent, BorderSizePixel=0})
-    reg(fill)
-    new("UICorner", {CornerRadius=UDim.new(1,0), Parent=fill})
-    local knob = new("Frame", {Parent=track, AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0,0,0.5,0),
-        Size=UDim2.fromOffset(11,11), BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0, ZIndex=3})
-    new("UICorner", {CornerRadius=UDim.new(1,0), Parent=knob})
-    local hit = new("TextButton", {Parent=holder, Position=UDim2.new(0,0,0,13), Size=UDim2.new(1,0,0,20),
-        BackgroundTransparency=1, Text=""})
-    local value = default
-    local function apply(v, f)
-        value = math.clamp(v, min, max)
-        if step then value = math.floor(value/step + 0.5)*step end
-        local rel = (value-min)/(max-min)
-        fill.Size = UDim2.new(rel,0,1,0)
-        knob.Position = UDim2.new(rel,0,0.5,0)
-        local shown = (step and step >= 1) and math.floor(value) or string.format("%.3g", value)
-        val.Text = shown..(suffix or "")
-        if f then cb(value) end
-    end
-    apply(default, false)
-    UIset.sliders[label] = function(v) apply(v, true) saveConfig() end
-    local dragging = false
-    local function fromX(x)
-        local rel = math.clamp((x - track.AbsolutePosition.X)/math.max(track.AbsoluteSize.X,1), 0, 1)
-        apply(min + (max-min)*rel, true)
-    end
-    hit.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = true fromX(i.Position.X) end
-    end)
-    UserInputService.InputChanged:Connect(function(i)
-        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then fromX(i.Position.X) end
-    end)
-    UserInputService.InputEnded:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false saveConfig() end
-    end)
-end
-local function button(parent, text, cb)
-    local b = new("TextButton", {Parent=parent, Size=UDim2.new(1,0,0,28), BackgroundColor3=Accent,
-        BorderSizePixel=0, Text=text, Font=Enum.Font.GothamMedium, TextSize=12, TextColor3=Color3.new(1,1,1),
-        AutoButtonColor=false, LayoutOrder=nextOrd()})
-    new("UICorner", {CornerRadius=UDim.new(0,7), Parent=b})
-    reg(b)
-    b.MouseEnter:Connect(function() tw(b, 0.15, {BackgroundColor3 = Accent:Lerp(Color3.new(0,0,0),0.25)}) end)
-    b.MouseLeave:Connect(function() tw(b, 0.15, {BackgroundColor3 = Accent}) end)
-    b.MouseButton1Click:Connect(cb)
-end
-local function colorPicker(parent)
-    local holder = new("Frame", {Parent=parent, Size=UDim2.new(1,0,0,52), BackgroundTransparency=1, LayoutOrder=nextOrd()})
-    local sw = new("Frame", {Parent=holder, Position=UDim2.new(0,0,0,16), Size=UDim2.new(1,0,0,16), BackgroundTransparency=1})
-    new("UIListLayout", {Parent=sw, FillDirection=Enum.FillDirection.Horizontal, Padding=UDim.new(0,6)})
-    for _, c in ipairs({Color3.fromRGB(0,170,255), Color3.fromRGB(140,80,255), Color3.fromRGB(255,70,120),
-        Color3.fromRGB(0,220,150), Color3.fromRGB(255,180,40), Color3.fromRGB(255,90,60),
-        Color3.fromRGB(240,240,245), Color3.fromRGB(120,120,135)}) do
-        local s = new("TextButton", {Parent=sw, Size=UDim2.fromOffset(16,16), BackgroundColor3=c, BorderSizePixel=0, Text="", AutoButtonColor=false})
-        new("UICorner", {CornerRadius=UDim.new(1,0), Parent=s})
-        s.MouseButton1Click:Connect(function() setAccent(c) end)
-    end
-    local hue = new("TextButton", {Parent=holder, Position=UDim2.new(0,0,0,38), Size=UDim2.new(1,0,0,9),
-        BackgroundColor3=Color3.new(1,1,1), BorderSizePixel=0, Text=""})
-    new("UICorner", {CornerRadius=UDim.new(1,0), Parent=hue})
-    new("UIGradient", {Parent=hue, Color=ColorSequence.new{
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255,0,0)), ColorSequenceKeypoint.new(1/6, Color3.fromRGB(255,255,0)),
-        ColorSequenceKeypoint.new(2/6, Color3.fromRGB(0,255,0)), ColorSequenceKeypoint.new(3/6, Color3.fromRGB(0,255,255)),
-        ColorSequenceKeypoint.new(4/6, Color3.fromRGB(0,0,255)), ColorSequenceKeypoint.new(5/6, Color3.fromRGB(255,0,255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(255,0,0))}})
-    local dragging = false
-    local function fromX(x)
-        local rel = math.clamp((x - hue.AbsolutePosition.X)/math.max(hue.AbsoluteSize.X,1), 0, 1)
-        setAccent(Color3.fromHSV(rel, 1, 1))
-    end
-    hue.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true fromX(i.Position.X) end end)
-    UserInputService.InputChanged:Connect(function(i) if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then fromX(i.Position.X) end end)
-    UserInputService.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
-end
-
-local pParry  = makeTab("ПАРРИ", 1)
-local pGuard  = makeTab("ЗАЩИТА", 2)
-local pVisual = makeTab("ВИЗУАЛ", 3)
-local pSkin   = makeTab("СКИН", 4)
-local pMenu   = makeTab("МЕНЮ", 5)
-
-local methGroup, bypGroup = {}, {}
-local function radio(parent, group, value, label, onPick)
-    local b = new("TextButton", {Parent=parent, Size=UDim2.new(1,0,0,26), BackgroundColor3=Color3.fromRGB(24,24,30),
-        BorderSizePixel=0, Text="  "..label, Font=Enum.Font.GothamMedium, TextSize=11,
-        TextColor3=Color3.fromRGB(216,216,226), TextXAlignment=Enum.TextXAlignment.Left,
-        AutoButtonColor=false, LayoutOrder=nextOrd()})
-    new("UICorner", {CornerRadius=UDim.new(0,6), Parent=b})
-    local mark = new("Frame", {Parent=b, AnchorPoint=Vector2.new(1,0.5), Position=UDim2.new(1,-10,0.5,0),
-        Size=UDim2.fromOffset(8,8), BackgroundColor3=Accent, BorderSizePixel=0, Visible=false})
-    new("UICorner", {CornerRadius=UDim.new(1,0), Parent=mark})
-    reg(mark)
-    local entry = {mark=mark, value=value, btn=b}
-    group[#group+1] = entry
-    b.MouseButton1Click:Connect(function()
-        for _, t in ipairs(group) do t.mark.Visible = (t.value == value) end
-        onPick(value) saveConfig()
-    end)
-    return entry
-end
-UIset.refresh = function()
-    for _, t in ipairs(methGroup) do
-        local on = (t.value == Config.Mode)
-        t.mark.Visible = on
-        t.btn.TextColor3 = on and Color3.new(1,1,1) or Color3.fromRGB(216,216,226)
-    end
-    for _, t in ipairs(bypGroup) do
-        local on = (t.value == Config.BacBypassMode)
-        t.mark.Visible = on
-        t.btn.TextColor3 = on and Color3.new(1,1,1) or Color3.fromRGB(216,216,226)
-    end
-end
-
--- ПАРРИ
-section(pParry, "ОСНОВНОЕ")
-toggle(pParry, "Auto Parry", Config.AutoParry, function(v) Config.AutoParry = v end)
-slider(pParry, "Accuracy", 1, 100, Config.Accuracy, 1, "", function(v) Config.Accuracy = v end)
-toggle(pParry, "Случайный разброс Accuracy", Config.AccRand, function(v) Config.AccRand = v end)
-slider(pParry, "Разброс", 0, 30, Config.AccRandAmt, 1, "", function(v) Config.AccRandAmt = v end)
-slider(pParry, "Triggerbot delay", 0, 0.2, Config.TriggerbotDelay, 0.005, " с", function(v) Config.TriggerbotDelay = v end)
-
-section(pParry, "МЕТОД НАЖАТИЯ")
-toggle(pParry, "Авто-подбор метода", Config.AutoMethod, function(v) Config.AutoMethod = v end)
-radio(pParry, methGroup, "Keypress",    "Keypress (VIM)",      function(v) Config.Mode = v end)
-radio(pParry, methGroup, "KeypressAlt", "KeypressAlt",         function(v) Config.Mode = v end)
-radio(pParry, methGroup, "Mouse",       "Mouse (центр)",       function(v) Config.Mode = v end)
-radio(pParry, methGroup, "Exec",        "Exec (keypress())",   function(v) Config.Mode = v end)
-radio(pParry, methGroup, "Remote",      "Remote",              function(v) Config.Mode = v end)
-button(pParry, "ТЕСТ НАЖАТИЯ", function() AutoParry.test() end)
-
-section(pParry, "ФИЛЬТР ЦЕЛИ")
-toggle(pParry, "Строго по атрибуту target", Config.StrictTarget, function(v) Config.StrictTarget = v end)
-toggle(pParry, "Только по атрибуту (без геометрии)", Config.RequireAttr, function(v) Config.RequireAttr = v end)
-slider(pParry, "Промах траектории", 3, 20, Config.PerpTol, 1, " ст", function(v) Config.PerpTol = v end)
-
-section(pParry, "ТОНКАЯ НАСТРОЙКА")
-slider(pParry, "Parry range", 5, 25, Config.ParryRange, 1, " ст", function(v) Config.ParryRange = v end)
-slider(pParry, "Ping factor", 0.0, 1.5, Config.PingFactor, 0.05, "", function(v) Config.PingFactor = v end)
-slider(pParry, "Кулдаун", 0.04, 0.7, Config.Cooldown, 0.01, " с", function(v) Config.Cooldown = v end)
-slider(pParry, "Мин. зазор", 0.02, 0.3, Config.MinGap, 0.01, " с", function(v) Config.MinGap = v end)
-
-section(pParry, "РЕЖИМЫ")
-slider(pParry, "Instant speed", 1, 999, Config.InstantSpeed, 1, "", function(v) Config.InstantSpeed = v end)
-slider(pParry, "Prediction spam", 1, 999, Config.PredictionSpam, 1, "", function(v) Config.PredictionSpam = v end)
-toggle(pParry, "Dynamic threshold", Config.DynThreshold, function(v) Config.DynThreshold = v end)
-slider(pParry, "Хитов до спама", 1, 10, Config.DynHits, 1, "", function(v) Config.DynHits = v end)
-
--- ЗАЩИТА
-section(pGuard, "ИЗОЛЯЦИЯ")
-button(pGuard, "ЧИСТЫЙ РЕЖИМ (только парри)", function() AC.cleanMode() end)
-button(pGuard, "ВЕРНУТЬ ВСЁ", function()
-    Diag.clean = false
-    Config.BacBypassMode = "full"
-    Config.WriteAttr = true
-    Config.FpsBoost = false
-    Config.FovEnabled = false
-    Config.Korblox = false
-    Config.Headless = false
-    Config.DesyncGuard = true
-    Config.MaxParryPerMin = 20
-    Config.MaxParryPerSec = 4
-    Config.Cooldown = 0.5
-    Config.ParryRange = 8
-    Config.PerpTol = 6
-    Config.Warmup = 20
-    Config.StartupDelay = 5
-    Config.Humanize = true
-    Config.MissChance = 10
-    UIset.refresh()
-    AC.logKick("-> ВЕРНУЛ ВСЁ")
-    saveConfig()
 end)
 
-section(pGuard, "BAC BYPASS")
-radio(pGuard, bypGroup, "off",   "off — не трогать BAC",     function(v) Config.BacBypassMode = v end)
-radio(pGuard, bypGroup, "light", "light — только клиент.скрипты", function(v) Config.BacBypassMode = v end)
-radio(pGuard, bypGroup, "full",  "full — Security + скрипты", function(v) Config.BacBypassMode = v end)
-button(pGuard, "ЗАПУСТИТЬ БАЙПАС", function() AC.bypassBAC() end)
-local bypassLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,34), BackgroundTransparency=1,
-    Font=Enum.Font.Code, Text="", TextSize=9.5, TextColor3=Color3.fromRGB(150,210,170),
-    TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, TextWrapped=true,
-    LayoutOrder=nextOrd()})
-UIset.refresh()
-
-section(pGuard, "ДИАГНОСТИКА")
-local diagLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,150), BackgroundTransparency=1,
-    Font=Enum.Font.Code, Text="", TextSize=11, TextColor3=Color3.fromRGB(180,180,195),
-    TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
-
-section(pGuard, "ЛИМИТЫ")
-slider(pGuard, "Лимит парри/мин", 8, 120, Config.MaxParryPerMin, 1, "", function(v) Config.MaxParryPerMin = v end)
-slider(pGuard, "Лимит парри/сек", 1, 25, Config.MaxParryPerSec, 1, "", function(v) Config.MaxParryPerSec = v end)
-
-section(pGuard, "HUMANIZER")
-toggle(pGuard, "Humanizer", Config.Humanize, function(v) Config.Humanize = v end)
-slider(pGuard, "Джиттер реакции", 0, 0.2, Config.HumanJitter, 0.005, " с", function(v) Config.HumanJitter = v end)
-slider(pGuard, "Разброс фокуса", 0, 0.1, Config.HumanAccSpread, 0.005, " с", function(v) Config.HumanAccSpread = v end)
-slider(pGuard, "Человеч. паузы", 0, 30, Config.HumanPausePct, 1, "%", function(v) Config.HumanPausePct = v end)
-slider(pGuard, "Размер паузы", 0.02, 0.3, Config.HumanPause, 0.01, " с", function(v) Config.HumanPause = v end)
-slider(pGuard, "Шанс пропуска", 0, 30, Config.MissChance, 1, "%", function(v) Config.MissChance = v end)
-slider(pGuard, "Держать клавишу мин", 0.005, 0.2, Config.HoldMin, 0.005, " с", function(v) Config.HoldMin = v end)
-slider(pGuard, "Держать клавишу макс", 0.01, 0.3, Config.HoldMax, 0.005, " с", function(v) Config.HoldMax = v end)
-
-section(pGuard, "ПАРАНОЙЯ")
-slider(pGuard, "Разогрев после входа", 0, 60, Config.Warmup, 1, " с", function(v) Config.Warmup = v end)
-toggle(pGuard, "Паранойя после кика", Config.ParanoidOnKick, function(v) Config.ParanoidOnKick = v end)
-toggle(pGuard, "Авто-ослабление (AutoTune)", Config.AutoTune, function(v) Config.AutoTune = v end)
-slider(pGuard, "Длительность", 5, 90, Config.ParanoidTime, 1, " с", function(v) Config.ParanoidTime = v end)
-slider(pGuard, "Уровень легита", 0, 0.8, Config.ParanoidScale, 0.05, "", function(v) Config.ParanoidScale = v end)
-
-section(pGuard, "СЕССИЯ")
-toggle(pGuard, "Watchdog", Config.Watchdog, function(v) Config.Watchdog = v end)
-toggle(pGuard, "Писать атрибуты на мяч", Config.WriteAttr, function(v) Config.WriteAttr = v end)
-toggle(pGuard, "Удерживать клавишу", Config.HoldPress, function(v) Config.HoldPress = v end)
-toggle(pGuard, "Авто-реджойн", Config.Rejoin, function(v) Config.Rejoin = v end)
-slider(pGuard, "Попыток реджойна", 1, 10, Config.RejoinAttempts, 1, "", function(v) Config.RejoinAttempts = v end)
-toggle(pGuard, "Анти-АФК", Config.AntiAfk, function(v) Config.AntiAfk = v end)
-button(pGuard, "РЕ-ДЖОЙН СЕЙЧАС", function() AC.rejoin("manual") end)
-
-section(pGuard, "ЛОГ КИКОВ / ЧАТ")
-local logLbl = new("TextLabel", {Parent=pGuard, Size=UDim2.new(1,0,0,130), BackgroundTransparency=1,
-    Font=Enum.Font.Code, Text="", TextSize=9.5, TextColor3=Color3.fromRGB(200,170,170),
-    TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Top, LayoutOrder=nextOrd()})
-button(pGuard, "ОЧИСТИТЬ ЛОГ", function() AC.log = {} end)
-
--- ВИЗУАЛ
-section(pVisual, "КАМЕРА")
-toggle(pVisual, "FOV", Config.FovEnabled, function(v) Config.FovEnabled = v end)
-slider(pVisual, "Значение FOV", 70, 120, Config.Fov, 1, "", function(v) Config.Fov = v end)
-section(pVisual, "ПРОИЗВОДИТЕЛЬНОСТЬ")
-toggle(pVisual, "FPS Boost", Config.FpsBoost, function(v) Config.FpsBoost = v Fps.Set(v) end)
-toggle(pVisual, "Убирать эффекты", Config.CutFx, function(v) Config.CutFx = v if Config.FpsBoost then Fps.Set(true) end end)
-toggle(pVisual, "Разблокировать FPS", Config.UnlockFps, function(v) Config.UnlockFps = v if Config.FpsBoost then Fps.Set(true) end end)
-
--- СКИН
-section(pSkin, "АВАТАР")
-toggle(pSkin, "Korblox (нога)", Config.Korblox, function(v) Config.Korblox = v Skin.SetKorblox(v) end)
-toggle(pSkin, "Headless (без головы)", Config.Headless, function(v) Config.Headless = v Skin.SetHeadless(v) end)
-
--- МЕНЮ
-section(pMenu, "ЦВЕТ")
-colorPicker(pMenu)
-section(pMenu, "ИНФО")
-note(pMenu, "RightShift — скрыть/показать меню.")
-note(pMenu, "Тестируй в обычном матче, не в Training Mode.")
-
---=====================================================================
---  WINDOW
---=====================================================================
-local visible = true
-local bubble = new("TextButton", {Parent=gui, AnchorPoint=Vector2.new(0,0.5), Position=UDim2.new(0,16,0.5,0),
-    Size=UDim2.fromOffset(34,34), BackgroundColor3=Accent, Text="S", Font=Enum.Font.GothamBold,
-    TextSize=15, TextColor3=Color3.new(1,1,1), BorderSizePixel=0, AutoButtonColor=false, Visible=false})
-new("UICorner", {CornerRadius=UDim.new(1,0), Parent=bubble})
-reg(bubble)
-
-local function openMenu()
-    visible = true bubble.Visible = false main.Visible = true
-    main.Size = UDim2.fromOffset(560,40) tw(main, 0.35, {Size=OPEN})
-end
-local function closeMenu()
-    visible = false
-    tw(main, 0.25, {Size=UDim2.fromOffset(560,40)})
-    task.delay(0.26, function() if not visible then main.Visible = false bubble.Visible = true end end)
-end
-bubble.MouseButton1Click:Connect(openMenu)
-
-local dragging, dragStart, startPos
-header.InputBegan:Connect(function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging, dragStart, startPos = true, i.Position, main.Position end
-end)
-UserInputService.InputChanged:Connect(function(i)
-    if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
-        local d = i.Position - dragStart
-        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset+d.X, startPos.Y.Scale, startPos.Y.Offset+d.Y)
-    end
-end)
-UserInputService.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
-UserInputService.InputBegan:Connect(function(i, gp)
-    if gp then return end
-    if i.KeyCode == Enum.KeyCode.RightShift then if visible then closeMenu() else openMenu() end end
-end)
-
-task.defer(function()
-    tw(main, 0.4, {Size=OPEN})
-    task.wait(0.05)
-    local t = tabs["ПАРРИ"]
-    t.btn:SetAttribute("active", true)
-    t.btn.TextColor3 = Color3.new(1,1,1)
-    t.btn.BackgroundColor3 = Color3.fromRGB(30,30,38)
-    t.page.Visible = true
-    indicator.Position = UDim2.new(0,0,0,16)
-end)
-
+--=============================================================
+--  ИНИЦИАЛИЗАЦИЯ СОХРАНЁННЫХ НАСТРОЕК
+--=============================================================
 task.spawn(function()
-    while true do
-        task.wait(0.25)
-        local flag = AC.paranoid and " | ПАРАНОЙЯ" or ""
-        local cl = Diag.clean and " | ЧИСТЫЙ" or ""
-        status.Text = string.format("%dms | %s | %s | hit %d/%d%s%s",
-            math.floor(AutoParry.getPing()), Config.Mode, Diag.status,
-            Diag.landed, Diag.att, flag, cl)
-        diagLbl.Text = string.format(
-            "статус    : %s\nметод     : %s\nпопаданий : %d/%d\ntarget    : %s\nатрибут   : %s\nзащёлка   : %s\nдист      : %.0f ст\nпромах тр.: %.1f ст\nпарри/мин : %d\nвсего     : %d\nкиков     : %d",
-            Diag.status, Config.Mode, Diag.landed, Diag.att,
-            Diag.attr and (Diag.target and "мой" or "чужой") or "нет данных",
-            Diag.attr and "есть" or "НЕТ",
-            Diag.latched and "закрыта" or "открыта",
-            Diag.dist, Diag.perp, Diag.rateMin, Diag.parries, Diag.kicks)
-        logLbl.Text = AC.getLogText(6)
-        bypassLbl.Text = AC.bypassText()
+    if cam() then cam().FieldOfView = SS.FOV end
+    if SS.CustomSky then ApplySky(SS.SkyId) end
+    if SS.Bypass then ApplyBypass(true) end
+    if SS.FPSBoost then ApplyFPSBoost(true) end
+    if SS.NoEffects then ApplyEffects(true) end
+    if SS.NoAccessories then ApplyAccessories(true) end
+end)
+
+-- SkinLock: авто-восстановление скина (игра/античит его сбрасывает)
+task.spawn(function()
+    while task.wait(1.5) do
+        if SS.SkinLock and (SS._curMesh or SS._curTex) then
+            pcall(ApplySkin, SS._curMesh, SS._curTex)
+        end
     end
 end)
 
-task.spawn(function()
-    task.wait(2)
-    if Config.BacBypassMode ~= "off" then AC.bypassBAC() end
-end)
-
-if Config.FpsBoost then Fps.Set(true) end
-if Config.Korblox then Skin.SetKorblox(true) end
-if Config.Headless then Skin.SetHeadless(true) end
-
-print("[SleepScript] v7.0 загружен. RightShift — меню.")
+print("[SleepScript] Загружено. Z — меню, RightShift — AutoParry")
