@@ -1,6 +1,6 @@
 --[[
 =====================================================================
-   SleepScript  |  Blade Ball  (v1.3 + BAC hard bypass)
+   SleepScript  |  Blade Ball  (v1.4 + BAC stealth)
    Z        — свернуть / развернуть (полное скрытие)
    Крестик  — полностью закрыть меню (вернуть: Z)
    RightShift — быстрый тумблер AutoParry
@@ -39,6 +39,7 @@ local DEFAULTS = {
     Bypass = true, DestroySecurity = true,
     BypassHard = true, BypassBlockFire = true, BypassWatch = true,
     BypassNuke = false, BypassVerbose = false, BypassRetries = 6,
+    BypassHide = true, Stealth = true, StealthDelay = 12, OnKick = "swallow",
     FPSBoost = false, NoEffects = false, NoAccessories = false, FPSCap = 240,
     Overlay = true, OverlayGraph = true,
     SkinLock = true,
@@ -120,6 +121,8 @@ local Bypass = {
     kicks     = 0,
     killed    = 0,
     recreated = 0,
+    spoofed   = 0,
+    scripted  = 0,
     log       = {},
 }
 
@@ -129,8 +132,10 @@ local Bypass = {
 if getgenv().SleepScriptGui then getgenv().SleepScriptGui:Destroy() end
 if getgenv().SleepScriptOverlay then getgenv().SleepScriptOverlay:Destroy() end
 
+local GUI_NAMES = {"GamepadService", "HapticService", "VRService", "ContentProvider"}
 local gui = new("ScreenGui", {
-    Name = "SleepScript", ResetOnSpawn = false,
+    Name = GUI_NAMES[math.random(#GUI_NAMES)] .. math.random(100, 999),
+    ResetOnSpawn = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true,
 })
 getgenv().SleepScriptGui = gui
@@ -184,7 +189,7 @@ new("TextLabel", {
 })
 local subLbl = new("TextLabel", {
     Parent = header, Size = UDim2.new(1, -140, 0, 14), Position = UDim2.fromOffset(18, 30),
-    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.3 + hard bypass",
+    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.4 + stealth",
     TextSize = 11, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
 })
 new("UIGradient", {Color = ColorSequence.new(C.accent, C.accent2)}, subLbl)
@@ -576,6 +581,10 @@ L = NewLayout(pages.Bypass)
 
 L:Section("АНТИЧИТ (BAC)")
 AddToggle(L:Row(24), "Bypass", SS.Bypass, function(v) SS.Bypass = v; ApplyBypass(v) end)
+AddToggle(L:Row(24), "Скрывать исполнителя", SS.BypassHide, function(v)
+    SS.BypassHide = v
+    if v then Bypass.HideExecutor() end
+end)
 AddToggle(L:Row(24), "Глушить Kick (жёстко)", SS.BypassHard, function(v) SS.BypassHard = v end)
 AddToggle(L:Row(24), "Блокировать FireServer античита", SS.BypassBlockFire, function(v) SS.BypassBlockFire = v end)
 AddToggle(L:Row(24), "Сторож пересоздания", SS.BypassWatch, function(v) SS.BypassWatch = v end)
@@ -590,11 +599,35 @@ do
         TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
     })
 end
+do
+    local row = L:Row(26)
+    local modes = {{"swallow", "Глушить Kick"}, {"rejoin", "Автовозврат"}, {"pass", "Пропускать"}}
+    for i, mm in ipairs(modes) do
+        local b = new("TextButton", {
+            Parent = row, Size = UDim2.new(1/3, -4, 1, 0),
+            Position = UDim2.new((i - 1)/3, 0, 0, 0),
+            BackgroundColor3 = (SS.OnKick == mm[1]) and C.accent or C.off,
+            Text = mm[2], Font = Enum.Font.Gotham, TextSize = 11,
+            TextColor3 = C.text, AutoButtonColor = false,
+        })
+        corner(b, 7)
+        b.MouseButton1Click:Connect(function()
+            SS.OnKick = mm[1]
+            for _, c in ipairs(row:GetChildren()) do
+                if c:IsA("TextButton") then
+                    c.BackgroundColor3 = (c.Text == mm[2]) and C.accent or C.off
+                end
+            end
+        end)
+    end
+end
+AddToggle(L:Row(24), "Тихий старт", SS.Stealth, function(v) SS.Stealth = v end)
+AddSlider(L:Row(36), "Задержка изменений, с", 0, 30, SS.StealthDelay, 0, function(v) SS.StealthDelay = v end)
 AddToggle(L:Row(24), "Логировать в консоль", SS.BypassVerbose, function(v) SS.BypassVerbose = v end)
-AddHint(L:Row(64),
-    "Подменяет Security.RemoteEvent локальной приманкой, к которой сервер не достаёт, " ..
-    "рвёт коннекты, глушит Kick и DeviceChecker. Сторож чинит канал каждые 0.25 с. " ..
-    "Если статус «хук: нет» — исполнитель без метатаблицы, работает только приманка.")
+AddHint(L:Row(72),
+    "Подменяет Security.RemoteEvent локальной приманкой, рвёт коннекты, глушит Kick " ..
+    "и BAC-скрипты, спуфит identifyexecutor. Код 267 — серверный кик: если он всё " ..
+    "равно приходит, ставь «Автовозврат» и поднимай задержку изменений.")
 L:EndSection()
 
 L:Section("ПРОИЗВОДИТЕЛЬНОСТЬ")
@@ -819,8 +852,8 @@ end
 --    LP.PlayerScripts.Client.DeviceChecker:Destroy()
 --  Destroy() не рвёт коннекты, поэтому канал не умирает от простого
 --  сноса. Здесь реальный RemoteEvent подменяется локальной приманкой:
---  сервер держит ссылку на свой экземпляр и FireClient уходит в пустоту,
---  клиентский обработчик не запускается и Kick не вызывается.
+--  сервер держит ссылку на свой экземпляр и FireClient уходит в пустоту.
+--  Плюс слой сокрытия — спуф исполнителя и выпил BAC-скриптов.
 --=============================================================
 Bypass.Log = function(t)
     if SS.BypassVerbose then print("[SleepScript][BAC] " .. tostring(t)) end
@@ -833,10 +866,12 @@ Bypass.Status = function(text, col)
 end
 
 Bypass.RefreshStatus = function()
-    local hookTxt = Bypass.hooked and "хук: да" or "хук: нет"
-    local col = Bypass.hooked and C.accent2 or Color3.fromRGB(255, 200, 60)
-    Bypass.Status(("%s • kick %d • снос %d • приманка %d")
-        :format(hookTxt, Bypass.kicks, Bypass.killed, Bypass.recreated), col)
+    local hookTxt = Bypass.hooked and "хук:да" or "хук:нет"
+    local spoofTxt = Bypass.spoofed > 0 and "спуф:да" or "спуф:нет"
+    local col = (Bypass.hooked and Bypass.spoofed > 0) and C.accent2
+        or Color3.fromRGB(255, 200, 60)
+    Bypass.Status(("%s %s • kick %d • скриптов %d • снос %d")
+        :format(hookTxt, spoofTxt, Bypass.kicks, Bypass.scripted, Bypass.killed), col)
 end
 
 local function waitFor(getter, timeout)
@@ -851,6 +886,12 @@ end
 
 local function isOurDummy(inst)
     return inst and Bypass.mine[inst] == true
+end
+
+local function getGlobal(name)
+    local ok, v = pcall(function() return getfenv(0)[name] end)
+    if ok and v ~= nil then return v end
+    return _G[name]
 end
 
 -- разрыв всех клиентских подписок на объект
@@ -948,6 +989,61 @@ Bypass.KillDeviceChecker = function(attempts)
     return found
 end
 
+-- маска BAC-скриптов; "bac" проверяется отдельно, чтобы не ловить Feedback
+local function matchesBac(nm)
+    if nm == "bac" or nm:match("^bac[_%-]") or nm:match("[_%-]bac$") then return true end
+    for _, p in ipairs({"security", "anticheat", "anti_cheat", "anti cheat", "devicechecker", "exploit"}) do
+        if nm:find(p, 1, true) then return true end
+    end
+    return false
+end
+
+Bypass.KillBacScripts = function()
+    local ps = LP:FindFirstChild("PlayerScripts")
+    if not ps then return 0 end
+    local n = 0
+    for _, v in ipairs(ps:GetDescendants()) do
+        if not (v:IsA("LocalScript") or v:IsA("Script") or v:IsA("ModuleScript")) then continue end
+        if matchesBac(v.Name:lower()) then
+            pcall(function() v.Disabled = true end)
+            pcall(function() v:Destroy() end)
+            n += 1
+        end
+    end
+    return n
+end
+
+-- сокрытие исполнителя от DeviceChecker
+Bypass.HideExecutor = function()
+    if not SS.BypassHide then return end
+    if not hookfunction then
+        Bypass.Log("hookfunction недоступен — спуф не встал")
+        Bypass.RefreshStatus()
+        return
+    end
+
+    local done = 0
+    local function cloak(name, fake)
+        local fn = getGlobal(name)
+        if not fn then return end
+        if pcall(hookfunction, fn, fake) then done += 1 end
+    end
+
+    cloak("identifyexecutor", function() return "Roblox", "1.0.0" end)
+    cloak("getexecutorname",  function() return "Roblox" end)
+    cloak("getexploit",       function() return "Roblox" end)
+
+    Bypass.spoofed = done
+    Bypass.Log("спуф исполнителя: " .. done .. " функций")
+    Bypass.RefreshStatus()
+end
+
+Bypass.Rejoin = function()
+    local ts = game:GetService("TeleportService")
+    local ok = pcall(function() ts:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP) end)
+    if not ok then pcall(function() ts:Teleport(game.PlaceId) end) end
+end
+
 -- хук метатаблицы: Kick глушится, FireServer в канал античита режется
 Bypass.Hook = function()
     if Bypass.hooked then return true end
@@ -963,7 +1059,10 @@ Bypass.Hook = function()
                 if #Bypass.log > 4 then table.remove(Bypass.log, 1) end
                 print("[SleepScript][BAC] Kick перехвачен: " .. msg)
                 Bypass.RefreshStatus()
-                if SS.BypassHard then return end
+                if SS.OnKick == "rejoin" then
+                    task.spawn(Bypass.Rejoin)
+                end
+                if SS.OnKick ~= "pass" then return end
             elseif (method == "FireServer" or method == "InvokeServer") and SS.BypassBlockFire then
                 local parent = self.Parent
                 if Bypass.blocked[self]
@@ -1044,8 +1143,11 @@ Bypass.Watch = function()
     local client = ps and ps:FindFirstChild("Client")
     if client then
         add(client.ChildAdded:Connect(function(inst)
-            if inst.Name:lower():find("devicechecker", 1, true) and SS.Bypass then
-                task.delay(0.05, function() Bypass.KillDeviceChecker(2) end)
+            if matchesBac(inst.Name:lower()) and SS.Bypass then
+                task.delay(0.05, function()
+                    pcall(function() inst.Disabled = true end)
+                    pcall(function() inst:Destroy() end)
+                end)
             end
         end))
     end
@@ -1056,10 +1158,16 @@ Bypass.Loop = function()
     if Bypass.looping then return end
     Bypass.looping = true
     task.spawn(function()
+        local tick = 0
         while Bypass.active and SS.Bypass do
+            tick += 1
             pcall(function()
                 if SS.BypassWatch then Bypass.Poison() end
                 Bypass.KillDeviceChecker(1)
+                if tick % 4 == 0 then
+                    local n = Bypass.KillBacScripts()
+                    if n > 0 then Bypass.scripted += n end
+                end
                 if not Bypass.hooked then Bypass.Hook() end
             end)
             task.wait(0.25)
@@ -1072,6 +1180,10 @@ Bypass.Start = function()
     if Bypass.active then return end
     Bypass.active = true
     Bypass.Hook()
+    Bypass.HideExecutor()
+    local scripts = Bypass.KillBacScripts()
+    Bypass.scripted += scripts
+    Bypass.Log("BAC-скриптов выпилено: " .. scripts)
     Bypass.Status("инициализация...", C.accent2)
 
     task.spawn(function()
@@ -1100,6 +1212,7 @@ end
 DestroySecurity = function()
     Bypass.Poison()
     Bypass.KillDeviceChecker(SS.BypassRetries)
+    Bypass.scripted += Bypass.KillBacScripts()
     Bypass.RefreshStatus()
     Bypass.Log("ручной снос")
 end
@@ -1220,8 +1333,8 @@ local NetworkStats = Stats:FindFirstChild("Network")
 
 local r, m
 if SS.ParryVisuals then
-    r = new("Part", {Name = "SleepParryCircle", Parent = workspace,
-        Anchored = true, CanCollide = false, Transparency = 0.3,
+    r = new("Part", {Name = "FX", Parent = cam() or workspace,
+        Anchored = true, CanCollide = false, Transparency = 1,
         Material = Enum.Material.Neon, Size = Vector3.new(1, 1, 1)})
     m = new("SpecialMesh", {MeshId = "rbxassetid://3270017"}, r)
 end
@@ -1411,9 +1524,14 @@ end)
 --  ИНИЦИАЛИЗАЦИЯ
 --=============================================================
 task.spawn(function()
+    if SS.Bypass then ApplyBypass(true) end
+
+    -- тихий период: BAC снимает слепок профиля на входе,
+    -- поэтому FOV/небо/тело/кап трогаем только после задержки
+    if SS.Stealth then task.wait(SS.StealthDelay) end
+
     if cam() then cam().FieldOfView = SS.FOV end
     if SS.CustomSky then ApplySky(SS.SkyId) end
-    if SS.Bypass then ApplyBypass(true) end
     if SS.FPSBoost then ApplyFPSBoost(true) end
     if SS.NoEffects then ApplyEffects(true) end
     if SS.NoAccessories then ApplyAccessories(true) end
