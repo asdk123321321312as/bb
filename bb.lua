@@ -1,6 +1,6 @@
 --[[
 =====================================================================
-   SleepScript  |  Blade Ball  (v1.2 — BAC-fix)
+   SleepScript  |  Blade Ball  (v1.3 — BAC-proof)
    Z          — свернуть / развернуть
    Крестик    — полностью закрыть (вернуть: Z)
    RightShift — быстрый тумблер AutoParry
@@ -30,20 +30,21 @@ getgenv().SleepScript = SS
 
 local DEFAULTS = {
     MenuState = "open",
-    -- AutoParry
+    -- AutoParry (дефолты = human-like, BAC спокойнее)
     AutoParry = false, PingBased = true, PingBasedOffset = 1.95,
-    DistanceToParry = 0.65, EmergencyRadius = 10,
-    ClashDistance = 22, ClashSpeed = 0.05, NormalSpeed = 0.09,
+    DistanceToParry = 0.65, EmergencyRadius = 10, EmergencyClick = false,
+    ClashDistance = 22, ClashSpeed = 0.04, NormalSpeed = 0.08,
+    OneClickPerBall = true, MaxCPS = 9, ClickJitter = 0.012,
     ShowRadius = true, RadiusScale = 1,
-    UsePreSim = true, ClickDownOnly = true, ClickJitter = 0.006,
-    ClickMethod = "vim",
+    UsePreSim = true, ClickDownOnly = true, ClickMethod = "vim",
     -- Anti-kick
-    KickMode = "rejoin",
-    -- Visuals (по умолчанию выключено — меньше поводов для BAC)
+    KickMode = "rejoin", Bypass = true,
+    DestroySecurity = true, DestroyDevice = true,
+    -- Visuals
     FOV = 70, CustomSky = false, SkyId = "rbxassetid://159454299",
     Headless = false, Korblox = false, KorbloxMesh = "rbxassetid://139607718",
     -- Perf
-    Bypass = true, FPSBoost = false, NoEffects = false, NoAccessories = false, FPSCap = 240,
+    FPSBoost = false, NoEffects = false, NoAccessories = false, FPSCap = 240,
     Overlay = true, OverlayGraph = true,
     SkinLock = true,
 }
@@ -53,16 +54,11 @@ for k, v in pairs(DEFAULTS) do if SS[k] == nil then SS[k] = v end end
 --  ПАЛИТРА / ХЕЛПЕРЫ
 --=============================================================
 local C = {
-    bg      = Color3.fromRGB(11, 13, 20),
-    bg2     = Color3.fromRGB(18, 21, 31),
-    card    = Color3.fromRGB(23, 27, 39),
-    accent  = Color3.fromRGB(124, 92, 255),
-    accent2 = Color3.fromRGB(0, 229, 192),
-    text    = Color3.fromRGB(236, 239, 250),
-    dim     = Color3.fromRGB(132, 140, 162),
-    off     = Color3.fromRGB(38, 43, 58),
-    stroke  = Color3.fromRGB(48, 54, 74),
-    warn    = Color3.fromRGB(255, 170, 60),
+    bg = Color3.fromRGB(11, 13, 20), bg2 = Color3.fromRGB(18, 21, 31),
+    card = Color3.fromRGB(23, 27, 39), accent = Color3.fromRGB(124, 92, 255),
+    accent2 = Color3.fromRGB(0, 229, 192), text = Color3.fromRGB(236, 239, 250),
+    dim = Color3.fromRGB(132, 140, 162), off = Color3.fromRGB(38, 43, 58),
+    stroke = Color3.fromRGB(48, 54, 74), bad = Color3.fromRGB(255, 92, 92),
 }
 
 local function new(class, props, parent)
@@ -71,16 +67,13 @@ local function new(class, props, parent)
     if parent then o.Parent = parent end
     return o
 end
-
 local function corner(o, r) new("UICorner", {CornerRadius = UDim.new(0, r or 10)}, o) end
-
 local function safe(fn)
     return function(...)
         local ok, err = pcall(fn, ...)
         if not ok then warn("[SleepScript] " .. tostring(err)) end
     end
 end
-
 local function makeDraggable(frame, handle)
     handle = handle or frame
     local dragging, dragInput, dragStart, startPos
@@ -107,12 +100,17 @@ local function makeDraggable(frame, handle)
 end
 
 local ApplySky, ApplyBody, ApplyFPSBoost, ApplyEffects, ApplyAccessories
-local ApplyBypass, ApplySkin, RenderSkinList, BuildSkinDatabase
+local ApplySkin, RenderSkinList, BuildSkinDatabase, InstallAntiKick, UpdateHookStatus
+local statusLbl, kickLbl
 
 --=============================================================
---  АНТИ-КИК (ставится ДО всего остального)
+--  ХУК ДО ВСЕГО ОСТАЛЬНОГО
 --=============================================================
-local oldNamecall
+local HookMode, KickCount = "none", 0
+local oldNamecall, oldKick
+
+local function wrap(f) if newcclosure then return newcclosure(f) end return f end
+
 local function Rejoin()
     if game.JobId and game.JobId ~= "" then
         TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP)
@@ -121,29 +119,82 @@ local function Rejoin()
     end
 end
 
-local function InstallAntiKick()
-    if not (getrawmetatable and setreadonly and newcclosure) then return end
-    local mt = getrawmetatable(game)
-    if not oldNamecall then oldNamecall = mt.__namecall end
-    setreadonly(mt, false)
-    mt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod and getnamecallmethod() or nil
-        if method == "Kick" and self == LP and SS.Bypass then
-            local mode = SS.KickMode
-            if mode == "block" then
-                return
-            elseif mode == "rejoin" then
-                task.spawn(function()
-                    task.wait(0.2)
-                    pcall(Rejoin)
-                end)
-                return
-            end
-        end
-        return oldNamecall(self, ...)
-    end)
-    setreadonly(mt, true)
-    print("[SleepScript] Anti-Kick: " .. tostring(SS.KickMode))
+-- true = проглотить кик
+local function OnKick()
+    KickCount += 1
+    pcall(UpdateHookStatus)
+    if SS.KickMode == "block" then return true end
+    if SS.KickMode == "rejoin" then
+        task.spawn(function() task.wait(0.25); pcall(Rejoin) end)
+        return true
+    end
+    return false
+end
+
+UpdateHookStatus = function()
+    if not statusLbl then return end
+    local map = {
+        hookmetamethod = "Хук: hookmetamethod ✔",
+        getrawmetatable = "Хук: getrawmetatable ✔",
+        hookfunction    = "Хук: hookfunction ✔",
+        off             = "Хук: выключен",
+        none            = "Хук: НЕ УСТАНОВЛЕН ✖",
+    }
+    statusLbl.Text = map[HookMode] or ("Хук: " .. HookMode)
+    statusLbl.TextColor3 = (HookMode == "none" or HookMode == "off") and C.bad or C.accent2
+    if kickLbl then kickLbl.Text = "Перехвачено киков: " .. KickCount end
+end
+
+InstallAntiKick = function()
+    if not SS.Bypass then HookMode = "off"; UpdateHookStatus(); return end
+    if HookMode == "hookmetamethod" or HookMode == "getrawmetatable" or HookMode == "hookfunction" then
+        UpdateHookStatus(); return
+    end
+
+    -- 1) hookmetamethod — основной способ, не требует setreadonly
+    if hookmetamethod and getnamecallmethod then
+        local ok = pcall(function()
+            oldNamecall = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+                if getnamecallmethod() == "Kick" and self == LP then
+                    if OnKick() then return end
+                end
+                return oldNamecall(self, ...)
+            end))
+        end)
+        if ok then HookMode = "hookmetamethod"; UpdateHookStatus(); return end
+    end
+
+    -- 2) getrawmetatable + setreadonly
+    if getrawmetatable and setreadonly and getnamecallmethod then
+        local ok = pcall(function()
+            local mt = getrawmetatable(game)
+            local old = mt.__namecall
+            setreadonly(mt, false)
+            mt.__namecall = wrap(function(self, ...)
+                if getnamecallmethod() == "Kick" and self == LP then
+                    if OnKick() then return end
+                end
+                return old(self, ...)
+            end)
+            setreadonly(mt, true)
+        end)
+        if ok then HookMode = "getrawmetatable"; UpdateHookStatus(); return end
+    end
+
+    -- 3) hookfunction по методу Kick
+    if hookfunction then
+        local ok = pcall(function()
+            oldKick = hookfunction(LP.Kick, wrap(function(a, ...)
+                if OnKick() then return end
+                return oldKick(a, ...)
+            end))
+        end)
+        if ok then HookMode = "hookfunction"; UpdateHookStatus(); return end
+    end
+
+    HookMode = "none"
+    UpdateHookStatus()
+    warn("[SleepScript] Ни один способ хука не сработал — включён только авто-rejoin")
 end
 
 --=============================================================
@@ -163,16 +214,14 @@ if not gui.Parent then gui.Parent = (gethui and gethui()) or CoreGui end
 local WIN_W, WIN_H = 560, 360
 
 local shadow = new("Frame", {
-    Parent = gui, Name = "Shadow",
-    Size = UDim2.fromOffset(WIN_W + 8, WIN_H + 8),
+    Parent = gui, Size = UDim2.fromOffset(WIN_W + 8, WIN_H + 8),
     Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5),
     BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.55, BorderSizePixel = 0,
 })
 corner(shadow, 18)
 
 local main = new("Frame", {
-    Parent = gui, Name = "Main",
-    Size = UDim2.fromOffset(WIN_W, WIN_H),
+    Parent = gui, Size = UDim2.fromOffset(WIN_W, WIN_H),
     Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5),
     BackgroundColor3 = C.bg, BorderSizePixel = 0, ClipsDescendants = true, Active = true,
 })
@@ -200,12 +249,11 @@ new("TextLabel", {
     BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = "SleepScript",
     TextSize = 17, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
 })
-local subLbl = new("TextLabel", {
+new("TextLabel", {
     Parent = header, Size = UDim2.new(1, -140, 0, 14), Position = UDim2.fromOffset(18, 30),
-    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.2 BAC-fix",
+    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.3 BAC-proof",
     TextSize = 11, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
 })
-new("UIGradient", {Color = ColorSequence.new(C.accent, C.accent2)}, subLbl)
 
 local minBtn = new("TextButton", {
     Parent = header, Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, -76, 0, 12),
@@ -240,7 +288,6 @@ local contentHolder = new("Frame", {
 --  ВКЛАДКИ
 --=============================================================
 local pages, tabs = {}, {}
-
 local TABS = {
     { key = "AutoParry", label = "AutoParry" },
     { key = "AntiKick",  label = "Anti-Kick" },
@@ -445,16 +492,15 @@ local function AddTextbox(row, placeholder, default, callback)
     return box
 end
 
-local function AddHint(row, text)
+local function AddHint(row, text, color)
     new("TextLabel", {
         Parent = row, Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
         Font = Enum.Font.Gotham, TextWrapped = true, TextSize = 11,
-        TextColor3 = C.dim, Text = text, TextXAlignment = Enum.TextXAlignment.Left,
+        TextColor3 = color or C.dim, Text = text, TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Top,
     })
 end
 
--- выбор из вариантов (для режима кика / метода клика)
 local function AddChoices(row, options, current, callback)
     local n = #options
     local btns = {}
@@ -479,6 +525,45 @@ local function AddChoices(row, options, current, callback)
 end
 
 --=============================================================
+--  HUMAN MODE / SAFE MODE
+--=============================================================
+local function HumanMode()
+    SS.OneClickPerBall, SS.MaxCPS = true, 9
+    SS.EmergencyClick, SS.UsePreSim = false, true
+    SS.ClickDownOnly, SS.ClickJitter = true, 0.012
+    SS.ClashSpeed, SS.NormalSpeed = 0.04, 0.08
+    for n, v in pairs({
+        ["One click на шар"] = true, ["Max CPS"] = 9,
+        ["Emergency click"] = false, ["PreSimulation"] = true,
+        ["Клик только вниз"] = true,
+    }) do
+        if Sync[n] and Sync[n].Set then
+            if type(v) == "number" then Sync[n].Set(v, false) else Sync[n].Set(v, false) end
+        end
+    end
+    print("[SleepScript] Human Mode включён")
+end
+
+local function SafeMode()
+    SS.CustomSky, SS.Headless, SS.Korblox = false, false, false
+    SS.FPSBoost, SS.NoEffects, SS.NoAccessories = false, false, false
+    SS.SkinLock = false
+    SS._curMesh, SS._curTex = nil, nil
+    SS.FOV = 70
+    if cam() then cam().FieldOfView = 70 end
+    ApplySky(nil); ApplyBody()
+    ApplyFPSBoost(false); ApplyEffects(false); ApplyAccessories(false)
+    for n, v in pairs({
+        ["CustomSky"] = false, ["Headless"] = false, ["Korblox"] = false,
+        ["FPS Boost"] = false, ["Убрать эффекты"] = false,
+        ["Убрать аксессуары других"] = false, ["SkinLock (не сбрасывать)"] = false,
+    }) do
+        if Sync[n] then Sync[n].Set(v, false) end
+    end
+    print("[SleepScript] Safe Mode включён — все клиентские правки выключены")
+end
+
+--=============================================================
 --  СТРАНИЦА: AUTOPARRY
 --=============================================================
 local L = NewLayout(pages.AutoParry)
@@ -486,6 +571,15 @@ L:Section("PARRY")
 AddToggle(L:Row(24), "AutoParry", SS.AutoParry, function(v) SS.AutoParry = v end)
 AddToggle(L:Row(24), "Показывать радиус", SS.ShowRadius, function(v) SS.ShowRadius = v end)
 AddSlider(L:Row(36), "Размер радиуса", 0.2, 3, SS.RadiusScale, 1, function(v) SS.RadiusScale = v end)
+L:EndSection()
+
+L:Section("ЧЕЛОВЕЧНОСТЬ (анти-BAC)")
+AddToggle(L:Row(24), "One click на шар", SS.OneClickPerBall, function(v) SS.OneClickPerBall = v end)
+AddSlider(L:Row(36), "Max CPS", 1, 20, SS.MaxCPS, 0, function(v) SS.MaxCPS = v end)
+AddToggle(L:Row(24), "Emergency click", SS.EmergencyClick, function(v) SS.EmergencyClick = v end)
+AddSlider(L:Row(36), "Jitter клика", 0, 0.05, SS.ClickJitter, 3, function(v) SS.ClickJitter = v end)
+AddButton(L:Row(26), "Включить Human Mode", HumanMode)
+AddHint(L:Row(30), "Один клик на подлёт + лимит CPS = почти как живой игрок. Так BAC не палит.")
 L:EndSection()
 
 L:Section("ТАЙМИНГ")
@@ -501,10 +595,9 @@ AddSlider(L:Row(36), "ClashSpeed", 0.01, 0.2, SS.ClashSpeed, 2, function(v) SS.C
 AddSlider(L:Row(36), "NormalSpeed", 0.01, 0.3, SS.NormalSpeed, 2, function(v) SS.NormalSpeed = v end)
 L:EndSection()
 
-L:Section("СОВМЕСТИМОСТЬ С BAC")
+L:Section("ВВОД")
 AddToggle(L:Row(24), "PreSimulation (мягче)", SS.UsePreSim, function(v) SS.UsePreSim = v end)
 AddToggle(L:Row(24), "Клик только вниз", SS.ClickDownOnly, function(v) SS.ClickDownOnly = v end)
-AddSlider(L:Row(36), "Jitter клика", 0, 0.03, SS.ClickJitter, 3, function(v) SS.ClickJitter = v end)
 do
     local row = L:Row(26)
     AddChoices(row, {
@@ -512,14 +605,23 @@ do
         { label = "mouse1click",  value = "mouse" },
     }, SS.ClickMethod, function(v) SS.ClickMethod = v end)
 end
-AddHint(L:Row(30), "Если BAC кикает — включи 'PreSimulation' + 'Клик только вниз'.")
 L:EndSection()
 
 --=============================================================
 --  СТРАНИЦА: ANTI-KICK
 --=============================================================
 L = NewLayout(pages.AntiKick)
-L:Section("РЕЖИМ КИКА")
+L:Section("СОСТОЯНИЕ")
+statusLbl = new("TextLabel", {
+    Parent = L:Row(18), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+    Font = Enum.Font.GothamBold, Text = "Хук: ...", TextSize = 12,
+    TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
+})
+kickLbl = new("TextLabel", {
+    Parent = L:Row(16), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+    Font = Enum.Font.Gotham, Text = "Перехвачено киков: 0", TextSize = 11,
+    TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
+})
 do
     local row = L:Row(28)
     AddChoices(row, {
@@ -528,20 +630,41 @@ do
         { label = "Off",    value = "off" },
     }, SS.KickMode, function(v) SS.KickMode = v end)
 end
-AddHint(L:Row(34), "Rejoin — при кике от BAC блокирует дисконнект и возвращает в тот же сервер. Block — просто не отпускает. Off — как обычно.")
 L:EndSection()
 
-L:Section("ЗАЩИТА")
-AddToggle(L:Row(24), "Bypass (хук namecall)", SS.Bypass, function(v)
+L:Section("BAC BYPASS")
+AddToggle(L:Row(24), "Bypass (хук Kick)", SS.Bypass, function(v)
     SS.Bypass = v
-    ApplyBypass(v)
+    if v then InstallAntiKick() else HookMode = "off"; UpdateHookStatus() end
 end)
-AddButton(L:Row(26), "Переустановить Anti-Kick", function() InstallAntiKick() end)
+AddToggle(L:Row(24), "Удалить Security (RS)", SS.DestroySecurity, function(v) SS.DestroySecurity = v end)
+AddToggle(L:Row(24), "Удалить DeviceChecker", SS.DestroyDevice, function(v) SS.DestroyDevice = v end)
+AddButton(L:Row(26), "Применить BAC Bypass сейчас", function()
+    SS.Bypass = true
+    InstallAntiKick()
+    if SS.DestroySecurity then
+        local s = ReplicatedStorage:FindFirstChild("Security")
+        if s then s:Destroy() end
+    end
+    if SS.DestroyDevice then
+        local ps = LP:FindFirstChild("PlayerScripts")
+        if ps then
+            for _, v in pairs(ps:GetDescendants()) do
+                local n = v.Name:lower()
+                if n:find("devicechecker") or n:find("bac") or n:find("anticheat") then
+                    pcall(function() v:Destroy() end)
+                end
+            end
+        end
+    end
+    print("[SleepScript] BAC Bypass применён")
+end)
 AddButton(L:Row(26), "Вернуться на этот сервер", function() pcall(Rejoin) end)
 L:EndSection()
 
-L:Section("ЕСЛИ КИКАЕТ ВСЁ РАВНО")
-AddHint(L:Row(52), "1) Выключи Korblox / Headless и Custom Sky.\n2) Поставь ClickDownOnly = ON и PreSimulation = ON.\n3) Подними NormalSpeed до 0.1.")
+L:Section("КРАЙНИЕ МЕРЫ")
+AddButton(L:Row(26), "SAFE MODE (выключить всё лишнее)", SafeMode, Color3.fromRGB(72, 48, 32))
+AddHint(L:Row(56), "Если кикает всё равно: жми SAFE MODE, затем Human Mode.\nДальше поднимай NormalSpeed до 0.12 и ClashSpeed до 0.06.")
 L:EndSection()
 
 --=============================================================
@@ -686,7 +809,7 @@ selectTab("AutoParry")
 --  СОСТОЯНИЯ МЕНЮ
 --=============================================================
 local pill = new("TextButton", {
-    Parent = gui, Name = "Pill", Size = UDim2.fromOffset(46, 46),
+    Parent = gui, Size = UDim2.fromOffset(46, 46),
     Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5),
     BackgroundColor3 = C.bg, Text = "S", Font = Enum.Font.GothamBold,
     TextSize = 18, TextColor3 = C.accent, AutoButtonColor = false, Visible = false,
@@ -843,10 +966,6 @@ ApplyAccessories = function(on)
     end
 end
 
-ApplyBypass = function(on)
-    InstallAntiKick()
-end
-
 --=============================================================
 --  РЕАЛИЗАЦИЯ: СКИНЫ
 --=============================================================
@@ -947,9 +1066,10 @@ BuildSkinDatabase()
 RenderSkinList("")
 
 --=============================================================
---  АВТОПАРРИ (BAC-safe)
+--  АВТОПАРРИ (human-like)
 --=============================================================
 local LastClick, LastBallHit, IsParrying, frameCounter = 0, nil, false, 0
+local clickTimes = {}
 local BallsFolder = workspace:FindFirstChild("Balls") or workspace:WaitForChild("Balls", 5)
 
 local NetworkStats = Stats:FindFirstChild("Network")
@@ -978,7 +1098,6 @@ local function GetBall()
     return nil
 end
 
--- скорость шара: сначала пробуем родной констрейнт игры
 local function BallSpeed(ball)
     local z = ball:FindFirstChild("zoomies")
     if z and z:IsA("LinearVelocity") then
@@ -998,22 +1117,32 @@ local function IsTargeted(ball)
         or LP.Character:FindFirstChild("Highlight") ~= nil
 end
 
+local function CanClick()
+    local now = tick()
+    while #clickTimes > 0 and now - clickTimes[1] > 1 do
+        table.remove(clickTimes, 1)
+    end
+    if SS.MaxCPS > 0 and #clickTimes >= SS.MaxCPS then return false end
+    table.insert(clickTimes, now)
+    return true
+end
+
 local function SendClick(isClashing, ball)
     if not SS.AutoParry or IsParrying then return end
     local now = tick()
-    local jitter = SS.ClickJitter > 0
-        and (math.random() * SS.ClickJitter * 2 - SS.ClickJitter) or 0
-    local cd = (isClashing and SS.ClashSpeed or SS.NormalSpeed) + jitter
+    local cd = (isClashing and SS.ClashSpeed or SS.NormalSpeed)
+    if SS.ClickJitter > 0 then cd = cd + math.random() * SS.ClickJitter end
 
-    if not isClashing and LastBallHit == ball and (now - LastClick) < 0.5 then return end
     if (now - LastClick) < cd then return end
+    if not isClashing and SS.OneClickPerBall and LastBallHit == ball then return end
+    if not CanClick() then return end
 
     IsParrying, LastClick, LastBallHit = true, now, ball
 
     if SS.ClickMethod == "mouse" and mouse1click then
         if SS.ClickDownOnly and mouse1press then
             mouse1press()
-            task.delay(0.01, function() if mouse1release then mouse1release() end end)
+            task.delay(0.012, function() if mouse1release then mouse1release() end end)
         else
             mouse1click()
         end
@@ -1056,8 +1185,8 @@ local function ParryStep()
     local BallPos, PlayerPos = Ball.Position, Root.Position
     local Speed = BallSpeed(Ball)
     local Distance = (PlayerPos - BallPos).Magnitude
-    local dot = (PlayerPos - BallPos).Unit * 1
     local vel = Ball.AssemblyLinearVelocity
+    local dot = 1
     if vel.Magnitude > 0.01 then dot = (PlayerPos - BallPos).Unit:Dot(vel.Unit) end
 
     if dot < 0 then LastBallHit = nil end
@@ -1066,8 +1195,6 @@ local function ParryStep()
     local IsClashing = Targeted and Distance <= SS.ClashDistance
 
     frameCounter += 1
-
-    -- ВАЖНО: скрытие радиуса работает всегда, а не только когда визуалы включены
     if r then
         if not SS.ShowRadius then
             r.Transparency = 1
@@ -1084,7 +1211,9 @@ local function ParryStep()
         local TimeToHit = Distance / math.max(Speed, 1)
         local Threshold = SS.DistanceToParry + (SS.PingBased and Ping * SS.PingBasedOffset or 0)
         if Speed > 150 then Threshold *= 1.15 end
-        if TimeToHit <= Threshold or Distance <= SS.EmergencyRadius then
+        if TimeToHit <= Threshold then
+            SendClick(false, Ball)
+        elseif SS.EmergencyClick and Distance <= SS.EmergencyRadius then
             SendClick(false, Ball)
         end
     end
@@ -1104,6 +1233,14 @@ LP.CharacterAdded:Connect(function()
     if SS._curMesh or SS._curTex then
         task.wait(0.5)
         ApplySkin(SS._curMesh, SS._curTex)
+    end
+end)
+
+-- страховка: если хук не сработал — возвращаемся сами
+LP.AncestryChanged:Connect(function(_, parent)
+    if not parent and SS.KickMode == "rejoin" then
+        task.wait(0.4)
+        pcall(Rejoin)
     end
 end)
 
@@ -1159,11 +1296,11 @@ RunService.RenderStepped:Connect(function()
         if ov.Enabled then
             fpsLbl.Text = "FPS  " .. fps
             fpsLbl.TextColor3 = fps >= 60 and C.accent2
-                or (fps >= 30 and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(255, 90, 90))
+                or (fps >= 30 and Color3.fromRGB(255, 200, 60) or C.bad)
             local ping = NetworkStats and math.floor(NetworkStats.Value) or 0
             pingLbl.Text = "PING  " .. ping .. " ms"
             pingLbl.TextColor3 = ping < 80 and C.accent2
-                or (ping < 150 and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(255, 90, 90))
+                or (ping < 150 and Color3.fromRGB(255, 200, 60) or C.bad)
             table.insert(hist, fps)
             if #hist > 24 then table.remove(hist, 1) end
             for _, v in ipairs(graph:GetChildren()) do
@@ -1198,6 +1335,26 @@ task.spawn(function()
 end)
 
 task.spawn(function()
+    if SS.DestroySecurity then
+        task.wait(1)
+        local s = ReplicatedStorage:FindFirstChild("Security")
+        if s then s:Destroy(); print("[SleepScript] Security удалён") end
+    end
+    if SS.DestroyDevice then
+        task.wait(0.5)
+        local ps = LP:FindFirstChild("PlayerScripts")
+        if ps then
+            for _, v in pairs(ps:GetDescendants()) do
+                local n = v.Name:lower()
+                if n:find("devicechecker") or n:find("bac") or n:find("anticheat") then
+                    pcall(function() v:Destroy() end)
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
     while task.wait(1.5) do
         if SS.SkinLock and (SS._curMesh or SS._curTex) then
             pcall(ApplySkin, SS._curMesh, SS._curTex)
@@ -1205,4 +1362,4 @@ task.spawn(function()
     end
 end)
 
-print("[SleepScript] Загружено. Anti-Kick: " .. SS.KickMode .. " | Z — меню")
+print("[SleepScript] v1.3 загружено. Хук: " .. HookMode)
