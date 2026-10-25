@@ -1,6 +1,6 @@
 --[[
 =====================================================================
-   SleepScript  |  Blade Ball  (v1.5 + BAC stealth + AC remote-bypass)
+   SleepScript  |  Blade Ball  (v1.7 + BAC stealth + AC remote-bypass)
    Z        — свернуть / развернуть (полное скрытие)
    Крестик  — полностью закрыть меню (вернуть: Z)
    RightShift — быстрый тумблер AutoParry
@@ -40,7 +40,7 @@ local DEFAULTS = {
     Bypass = true, DestroySecurity = true,
     BypassHard = true, BypassBlockFire = true, BypassWatch = true,
     BypassNuke = false, BypassVerbose = false, BypassRetries = 6,
-    BypassHide = true, Stealth = true, StealthDelay = 12, OnKick = "swallow",
+    BypassHide = true, Stealth = true, StealthDelay = 20, OnKick = "swallow",
     FPSBoost = false, NoEffects = false, NoAccessories = false, FPSCap = 240,
     Overlay = true, OverlayGraph = true,
     SkinLock = true,
@@ -60,6 +60,9 @@ local C = {
     dim     = Color3.fromRGB(132, 140, 162),
     off     = Color3.fromRGB(38, 43, 58),
     stroke  = Color3.fromRGB(48, 54, 74),
+    warn    = Color3.fromRGB(255, 200, 60),
+    bad     = Color3.fromRGB(255, 120, 120),
+    good    = Color3.fromRGB(90, 220, 140),
 }
 
 local function new(class, props, parent)
@@ -119,18 +122,21 @@ local Bypass = {
     mine      = setmetatable({}, {__mode = "k"}),
     conns     = {},
     statusLbl = nil,
+    onKickRow = nil,
     kicks     = 0,
     killed    = 0,
     recreated = 0,
     spoofed   = 0,
     scripted  = 0,
+    rejoinCD  = 0,
     log       = {},
 }
 
 --=============================================================
---  [AC BYPASS] ПЕРЕХВАТ ПАРИ-РЕМОУТА + ТОКЕН
---  Вытаскивает game-токен через getgc, ловит клиентский пари-ремоут
---  (FireServer / InvokeServer) и шлёт пари-пакет напрямую.
+--  [AC BYPASS] ПЕРЕХВАТ ПАРИ-РЕМОУТА + TOKEN SPOOF
+--  Порт системы из рабочего билда: поштучный хук __index на метатаблице
+--  каждого RemoteEvent/RemoteFunction, вытаскивание game-токена через
+--  getgc, сборка пари-пакета и отправка напрямую (fireParryRemote).
 --  Виртуальные клики не используются — BAC не отличает пари от настоящего.
 --=============================================================
 local Remote = {
@@ -139,14 +145,16 @@ local Remote = {
     tokenFound     = false,
     hooked         = false,
     ready          = false,
+    captured       = nil,
     capturedRemote = nil,
     capturedArgs   = nil,
     selfFiring     = false,
     statusLbl      = nil,
+    reverted       = {},   -- remote -> args (уже перехвачен)
+    original       = {},   -- metatable -> true (метатаблица уже под хуком)
+    conns          = {},
     prevNamecall   = nil,
-    oldIndex       = nil,
     namecallHooked = false,
-    indexHooked    = false,
 }
 
 function Remote.Log(t)
@@ -161,7 +169,7 @@ function Remote.RefreshStatus()
         col = C.accent2
     elseif Remote.tokenFound then
         txt = "токен: ок • жду первый пари (клик для захвата)"
-        col = Color3.fromRGB(255, 200, 60)
+        col = C.warn
     else
         txt = "токен не найден • клик-фолбэк"
         col = C.dim
@@ -170,11 +178,65 @@ function Remote.RefreshStatus()
     Remote.statusLbl.TextColor3 = col
 end
 
+-- тост в углу (аналог уведомления из оригинала)
+function Remote.Toast(title, content)
+    task.spawn(function()
+        pcall(function()
+            local parent = (gethui and gethui()) or CoreGui
+            if not parent then return end
+            local holder = parent:FindFirstChild("SleepScript_Toasts")
+            if not holder then
+                holder = new("ScreenGui", {
+                    Name = "SleepScript_Toasts", ResetOnSpawn = false,
+                    IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+                    Parent = parent,
+                })
+                local list = new("Frame", {
+                    Name = "List", Parent = holder,
+                    AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -18, 0, 18),
+                    Size = UDim2.fromOffset(300, 0), BackgroundTransparency = 1,
+                })
+                new("UIListLayout", {Padding = UDim.new(0, 8), Parent = list})
+            end
+            local list = holder.List
+
+            local f = new("Frame", {
+                Parent = list, Size = UDim2.fromOffset(300, 64),
+                BackgroundColor3 = C.card, BackgroundTransparency = 0.05,
+                BorderSizePixel = 0, ClipsDescendants = true,
+            })
+            corner(f, 12)
+            new("UIStroke", {Color = C.accent, Transparency = 0.5, Thickness = 1}, f)
+            new("UIGradient", {Rotation = 20, Color = ColorSequence.new(C.card, C.bg)}, f)
+
+            new("TextLabel", {
+                Parent = f, BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
+                Text = tostring(title or "SleepScript"), TextSize = 13,
+                TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
+                Position = UDim2.fromOffset(14, 10), Size = UDim2.new(1, -28, 0, 16),
+            })
+            new("TextLabel", {
+                Parent = f, BackgroundTransparency = 1, Font = Enum.Font.Gotham,
+                Text = tostring(content or ""), TextSize = 11, TextWrapped = true,
+                TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
+                TextYAlignment = Enum.TextYAlignment.Top,
+                Position = UDim2.fromOffset(14, 28), Size = UDim2.new(1, -28, 0, 28),
+            })
+
+            task.wait(3.5)
+            local out = TweenService:Create(f, TweenInfo.new(0.25), {BackgroundTransparency = 1})
+            out:Play()
+            out.Completed:Wait()
+            f:Destroy()
+        end)
+    end)
+end
+
 Remote.Valid = function(args)
     return type(args) == "table" and #args >= 8
 end
 
--- 1) поиск game-токен-функции в GC (ищем lclosure с исходником *PRY*)
+-- 1) поиск game-токен-функции в GC (lclosure с исходником *PRY*)
 Remote.FindToken = function()
     if Remote.tokenFound then return true end
     if not getgc or not debug or not debug.getupvalues then return false end
@@ -203,92 +265,90 @@ Remote.FindToken = function()
     return Remote.tokenFound
 end
 
--- 2) токенизация uid (XOR со временем сервера)
-Remote.Tokenize = function(uid)
+-- 2) токенизация uid — XOR со временем сервера (как в оригинале)
+Remote.Tokenize = function(remote_uid)
     if not Remote.token then return "" end
-    local t = tostring(math.floor(workspace:GetServerTimeNow() * 100))
-    local ok, key = pcall(Remote.token, uid, "TIME")
+    local time = tostring(math.floor(workspace:GetServerTimeNow() * 100))
+    local ok, key = pcall(Remote.token, remote_uid, "TIME")
     if not ok or type(key) ~= "string" or key == "" then return "" end
-    local chars = table.create(#t)
-    for i = 1, #t do
-        chars[i] = string.char(bit32.bxor(
-            (string.byte(t, i) + i) % 256,
-            string.byte(key, (i - 1) % #key + 1)
+    local characters = table.create(#time)
+    for index = 1, #time do
+        characters[index] = string.char(bit32.bxor(
+            (string.byte(time, index) + index) % 256,
+            string.byte(key, (index - 1) % #key + 1)
         ))
     end
-    return table.concat(chars)
+    return table.concat(characters)
 end
 
--- 3) захват пари-пакета из игры
+-- 3) захват пари-пакета
 Remote.Capture = function(remote, args)
     if not Remote.enabled or Remote.selfFiring then return end
     if not Remote.Valid(args) then return end
+    if Remote.reverted[remote] then return end
+
+    Remote.reverted[remote] = args
+    Remote.captured = { remote = remote, args = args }
 
     local name = tostring(remote.Name):lower()
     local cur  = Remote.capturedRemote
     local better = (not cur)
         or (name:find("parry", 1, true) and not tostring(cur.Name):lower():find("parry", 1, true))
 
-    if better then Remote.capturedRemote = remote end
-    if remote == Remote.capturedRemote then Remote.capturedArgs = args end
+    if better then
+        Remote.capturedRemote = remote
+        Remote.capturedArgs = args
+    end
 
     if not Remote.ready then
         Remote.ready = true
         Remote.Log("пакет пари перехвачен: " .. remote:GetFullName())
         Remote.RefreshStatus()
+        Remote.Toast("VIREX", "Anti-cheat Bypassed")
     end
 end
 
--- 4) отправка пари-пакета напрямую
-Remote.Fire = function(curveCF)
-    if not Remote.capturedRemote or not Remote.capturedArgs then return false end
-    if not Remote.tokenFound then return false end
-    local camera = cam()
-    if not camera then return false end
+-- 4) поштучный хук __index на метатаблице ремоута (оригинальный подход)
+Remote.HookRemote = function(remote)
+    if not remote then return end
+    if Remote.reverted[remote] then return end
 
-    local vp  = camera.ViewportSize
-    local aim = {math.floor(vp.X / 2), math.floor(vp.Y / 2)}
-    pcall(function()
-        local m = UserInputService:GetMouseLocation()
-        if m then aim = {math.floor(m.X), math.floor(m.Y)} end
-    end)
+    local meta = getrawmetatable(remote)
+    if not meta or Remote.original[meta] then return end
+    Remote.original[meta] = true
 
-    local event_data = {}
-    local alive = workspace:FindFirstChild("Alive")
-    if alive then
-        for _, e in pairs(alive:GetChildren()) do
-            if e.PrimaryPart then
-                local ok, sp = pcall(function() return camera:WorldToScreenPoint(e.PrimaryPart.Position) end)
-                if ok then event_data[e.Name] = sp end
+    if setreadonly then setreadonly(meta, false) end
+    local old = meta.__index
+    meta.__index = function(self, key)
+        if (key == "FireServer" and self:IsA("RemoteEvent"))
+        or (key == "InvokeServer" and self:IsA("RemoteFunction")) then
+            return function(_, ...)
+                local args = {...}
+                pcall(Remote.Capture, self, args)
+                return old(self, key)(_, unpack(args))
             end
         end
+        return old(self, key)
     end
-
-    local packet = {
-        Remote.capturedArgs[1],
-        Remote.capturedArgs[2],
-        Remote.Tokenize(Remote.capturedArgs[2]),
-        0.5,
-        curveCF or camera.CFrame,
-        event_data,
-        aim,
-        false,
-    }
-
-    Remote.selfFiring = true
-    local ok = pcall(function()
-        local r = Remote.capturedRemote
-        if r:IsA("RemoteEvent") then
-            r:FireServer(unpack(packet))
-        elseif r:IsA("RemoteFunction") then
-            r:InvokeServer(unpack(packet))
-        end
-    end)
-    Remote.selfFiring = false
-    return ok
+    if setreadonly then setreadonly(meta, true) end
 end
 
--- 5) хук __namecall (ловит remote:FireServer(...))
+Remote.HookAll = function()
+    for _, r in pairs(ReplicatedStorage:GetDescendants()) do
+        if r:IsA("RemoteEvent") or r:IsA("RemoteFunction") then
+            pcall(Remote.HookRemote, r)
+        end
+    end
+    if not Remote.conns.hookAdded then
+        Remote.conns.hookAdded = ReplicatedStorage.DescendantAdded:Connect(function(inst)
+            if inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction") then
+                pcall(Remote.HookRemote, inst)
+            end
+        end)
+    end
+end
+
+-- 5) глобальный __namecall как второй канал захвата (игра может звать через ":")
 Remote.namecallHandler = function(self, ...)
     if Remote.enabled then
         local method = getnamecallmethod and getnamecallmethod()
@@ -317,48 +377,69 @@ Remote.HookNamecall = function(force)
     if ok then
         Remote.namecallHooked = true
         Remote.Log("namecall-хук AC установлен")
-    else
-        Remote.Log("namecall-хук AC не встал")
     end
 end
 
--- 6) хук __index (ловит remote.FireServer(remote, ...))
-Remote.indexHandler = function(self, key)
-    if Remote.enabled and (key == "FireServer" or key == "InvokeServer") then
-        local orig = Remote.oldIndex(self, key)
-        if type(orig) == "function" then
-            return function(_, ...)
-                pcall(Remote.Capture, self, {...})
-                return orig(_, ...)
+-- 6) fireParryRemote — сборка и отправка пари-пакета
+Remote.Fire = function(curveCF)
+    if not Remote.capturedRemote or not Remote.capturedArgs then return false end
+    if not Remote.tokenFound then return false end
+    local camera = cam()
+    if not camera then return false end
+
+    local is_mobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+    local aim_target
+    if is_mobile then
+        local vp = camera.ViewportSize
+        aim_target = {math.floor(vp.X / 2), math.floor(vp.Y / 2)}
+    else
+        local ok, mouse = pcall(function() return UserInputService:GetMouseLocation() end)
+        if ok and mouse then
+            aim_target = {math.floor(mouse.X), math.floor(mouse.Y)}
+        else
+            local vp = camera.ViewportSize
+            aim_target = {math.floor(vp.X / 2), math.floor(vp.Y / 2)}
+        end
+    end
+
+    local event_data = {}
+    local alive = workspace:FindFirstChild("Alive")
+    if alive then
+        for _, entity in pairs(alive:GetChildren()) do
+            if entity.PrimaryPart then
+                local ok, sp = pcall(function() return camera:WorldToScreenPoint(entity.PrimaryPart.Position) end)
+                if ok then event_data[entity.Name] = sp end
             end
         end
-        return orig
     end
-    return Remote.oldIndex(self, key)
-end
 
-Remote.HookIndex = function()
-    if Remote.indexHooked or not getrawmetatable then return end
+    local packet = {
+        Remote.capturedArgs[1],
+        Remote.capturedArgs[2],
+        Remote.Tokenize(Remote.capturedArgs[2]),
+        0.5,
+        curveCF or camera.CFrame,
+        event_data,
+        aim_target,
+        false,
+    }
+
+    Remote.selfFiring = true
     local ok = pcall(function()
-        local mt = getrawmetatable(game)
-        if not mt then error("нет метатаблицы") end
-        Remote.oldIndex = mt.__index
-        if setreadonly then setreadonly(mt, false) end
-        local handler = Remote.indexHandler
-        if newcclosure then handler = newcclosure(handler) end
-        mt.__index = handler
-        if setreadonly then setreadonly(mt, true) end
+        if Remote.capturedRemote:IsA("RemoteEvent") then
+            Remote.capturedRemote:FireServer(unpack(packet))
+        elseif Remote.capturedRemote:IsA("RemoteFunction") then
+            Remote.capturedRemote:InvokeServer(unpack(packet))
+        end
     end)
-    if ok then
-        Remote.indexHooked = true
-        Remote.Log("index-хук AC установлен")
-    end
+    Remote.selfFiring = false
+    return ok
 end
 
 Remote.Start = function()
     Remote.enabled = true
+    Remote.HookAll()
     Remote.HookNamecall(true)
-    Remote.HookIndex()
 
     if not Remote.FindToken() then
         Remote.Log("токен не найден — повторный поиск")
@@ -444,7 +525,7 @@ new("TextLabel", {
 })
 local subLbl = new("TextLabel", {
     Parent = header, Size = UDim2.new(1, -140, 0, 14), Position = UDim2.fromOffset(18, 30),
-    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.5 + AC bypass",
+    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.7 + AC bypass",
     TextSize = 11, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
 })
 new("UIGradient", {Color = ColorSequence.new(C.accent, C.accent2)}, subLbl)
@@ -741,8 +822,8 @@ AddButton(L:Row(26), "Найти пари-ремоут сейчас", function()
     Remote.RefreshStatus()
 end)
 AddHint(L:Row(78),
-    "Вытаскивает game-токен через getgc и шлёт пари-пакет напрямую в ремоут — " ..
-    "без виртуальных кликов, поэтому BAC не отличает пари от настоящего. " ..
+    "Токен через getgc + поштучный хук __index на ремоутах, пари-пакет уходит " ..
+    "напрямую — без виртуальных кликов, поэтому BAC не отличает пари от настоящего. " ..
     "Первый пари идёт кликом (захват пакета), дальше — чистый ремоут. " ..
     "Если ремоут не найден — работает клик-фолбэк.")
 L:EndSection()
@@ -882,6 +963,7 @@ do
 end
 do
     local row = L:Row(26)
+    Bypass.onKickRow = row
     local modes = {{"swallow", "Глушить Kick"}, {"rejoin", "Автовозврат"}, {"pass", "Пропускать"}}
     for i, mm in ipairs(modes) do
         local b = new("TextButton", {
@@ -903,12 +985,64 @@ do
     end
 end
 AddToggle(L:Row(24), "Тихий старт", SS.Stealth, function(v) SS.Stealth = v end)
-AddSlider(L:Row(36), "Задержка изменений, с", 0, 30, SS.StealthDelay, 0, function(v) SS.StealthDelay = v end)
+local stealthDelaySlider = AddSlider(L:Row(36), "Задержка изменений, с", 0, 45, SS.StealthDelay, 0, function(v) SS.StealthDelay = v end)
 AddToggle(L:Row(24), "Логировать в консоль", SS.BypassVerbose, function(v) SS.BypassVerbose = v end)
-AddHint(L:Row(72),
+
+AddButton(L:Row(26), "ПРЕСЕТ: VANILLA (анти-267)", function()
+    SS.Stealth = true
+    SS.StealthDelay = 30
+    SS.BypassHide = false
+    SS.BypassNuke = false
+    SS.BypassBlockFire = false
+    SS.RemoteParry = false
+    SS.CustomSky = false
+    SS.Headless = false
+    SS.Korblox = false
+    SS.FPSBoost = false
+    SS.NoEffects = false
+    SS.OnKick = "rejoin"
+
+    local toggles = {
+        ["Скрывать исполнителя"] = false,
+        ["Сносить папку Security"] = false,
+        ["Блокировать FireServer античита"] = false,
+        ["Тихий старт"] = true,
+        ["CustomSky"] = false,
+        ["Headless"] = false,
+        ["Korblox"] = false,
+        ["FPS Boost"] = false,
+        ["Убрать эффекты"] = false,
+        ["Remote Parry"] = false,
+    }
+    for name, val in pairs(toggles) do
+        if Sync[name] then Sync[name].Set(val, false) end
+    end
+    if stealthDelaySlider then stealthDelaySlider.Set(30) end
+    if Bypass.onKickRow then
+        for _, c in ipairs(Bypass.onKickRow:GetChildren()) do
+            if c:IsA("TextButton") then
+                c.BackgroundColor3 = (c.Text == "Автовозврат") and C.accent or C.off
+            end
+        end
+    end
+
+    pcall(ApplyBody)
+    pcall(function() ApplySky(nil) end)
+    pcall(ApplyFPSBoost, false)
+    pcall(ApplyEffects, false)
+    pcall(Remote.Stop)
+    pcall(function() Bypass.HideExecutor() end)
+
+    Bypass.Status("vanilla-пресет — перезайди", C.good)
+    print("[SleepScript] Vanilla-пресет применён — перезайди в игру")
+end, Color3.fromRGB(40, 62, 46))
+
+AddHint(L:Row(96),
     "Подменяет Security.RemoteEvent локальной приманкой, рвёт коннекты, глушит Kick " ..
-    "и BAC-скрипты, спуфит identifyexecutor. Код 267 — серверный кик: если он всё " ..
-    "равно приходит, ставь «Автовозврат» и поднимай задержку изменений.")
+    "и BAC-скрипты, спуфит identifyexecutor.\n" ..
+    "Код 267 — серверный кик: клиент его отменить не может, скрипт просто возвращает " ..
+    "тебя на тот же сервер. Если 267 ловишь часто — жми VANILLA: он гасит весь шум " ..
+    "(спуф, снос Security, remote-пари, визуал) и держит тихий старт 30 сек.")
 L:EndSection()
 
 L:Section("ПРОИЗВОДИТЕЛЬНОСТЬ")
@@ -1140,8 +1274,7 @@ end
 Bypass.RefreshStatus = function()
     local hookTxt = Bypass.hooked and "хук:да" or "хук:нет"
     local spoofTxt = Bypass.spoofed > 0 and "спуф:да" or "спуф:нет"
-    local col = (Bypass.hooked and Bypass.spoofed > 0) and C.accent2
-        or Color3.fromRGB(255, 200, 60)
+    local col = (Bypass.hooked and Bypass.spoofed > 0) and C.accent2 or C.warn
     Bypass.Status(("%s %s • kick %d • скриптов %d • снос %d")
         :format(hookTxt, spoofTxt, Bypass.kicks, Bypass.scripted, Bypass.killed), col)
 end
@@ -1302,6 +1435,8 @@ Bypass.HideExecutor = function()
 end
 
 Bypass.Rejoin = function()
+    if os.clock() - Bypass.rejoinCD < 3 then return end
+    Bypass.rejoinCD = os.clock()
     local ts = game:GetService("TeleportService")
     local ok = pcall(function() ts:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP) end)
     if not ok then pcall(function() ts:Teleport(game.PlaceId) end) end
@@ -1321,6 +1456,18 @@ Bypass.Hook = function()
                 if #Bypass.log > 4 then table.remove(Bypass.log, 1) end
                 print("[SleepScript][BAC] Kick перехвачен: " .. msg)
                 Bypass.RefreshStatus()
+
+                -- серверный 267 / BAC-флаг: клиент его не отменяет, только возврат
+                local isBAC = msg:find("BAC", 1, true) or msg:find("267", 1, true)
+                if isBAC then
+                    Bypass.Status("BAC 267 — возврат на сервер...", C.bad)
+                    task.spawn(function()
+                        task.wait(0.7)
+                        pcall(Bypass.Rejoin)
+                    end)
+                    return
+                end
+
                 if SS.OnKick == "rejoin" then
                     task.spawn(Bypass.Rejoin)
                 end
@@ -1632,7 +1779,7 @@ local function SendClick(isClashing, ball)
     if (now - LastClick) < cd then return end
     IsParrying, LastClick, LastBallHit = true, now, ball
 
-    -- [AC BYPASS] сначала пробуем прямой ремоут, иначе — виртуальный клик
+    -- [AC BYPASS] сначала прямой ремоут, иначе — виртуальный клик
     local fired = false
     if SS.RemoteParry and Remote.ready and Remote.tokenFound then
         fired = Remote.Fire(cam() and cam().CFrame)
@@ -1714,6 +1861,10 @@ LP.CharacterAdded:Connect(function()
         pcall(Bypass.Poison)
         pcall(Bypass.KillDeviceChecker, SS.BypassRetries)
     end
+    if Remote.enabled then
+        task.wait(0.4)
+        pcall(Remote.HookAll)
+    end
 end)
 
 --=============================================================
@@ -1767,12 +1918,10 @@ RunService.RenderStepped:Connect(function()
         frames, lastClock = 0, os.clock()
         if ov.Enabled then
             fpsLbl.Text = "FPS  " .. fps
-            fpsLbl.TextColor3 = fps >= 60 and C.accent2
-                or (fps >= 30 and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(255, 90, 90))
+            fpsLbl.TextColor3 = fps >= 60 and C.accent2 or (fps >= 30 and C.warn or C.bad)
             local ping = NetworkStats and math.floor(NetworkStats.Value) or 0
             pingLbl.Text = "PING  " .. ping .. " ms"
-            pingLbl.TextColor3 = ping < 80 and C.accent2
-                or (ping < 150 and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(255, 90, 90))
+            pingLbl.TextColor3 = ping < 80 and C.accent2 or (ping < 150 and C.warn or C.bad)
 
             table.insert(hist, fps)
             if #hist > 24 then table.remove(hist, 1) end
