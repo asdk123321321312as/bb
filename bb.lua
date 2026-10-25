@@ -1,6 +1,6 @@
 --[[
 =====================================================================
-   SleepScript  |  Blade Ball  (v1.7 + BAC stealth + AC remote-bypass)
+   SleepScript  |  Blade Ball  (v1.8 + BAC stealth + AC remote-bypass)
    Z        — свернуть / развернуть (полное скрытие)
    Крестик  — полностью закрыть меню (вернуть: Z)
    RightShift — быстрый тумблер AutoParry
@@ -33,8 +33,9 @@ local DEFAULTS = {
     AutoParry = false, PingBased = true, PingBasedOffset = 1.95,
     DistanceToParry = 0.65, EmergencyRadius = 10,
     ClashDistance = 22, ClashSpeed = 0.01, NormalSpeed = 0.05,
-    ParryVisuals = true,
+    ParryVisuals = true, FXInWorkspace = true,
     RemoteParry = true, ClickFallback = true,
+    GuardVisual = true, KeepFOV = true, InstantVisual = false,
     FOV = 70, CustomSky = false, SkyId = "rbxassetid://159454299",
     Headless = false, Korblox = false, KorbloxMesh = "rbxassetid://139607718",
     Bypass = true, DestroySecurity = true,
@@ -134,10 +135,6 @@ local Bypass = {
 
 --=============================================================
 --  [AC BYPASS] ПЕРЕХВАТ ПАРИ-РЕМОУТА + TOKEN SPOOF
---  Порт системы из рабочего билда: поштучный хук __index на метатаблице
---  каждого RemoteEvent/RemoteFunction, вытаскивание game-токена через
---  getgc, сборка пари-пакета и отправка напрямую (fireParryRemote).
---  Виртуальные клики не используются — BAC не отличает пари от настоящего.
 --=============================================================
 local Remote = {
     enabled        = false,
@@ -150,8 +147,8 @@ local Remote = {
     capturedArgs   = nil,
     selfFiring     = false,
     statusLbl      = nil,
-    reverted       = {},   -- remote -> args (уже перехвачен)
-    original       = {},   -- metatable -> true (метатаблица уже под хуком)
+    reverted       = {},
+    original       = {},
     conns          = {},
     prevNamecall   = nil,
     namecallHooked = false,
@@ -178,7 +175,6 @@ function Remote.RefreshStatus()
     Remote.statusLbl.TextColor3 = col
 end
 
--- тост в углу (аналог уведомления из оригинала)
 function Remote.Toast(title, content)
     task.spawn(function()
         pcall(function()
@@ -191,12 +187,12 @@ function Remote.Toast(title, content)
                     IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
                     Parent = parent,
                 })
-                local list = new("Frame", {
+                new("Frame", {
                     Name = "List", Parent = holder,
                     AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -18, 0, 18),
                     Size = UDim2.fromOffset(300, 0), BackgroundTransparency = 1,
                 })
-                new("UIListLayout", {Padding = UDim.new(0, 8), Parent = list})
+                new("UIListLayout", {Padding = UDim.new(0, 8), Parent = holder.List})
             end
             local list = holder.List
 
@@ -207,8 +203,6 @@ function Remote.Toast(title, content)
             })
             corner(f, 12)
             new("UIStroke", {Color = C.accent, Transparency = 0.5, Thickness = 1}, f)
-            new("UIGradient", {Rotation = 20, Color = ColorSequence.new(C.card, C.bg)}, f)
-
             new("TextLabel", {
                 Parent = f, BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
                 Text = tostring(title or "SleepScript"), TextSize = 13,
@@ -236,7 +230,6 @@ Remote.Valid = function(args)
     return type(args) == "table" and #args >= 8
 end
 
--- 1) поиск game-токен-функции в GC (lclosure с исходником *PRY*)
 Remote.FindToken = function()
     if Remote.tokenFound then return true end
     if not getgc or not debug or not debug.getupvalues then return false end
@@ -265,7 +258,6 @@ Remote.FindToken = function()
     return Remote.tokenFound
 end
 
--- 2) токенизация uid — XOR со временем сервера (как в оригинале)
 Remote.Tokenize = function(remote_uid)
     if not Remote.token then return "" end
     local time = tostring(math.floor(workspace:GetServerTimeNow() * 100))
@@ -281,7 +273,6 @@ Remote.Tokenize = function(remote_uid)
     return table.concat(characters)
 end
 
--- 3) захват пари-пакета
 Remote.Capture = function(remote, args)
     if not Remote.enabled or Remote.selfFiring then return end
     if not Remote.Valid(args) then return end
@@ -308,7 +299,6 @@ Remote.Capture = function(remote, args)
     end
 end
 
--- 4) поштучный хук __index на метатаблице ремоута (оригинальный подход)
 Remote.HookRemote = function(remote)
     if not remote then return end
     if Remote.reverted[remote] then return end
@@ -348,7 +338,6 @@ Remote.HookAll = function()
     end
 end
 
--- 5) глобальный __namecall как второй канал захвата (игра может звать через ":")
 Remote.namecallHandler = function(self, ...)
     if Remote.enabled then
         local method = getnamecallmethod and getnamecallmethod()
@@ -380,7 +369,6 @@ Remote.HookNamecall = function(force)
     end
 end
 
--- 6) fireParryRemote — сборка и отправка пари-пакета
 Remote.Fire = function(curveCF)
     if not Remote.capturedRemote or not Remote.capturedArgs then return false end
     if not Remote.tokenFound then return false end
@@ -463,6 +451,75 @@ Remote.Stop = function()
 end
 
 --=============================================================
+--  [GUARD] АНТИ-BAC ДЛЯ ВИЗУАЛА
+--  Снимает baseline значений ДО изменения и вешает __index-хук:
+--  когда значение читает игра (BAC, checkcaller == false) — она видит
+--  ИСХОДНОЕ значение, а ты видишь своё. Так BAC никогда не ловит
+--  расхождение по FOV / Lighting / телу и не кикает.
+--=============================================================
+local Guard = {
+    enabled = true,
+    hooked  = false,
+    base    = {},   -- instance -> { key -> исходное значение }
+    ours    = false,
+}
+
+function Guard.Watch(inst, keys)
+    if not inst then return end
+    local b = Guard.base[inst]
+    if not b then b = {}; Guard.base[inst] = b end
+    Guard.ours = true
+    for _, k in ipairs(keys) do
+        if b[k] == nil then
+            local ok, v = pcall(function() return inst[k] end)
+            if ok then b[k] = v end
+        end
+    end
+    Guard.ours = false
+end
+
+-- записать значение так, чтобы BAC продолжал видеть исходное
+function Guard.Set(inst, key, value)
+    if not inst then return end
+    Guard.Watch(inst, {key})
+    pcall(function() inst[key] = value end)
+end
+
+function Guard.SpoofActive()
+    if not Guard.enabled then return false end
+    if Guard.ours then return false end
+    if checkcaller then
+        return checkcaller() == false
+    end
+    return true
+end
+
+function Guard.Hook()
+    if Guard.hooked or not getrawmetatable then return end
+    local ok = pcall(function()
+        local mt = getrawmetatable(game)
+        if not mt then error("нет метатаблицы") end
+        Guard.oldIndex = mt.__index
+        if setreadonly then setreadonly(mt, false) end
+        local handler = function(self, key)
+            if Guard.enabled and not Guard.ours and Guard.base[self] then
+                local v = Guard.base[self][key]
+                if v ~= nil then
+                    if not checkcaller or checkcaller() == false then
+                        return v
+                    end
+                end
+            end
+            return Guard.oldIndex(self, key)
+        end
+        if newcclosure then handler = newcclosure(handler) end
+        mt.__index = handler
+        if setreadonly then setreadonly(mt, true) end
+    end)
+    if ok then Guard.hooked = true end
+end
+
+--=============================================================
 --  КАРКАС ОКНА
 --=============================================================
 if getgenv().SleepScriptGui then getgenv().SleepScriptGui:Destroy() end
@@ -478,7 +535,7 @@ getgenv().SleepScriptGui = gui
 pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
 if not gui.Parent then gui.Parent = (gethui and gethui()) or CoreGui end
 
-local WIN_W, WIN_H = 560, 360
+local WIN_W, WIN_H = 560, 380
 
 local shadow = new("Frame", {
     Parent = gui, Name = "Shadow",
@@ -525,7 +582,7 @@ new("TextLabel", {
 })
 local subLbl = new("TextLabel", {
     Parent = header, Size = UDim2.new(1, -140, 0, 14), Position = UDim2.fromOffset(18, 30),
-    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.7 + AC bypass",
+    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.8 + guard",
     TextSize = 11, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
 })
 new("UIGradient", {Color = ColorSequence.new(C.accent, C.accent2)}, subLbl)
@@ -561,7 +618,7 @@ local contentHolder = new("Frame", {
 })
 
 --=============================================================
---  ВКЛАДКИ (ручные позиции)
+--  ВКЛАДКИ
 --=============================================================
 local pages, tabs, currentTab = {}, {}, nil
 
@@ -612,7 +669,7 @@ for i, t in ipairs(TABS) do
 end
 
 --=============================================================
---  РУЧНОЙ ЛЕЙАУТ СТРАНИЦЫ
+--  РУЧНОЙ ЛЕЙАУТ
 --=============================================================
 local function NewLayout(page)
     local L = { page = page, y = 8, sec = nil, secTop = 0, sy = 0 }
@@ -799,7 +856,14 @@ end
 local L = NewLayout(pages.AutoParry)
 L:Section("PARRY")
 AddToggle(L:Row(24), "AutoParry", SS.AutoParry, function(v) SS.AutoParry = v end)
-AddToggle(L:Row(24), "ParryVisuals", SS.ParryVisuals, function(v) SS.ParryVisuals = v end)
+AddToggle(L:Row(24), "ParryVisuals", SS.ParryVisuals, function(v)
+    SS.ParryVisuals = v
+    if setFX then setFX(v) end
+end)
+AddToggle(L:Row(24), "FX в workspace", SS.FXInWorkspace, function(v)
+    SS.FXInWorkspace = v
+    if setFX then setFX(SS.ParryVisuals) end
+end)
 L:EndSection()
 
 L:Section("AC BYPASS (REMOTE PARRY)")
@@ -821,11 +885,6 @@ AddButton(L:Row(26), "Найти пари-ремоут сейчас", function()
     Remote.FindToken()
     Remote.RefreshStatus()
 end)
-AddHint(L:Row(78),
-    "Токен через getgc + поштучный хук __index на ремоутах, пари-пакет уходит " ..
-    "напрямую — без виртуальных кликов, поэтому BAC не отличает пари от настоящего. " ..
-    "Первый пари идёт кликом (захват пакета), дальше — чистый ремоут. " ..
-    "Если ремоут не найден — работает клик-фолбэк.")
 L:EndSection()
 
 L:Section("ТАЙМИНГ")
@@ -845,10 +904,32 @@ L:EndSection()
 --  СТРАНИЦА: VISUALS
 --=============================================================
 L = NewLayout(pages.Visuals)
+
+L:Section("АНТИ-BAC (GUARD)")
+AddToggle(L:Row(24), "Guard визуала", SS.GuardVisual, function(v)
+    SS.GuardVisual = v
+    Guard.enabled = v
+    if v then Guard.Hook() end
+end)
+AddToggle(L:Row(24), "Держать FOV", SS.KeepFOV, function(v) SS.KeepFOV = v end)
+AddToggle(L:Row(24), "Мгновенный визуал", SS.InstantVisual, function(v) SS.InstantVisual = v end)
+AddButton(L:Row(26), "Применить визуал сейчас", function()
+    if cam() then Guard.Set(cam(), "FieldOfView", SS.FOV) end
+    if SS.CustomSky then ApplySky(SS.SkyId) end
+    ApplyBody()
+    if SS.FPSBoost then ApplyFPSBoost(true) end
+    print("[SleepScript] визуал применён")
+end, Color3.fromRGB(40, 62, 46))
+AddHint(L:Row(74),
+    "Guard снимает слепок значений ДО изменения и подсовывает BAC исходные — " ..
+    "он видит «родной» FOV/небо/тело и не кикает, а ты видишь свои настройки. " ..
+    "Небо правится в родном Sky игры, новые инстансы в Lighting не создаются.")
+L:EndSection()
+
 L:Section("КАМЕРА")
 AddSlider(L:Row(36), "Field of View", 40, 120, SS.FOV, 0, function(v)
     SS.FOV = v
-    if cam() then cam().FieldOfView = v end
+    if cam() then Guard.Set(cam(), "FieldOfView", v) end
 end)
 L:EndSection()
 
@@ -1000,13 +1081,17 @@ AddButton(L:Row(26), "ПРЕСЕТ: VANILLA (анти-267)", function()
     SS.Korblox = false
     SS.FPSBoost = false
     SS.NoEffects = false
+    SS.GuardVisual = true
     SS.OnKick = "rejoin"
+    Guard.enabled = true
+    Guard.Hook()
 
     local toggles = {
         ["Скрывать исполнителя"] = false,
         ["Сносить папку Security"] = false,
         ["Блокировать FireServer античита"] = false,
         ["Тихий старт"] = true,
+        ["Guard визуала"] = true,
         ["CustomSky"] = false,
         ["Headless"] = false,
         ["Korblox"] = false,
@@ -1041,8 +1126,7 @@ AddHint(L:Row(96),
     "Подменяет Security.RemoteEvent локальной приманкой, рвёт коннекты, глушит Kick " ..
     "и BAC-скрипты, спуфит identifyexecutor.\n" ..
     "Код 267 — серверный кик: клиент его отменить не может, скрипт просто возвращает " ..
-    "тебя на тот же сервер. Если 267 ловишь часто — жми VANILLA: он гасит весь шум " ..
-    "(спуф, снос Security, remote-пари, визуал) и держит тихий старт 30 сек.")
+    "тебя на тот же сервер. Если 267 ловишь часто — жми VANILLA.")
 L:EndSection()
 
 L:Section("ПРОИЗВОДИТЕЛЬНОСТЬ")
@@ -1157,17 +1241,36 @@ if SS.MenuState == "closed" or SS.MenuState == "minimized" then
 end
 
 --=============================================================
---  РЕАЛИЗАЦИЯ: НЕБО / ТЕЛО / ПЕРФ
+--  РЕАЛИЗАЦИЯ: НЕБО (переиспользуем родной Sky) / ТЕЛО / ПЕРФ
 --=============================================================
+local SKY_FACES = {"SkyboxBk","SkyboxDn","SkyboxFt","SkyboxLf","SkyboxRt","SkyboxUp"}
+local origSky = Lighting:FindFirstChildOfClass("Sky")
+local origSkyBackup = nil
+
+if origSky then
+    origSkyBackup = {}
+    for _, f in ipairs(SKY_FACES) do origSkyBackup[f] = origSky[f] end
+end
+
 ApplySky = function(id)
-    local old = Lighting:FindFirstChild("SleepSky")
-    if old then old:Destroy() end
-    local orig = Lighting:FindFirstChildOfClass("Sky")
-    if orig then orig.Enabled = (id == nil) end
-    if not id or id == "" then return end
-    local sky = new("Sky", {Name = "SleepSky", Parent = Lighting})
-    for _, p in pairs({"SkyboxBk","SkyboxDn","SkyboxFt","SkyboxLf","SkyboxRt","SkyboxUp"}) do
-        sky[p] = id
+    local sky = origSky or Lighting:FindFirstChild("SleepSky")
+
+    if not id or id == "" then
+        if sky and origSkyBackup then
+            for _, f in ipairs(SKY_FACES) do
+                Guard.Set(sky, f, origSkyBackup[f])
+            end
+        end
+        return
+    end
+
+    if not sky then
+        sky = new("Sky", {Name = "SleepSky", Parent = Lighting})
+        origSky = sky
+    end
+
+    for _, f in ipairs(SKY_FACES) do
+        Guard.Set(sky, f, id)
     end
 end
 
@@ -1176,10 +1279,10 @@ ApplyBody = function()
     if not ch then return end
     local head = ch:FindFirstChild("Head")
     if head then
-        head.Transparency = SS.Headless and 1 or 0
+        Guard.Set(head, "Transparency", SS.Headless and 1 or 0)
         for _, d in pairs(head:GetDescendants()) do
             if d:IsA("Decal") or d:IsA("Texture") then
-                d.Transparency = SS.Headless and 1 or 0
+                Guard.Set(d, "Transparency", SS.Headless and 1 or 0)
             end
         end
     end
@@ -1187,16 +1290,19 @@ ApplyBody = function()
         local leg = ch:FindFirstChild("Right Leg")
         if leg then
             local mesh = leg:FindFirstChildOfClass("SpecialMesh")
-            if mesh then mesh.MeshId = SS.KorbloxMesh; mesh.TextureId = "" end
+            if mesh then
+                Guard.Set(mesh, "MeshId", SS.KorbloxMesh)
+                Guard.Set(mesh, "TextureId", "")
+            end
             local dec = leg:FindFirstChildOfClass("Decal")
-            if dec then dec.Transparency = 1 end
+            if dec then Guard.Set(dec, "Transparency", 1) end
         else
             for _, n in ipairs({"RightUpperLeg", "RightLowerLeg", "RightFoot"}) do
                 local part = ch:FindFirstChild(n)
                 if part and part:IsA("MeshPart") then
                     pcall(function()
-                        part.MeshId = SS.KorbloxMesh
-                        part.TextureID = ""
+                        Guard.Set(part, "MeshId", SS.KorbloxMesh)
+                        Guard.Set(part, "TextureID", "")
                     end)
                 end
             end
@@ -1211,24 +1317,24 @@ ApplyFPSBoost = function(on)
             shadows = Lighting.GlobalShadows, fog = Lighting.FogEnd,
             diff = Lighting.EnvironmentDiffuseScale, spec = Lighting.EnvironmentSpecularScale,
         }
-        Lighting.GlobalShadows = false
-        Lighting.FogEnd = 100000
-        Lighting.EnvironmentDiffuseScale = 0
-        Lighting.EnvironmentSpecularScale = 0
+        Guard.Set(Lighting, "GlobalShadows", false)
+        Guard.Set(Lighting, "FogEnd", 100000)
+        Guard.Set(Lighting, "EnvironmentDiffuseScale", 0)
+        Guard.Set(Lighting, "EnvironmentSpecularScale", 0)
         for _, v in pairs(Lighting:GetChildren()) do
-            if v:IsA("PostEffect") then v.Enabled = false end
+            if v:IsA("PostEffect") then Guard.Set(v, "Enabled", false) end
         end
         pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
         pcall(function() if setfpscap then setfpscap(SS.FPSCap) end end)
     else
         if lightBackup.shadows ~= nil then
-            Lighting.GlobalShadows = lightBackup.shadows
-            Lighting.FogEnd = lightBackup.fog
-            Lighting.EnvironmentDiffuseScale = lightBackup.diff
-            Lighting.EnvironmentSpecularScale = lightBackup.spec
+            Guard.Set(Lighting, "GlobalShadows", lightBackup.shadows)
+            Guard.Set(Lighting, "FogEnd", lightBackup.fog)
+            Guard.Set(Lighting, "EnvironmentDiffuseScale", lightBackup.diff)
+            Guard.Set(Lighting, "EnvironmentSpecularScale", lightBackup.spec)
         end
         for _, v in pairs(Lighting:GetChildren()) do
-            if v:IsA("PostEffect") then v.Enabled = true end
+            if v:IsA("PostEffect") then Guard.Set(v, "Enabled", true) end
         end
         pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
     end
@@ -1457,7 +1563,6 @@ Bypass.Hook = function()
                 print("[SleepScript][BAC] Kick перехвачен: " .. msg)
                 Bypass.RefreshStatus()
 
-                -- серверный 267 / BAC-флаг: клиент его не отменяет, только возврат
                 local isBAC = msg:find("BAC", 1, true) or msg:find("267", 1, true)
                 if isBAC then
                     Bypass.Status("BAC 267 — возврат на сервер...", C.bad)
@@ -1523,7 +1628,6 @@ Bypass.Unhook = function()
     end)
     Bypass.hooked = false
     Bypass.old = nil
-    -- если AC-хук оказался вытеснен — переставить его обратно
     if Remote and Remote.enabled and Remote.namecallHooked then
         Remote.HookNamecall(true)
     end
@@ -1743,13 +1847,36 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
-local r, m
-if SS.ParryVisuals then
-    r = new("Part", {Name = "FX", Parent = cam() or workspace,
-        Anchored = true, CanCollide = false, Transparency = 1,
-        Material = Enum.Material.Neon, Size = Vector3.new(1, 1, 1)})
-    m = new("SpecialMesh", {MeshId = "rbxassetid://3270017"}, r)
+-- FX-кольцо (в workspace по умолчанию — дети Camera BAC замечает чаще)
+local fxPart, fxMesh
+local FX_FOLDER = nil
+
+function setFX(on)
+    if on then
+        if fxPart then fxPart.Transparency = 0.3; return end
+        local parent
+        if SS.FXInWorkspace then
+            FX_FOLDER = FX_FOLDER or workspace:FindFirstChild("SleepFX")
+            if not FX_FOLDER then
+                FX_FOLDER = new("Folder", {Name = "SleepFX", Parent = workspace})
+            end
+            parent = FX_FOLDER
+        else
+            parent = cam() or workspace
+        end
+        fxPart = new("Part", {
+            Name = "FX", Parent = parent,
+            Anchored = true, CanCollide = false, CanTouch = false, CanQuery = false,
+            Transparency = 0.3, Material = Enum.Material.Neon,
+            Size = Vector3.new(1, 1, 1), CastShadow = false,
+        })
+        fxMesh = new("SpecialMesh", {MeshId = "rbxassetid://3270017"}, fxPart)
+    else
+        if fxPart then fxPart.Transparency = 1 end
+    end
 end
+
+if SS.ParryVisuals then setFX(true) end
 
 local function GetBall()
     if not BallsFolder then return nil end
@@ -1779,7 +1906,6 @@ local function SendClick(isClashing, ball)
     if (now - LastClick) < cd then return end
     IsParrying, LastClick, LastBallHit = true, now, ball
 
-    -- [AC BYPASS] сначала прямой ремоут, иначе — виртуальный клик
     local fired = false
     if SS.RemoteParry and Remote.ready and Remote.tokenFound then
         fired = Remote.Fire(cam() and cam().CFrame)
@@ -1793,30 +1919,30 @@ local function SendClick(isClashing, ball)
 end
 
 local function UpdateVisuals(root, distance, state)
-    if not SS.ParryVisuals or not r then return end
-    r.CFrame = root.CFrame * CFrame.new(0, -2.6, 0) * CFrame.Angles(math.rad(90), 0, 0)
+    if not SS.ParryVisuals or not fxPart or not fxPart.Parent then return end
+    fxPart.CFrame = root.CFrame * CFrame.new(0, -2.6, 0) * CFrame.Angles(math.rad(90), 0, 0)
     local targetSize = math.clamp(distance * 0.8, 5, 65)
-    m.Scale = m.Scale:Lerp(Vector3.new(targetSize, targetSize, 0.5), 0.5)
+    fxMesh.Scale = fxMesh.Scale:Lerp(Vector3.new(targetSize, targetSize, 0.5), 0.5)
     if state == "clash" then
-        r.Color, r.Transparency = Color3.fromRGB(255, 0, 0), 0.05
+        fxPart.Color, fxPart.Transparency = Color3.fromRGB(255, 0, 0), 0.05
     elseif state == "target" then
-        r.Color, r.Transparency = Color3.fromRGB(0, 255, 255), 0.1
+        fxPart.Color, fxPart.Transparency = Color3.fromRGB(0, 255, 255), 0.1
     else
-        r.Color, r.Transparency = Color3.fromRGB(150, 240, 255), 0.5
+        fxPart.Color, fxPart.Transparency = Color3.fromRGB(150, 240, 255), 0.5
     end
 end
 
 RunService.PostSimulation:Connect(function()
     if not SS.AutoParry then
-        if r then r.Transparency = 1 end
+        if fxPart then fxPart.Transparency = 1 end
         return
     end
     local Char = LP.Character
     local Root = Char and Char:FindFirstChild("HumanoidRootPart")
-    if not Root then if r then r.Transparency = 1 end return end
+    if not Root then if fxPart then fxPart.Transparency = 1 end return end
 
     local Ball = GetBall()
-    if not Ball then if r then r.Transparency = 1 end return end
+    if not Ball then if fxPart then fxPart.Transparency = 1 end return end
 
     local BallPos, PlayerPos = Ball.Position, Root.Position
     local Velocity = Ball.AssemblyLinearVelocity
@@ -1830,8 +1956,7 @@ RunService.PostSimulation:Connect(function()
     local IsClashing = Targeted and Distance <= SS.ClashDistance
 
     frameCounter += 1
-    if r and frameCounter % 2 == 0 then
-        r.Transparency = 0.3
+    if fxPart and frameCounter % 2 == 0 then
         UpdateVisuals(Root, Distance, IsClashing and "clash" or (Targeted and "target" or "neutral"))
     end
 
@@ -1949,21 +2074,43 @@ end)
 task.spawn(function()
     if SS.Bypass then ApplyBypass(true) end
 
-    -- [AC BYPASS] поднимаем перехват ремоута / поиск токена
+    -- Guard визуала — ставим сразу, baseline снимается при первом Set
+    if SS.GuardVisual then
+        Guard.enabled = true
+        Guard.Hook()
+    end
+
     if SS.RemoteParry then
         task.wait(1)
         pcall(Remote.Start)
     end
 
-    -- тихий период: BAC снимает слепок профиля на входе,
-    -- поэтому FOV/небо/тело/кап трогаем только после задержки
-    if SS.Stealth then task.wait(SS.StealthDelay) end
+    if SS.InstantVisual then
+        -- применяем до слепка BAC
+        task.wait(0.3)
+    elseif SS.Stealth then
+        task.wait(SS.StealthDelay)
+    end
 
-    if cam() then cam().FieldOfView = SS.FOV end
+    if cam() then Guard.Set(cam(), "FieldOfView", SS.FOV) end
     if SS.CustomSky then ApplySky(SS.SkyId) end
     if SS.FPSBoost then ApplyFPSBoost(true) end
     if SS.NoEffects then ApplyEffects(true) end
     if SS.NoAccessories then ApplyAccessories(true) end
+end)
+
+-- держим FOV, если игра его сбрасывает
+task.spawn(function()
+    while task.wait(0.5) do
+        if SS.KeepFOV and cam() then
+            Guard.ours = true
+            local cur = cam().FieldOfView
+            Guard.ours = false
+            if math.abs(cur - SS.FOV) > 0.01 then
+                Guard.Set(cam(), "FieldOfView", SS.FOV)
+            end
+        end
+    end
 end)
 
 task.spawn(function()
