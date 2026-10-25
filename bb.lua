@@ -1,6 +1,6 @@
 --[[
 =====================================================================
-   SleepScript  |  Blade Ball  (v1.3 + BAC bypass)
+   SleepScript  |  Blade Ball  (v1.3 + BAC hard bypass)
    Z        — свернуть / развернуть (полное скрытие)
    Крестик  — полностью закрыть меню (вернуть: Z)
    RightShift — быстрый тумблер AutoParry
@@ -36,8 +36,9 @@ local DEFAULTS = {
     ParryVisuals = true,
     FOV = 70, CustomSky = false, SkyId = "rbxassetid://159454299",
     Headless = false, Korblox = false, KorbloxMesh = "rbxassetid://139607718",
-    Bypass = true, DestroySecurity = true,          -- [БАЙПАС]
-    BypassHard = true, BypassBlockFire = true, BypassWatch = true, BypassRetries = 6,
+    Bypass = true, DestroySecurity = true,
+    BypassHard = true, BypassBlockFire = true, BypassWatch = true,
+    BypassNuke = false, BypassVerbose = false, BypassRetries = 6,
     FPSBoost = false, NoEffects = false, NoAccessories = false, FPSCap = 240,
     Overlay = true, OverlayGraph = true,
     SkinLock = true,
@@ -105,248 +106,22 @@ local ApplySky, ApplyBody, ApplyFPSBoost, ApplyEffects, ApplyAccessories
 local ApplyBypass, DestroySecurity, ApplySkin, RenderSkinList, BuildSkinDatabase
 
 --=============================================================
---  [БАЙПАС] ЯДРО
---  Оригинал, который это заменяет:
---    ReplicatedStorage.Security.RemoteEvent:Destroy()
---    ReplicatedStorage.Security[""]:Destroy()
---    ReplicatedStorage.Security:Destroy()
---    LP.PlayerScripts.Client.DeviceChecker:Destroy()
---  Что добавлено: ожидание репликации, Disabled до Destroy,
---  разрыв getconnections, блок FireServer, сторож, снимаемый хук.
+--  [БАЙПАС] СОСТОЯНИЕ
 --=============================================================
 local Bypass = {
     active    = false,
+    looping   = false,
+    hooked    = false,
+    old       = nil,
     blocked   = setmetatable({}, {__mode = "k"}),
+    mine      = setmetatable({}, {__mode = "k"}),
     conns     = {},
-    oldName   = nil,
     statusLbl = nil,
-    nukes     = 0,
+    kicks     = 0,
+    killed    = 0,
+    recreated = 0,
+    log       = {},
 }
-
-Bypass.Log = function(t)
-    print("[SleepScript][BAC] " .. tostring(t))
-end
-
-Bypass.Status = function(text, col)
-    if not Bypass.statusLbl then return end
-    Bypass.statusLbl.Text = text
-    Bypass.statusLbl.TextColor3 = col or C.dim
-end
-
-local function waitFor(getter, timeout)
-    local t0 = os.clock()
-    while os.clock() - t0 < (timeout or 6) do
-        local v = getter()
-        if v then return v end
-        task.wait(0.08)
-    end
-    return getter()
-end
-
--- снос канала античита
-Bypass.PurgeSecurity = function(attempts)
-    attempts = math.max(1, attempts or 1)
-    local killed = 0
-    for i = 1, attempts do
-        local sec = ReplicatedStorage:FindFirstChild("Security")
-        if sec then
-            -- 1) глушим всё исполняемое внутри, чтобы не успело дёрнуться
-            for _, d in ipairs(sec:GetDescendants()) do
-                if d:IsA("LuaSourceContainer") then
-                    pcall(function() d.Disabled = true end)
-                end
-            end
-            -- 2) рвём клиентские коннекты на RemoteEvent — Destroy их не снимает
-            if getconnections then
-                for _, d in ipairs(sec:GetChildren()) do
-                    if d:IsA("RemoteEvent") then
-                        Bypass.blocked[d] = true
-                        local ok, list = pcall(getconnections, d.OnClientEvent)
-                        if ok and type(list) == "table" then
-                            for _, c in ipairs(list) do
-                                pcall(function() c:Disconnect() end)
-                            end
-                        end
-                    end
-                end
-            end
-            -- 3) сносим детей: RemoteEvent, экземпляр с пустым именем и прочее
-            for _, child in ipairs(sec:GetChildren()) do
-                pcall(function() child:Destroy() end)
-                killed += 1
-            end
-            pcall(function() sec:Destroy() end)
-            killed += 1
-        end
-        if i < attempts then task.wait(0.3) end
-    end
-    return killed
-end
-
-Bypass.KillDeviceChecker = function(attempts)
-    attempts = math.max(1, attempts or 1)
-    local found = 0
-    local ps = LP:FindFirstChild("PlayerScripts")
-    if not ps then return 0 end
-
-    for i = 1, attempts do
-        local client = ps:FindFirstChild("Client")
-        local targets = {}
-        if client then
-            local dc = client:FindFirstChild("DeviceChecker")
-            if dc then table.insert(targets, dc) end
-        end
-        if #targets == 0 then
-            for _, v in ipairs(ps:GetDescendants()) do
-                if v.Name:lower():find("devicechecker", 1, true) then
-                    table.insert(targets, v)
-                end
-            end
-        end
-        for _, t in ipairs(targets) do
-            if t:IsA("LuaSourceContainer") then
-                pcall(function() t.Disabled = true end)
-            end
-            pcall(function() t:Destroy() end)
-            found += 1
-        end
-        if found > 0 then break end
-        task.wait(0.3)
-    end
-    return found
-end
-
-Bypass.HookMeta = function()
-    if Bypass.oldName then return end
-    if not (getrawmetatable and setreadonly and newcclosure and getnamecallmethod) then
-        Bypass.Log("метатаблица недоступна, хук не поставлен")
-        return
-    end
-    pcall(function()
-        local mt = getrawmetatable(game)
-        Bypass.oldName = mt.__namecall
-        setreadonly(mt, false)
-        mt.__namecall = newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            if SS.Bypass then
-                if method == "Kick" and self == LP then
-                    Bypass.Log("Kick перехвачен: " .. tostring((...)))
-                    if SS.BypassHard then return end
-                elseif method == "FireServer" and SS.BypassBlockFire and Bypass.blocked[self] then
-                    return
-                end
-            end
-            return Bypass.oldName(self, ...)
-        end)
-        setreadonly(mt, true)
-    end)
-end
-
-Bypass.UnhookMeta = function()
-    if not Bypass.oldName then return end
-    pcall(function()
-        local mt = getrawmetatable(game)
-        setreadonly(mt, false)
-        mt.__namecall = Bypass.oldName
-        setreadonly(mt, true)
-    end)
-    Bypass.oldName = nil
-end
-
-Bypass.Watch = function()
-    if not SS.BypassWatch or not SS.Bypass then return end
-
-    local function add(conn)
-        if conn then table.insert(Bypass.conns, conn) end
-    end
-
-    add(ReplicatedStorage.ChildAdded:Connect(function(inst)
-        if inst.Name == "Security" and SS.Bypass then
-            task.delay(0.15, function()
-                Bypass.PurgeSecurity(2)
-                Bypass.Log("Security пересоздан — снесён повторно")
-            end)
-        end
-    end))
-
-    local sec = ReplicatedStorage:FindFirstChild("Security")
-    if sec then
-        add(sec.ChildAdded:Connect(function()
-            if SS.Bypass then task.delay(0.1, function() Bypass.PurgeSecurity(1) end) end
-        end))
-    end
-
-    local ps = LP:FindFirstChild("PlayerScripts")
-    local client = ps and ps:FindFirstChild("Client")
-    if client then
-        add(client.ChildAdded:Connect(function(inst)
-            if inst.Name:lower():find("devicechecker", 1, true) and SS.Bypass then
-                task.delay(0.1, function() Bypass.KillDeviceChecker(2) end)
-            end
-        end))
-    end
-end
-
-Bypass.DisconnectWatch = function()
-    for _, c in ipairs(Bypass.conns) do pcall(function() c:Disconnect() end) end
-    table.clear(Bypass.conns)
-end
-
-Bypass.Start = function()
-    if Bypass.active then return end
-    Bypass.active = true
-    Bypass.HookMeta()
-    Bypass.Status("снос...", C.accent2)
-
-    task.spawn(function()
-        -- ждём репликацию, а не спим вслепую
-        waitFor(function() return ReplicatedStorage:FindFirstChild("Security") end, 6)
-        local sec = Bypass.PurgeSecurity(SS.BypassRetries)
-        local dc  = Bypass.KillDeviceChecker(SS.BypassRetries)
-        Bypass.nukes += 1
-        Bypass.Log(("Security: %d, DeviceChecker: %d"):format(sec, dc))
-        Bypass.Status(("активен • снос %d/%d"):format(sec, dc),
-            (sec > 0 or dc > 0) and C.accent2 or Color3.fromRGB(255, 200, 60))
-
-        Bypass.Watch()
-
-        -- сторож: если сервер вернул объекты — снова сносим
-        while Bypass.active and SS.Bypass do
-            task.wait(2)
-            if SS.BypassWatch then
-                if ReplicatedStorage:FindFirstChild("Security") then
-                    Bypass.PurgeSecurity(2)
-                    Bypass.Status("пересоздан — снесён", Color3.fromRGB(255, 200, 60))
-                end
-                if LP:FindFirstChild("PlayerScripts")
-                and LP.PlayerScripts:FindFirstChild("Client")
-                and LP.PlayerScripts.Client:FindFirstChild("DeviceChecker") then
-                    Bypass.KillDeviceChecker(2)
-                end
-            end
-        end
-    end)
-end
-
-Bypass.Stop = function()
-    Bypass.active = false
-    Bypass.DisconnectWatch()
-    Bypass.UnhookMeta()
-    Bypass.Status("выключен", C.dim)
-    Bypass.Log("байпас снят")
-end
-
-DestroySecurity = function()
-    local sec = Bypass.PurgeSecurity(SS.BypassRetries)
-    local dc  = Bypass.KillDeviceChecker(SS.BypassRetries)
-    Bypass.nukes += 1
-    Bypass.Status(("ручной снос %d/%d"):format(sec, dc), C.accent2)
-    Bypass.Log("ручной снос: Security " .. sec .. ", DeviceChecker " .. dc)
-end
-
-ApplyBypass = function(on)
-    if on then Bypass.Start() else Bypass.Stop() end
-end
 
 --=============================================================
 --  КАРКАС ОКНА
@@ -409,7 +184,7 @@ new("TextLabel", {
 })
 local subLbl = new("TextLabel", {
     Parent = header, Size = UDim2.new(1, -140, 0, 14), Position = UDim2.fromOffset(18, 30),
-    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.3 + bypass",
+    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.3 + hard bypass",
     TextSize = 11, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
 })
 new("UIGradient", {Color = ColorSequence.new(C.accent, C.accent2)}, subLbl)
@@ -433,7 +208,7 @@ local sidebar = new("Frame", {
     BackgroundColor3 = C.bg, BackgroundTransparency = 0.35, BorderSizePixel = 0,
 })
 
-local hint = new("TextLabel", {
+new("TextLabel", {
     Parent = sidebar, Size = UDim2.new(1, -20, 0, 14), Position = UDim2.new(0, 10, 1, -22),
     BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Z — свернуть меню",
     TextSize = 10, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
@@ -458,14 +233,13 @@ local TABS = {
 }
 
 local function CreatePage()
-    local p = new("ScrollingFrame", {
+    return new("ScrollingFrame", {
         Parent = contentHolder, Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1, BorderSizePixel = 0,
         CanvasSize = UDim2.new(), ScrollBarThickness = 3,
         ScrollBarImageColor3 = C.accent, Visible = false,
         AutomaticCanvasSize = Enum.AutomaticSize.None,
     })
-    return p
 end
 
 local function selectTab(key)
@@ -544,7 +318,7 @@ local function NewLayout(page)
 end
 
 --=============================================================
---  КОМПОНЕНТЫ (заполняют готовую строку)
+--  КОМПОНЕНТЫ
 --=============================================================
 local Sync = {}
 
@@ -800,12 +574,12 @@ L:EndSection()
 --=============================================================
 L = NewLayout(pages.Bypass)
 
--- [БАЙПАС] раздел переписан
 L:Section("АНТИЧИТ (BAC)")
 AddToggle(L:Row(24), "Bypass", SS.Bypass, function(v) SS.Bypass = v; ApplyBypass(v) end)
 AddToggle(L:Row(24), "Глушить Kick (жёстко)", SS.BypassHard, function(v) SS.BypassHard = v end)
 AddToggle(L:Row(24), "Блокировать FireServer античита", SS.BypassBlockFire, function(v) SS.BypassBlockFire = v end)
 AddToggle(L:Row(24), "Сторож пересоздания", SS.BypassWatch, function(v) SS.BypassWatch = v end)
+AddToggle(L:Row(24), "Сносить папку Security", SS.BypassNuke, function(v) SS.BypassNuke = v end)
 AddSlider(L:Row(36), "Попыток сноса", 1, 20, SS.BypassRetries, 0, function(v) SS.BypassRetries = v end)
 AddButton(L:Row(26), "ПРИМЕНИТЬ БАЙПАС СЕЙЧАС", function() DestroySecurity() end, Color3.fromRGB(52, 40, 82))
 do
@@ -816,10 +590,11 @@ do
         TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
     })
 end
-AddHint(L:Row(56),
-    "Сносит Security (+RemoteEvent и пустой экземпляр) и DeviceChecker. " ..
-    "Ставит хук Kick, рвёт коннекты, блокирует отправку в канал античита. " ..
-    "Сторож возвращает снос при пересоздании — реджойн не обязателен.")
+AddToggle(L:Row(24), "Логировать в консоль", SS.BypassVerbose, function(v) SS.BypassVerbose = v end)
+AddHint(L:Row(64),
+    "Подменяет Security.RemoteEvent локальной приманкой, к которой сервер не достаёт, " ..
+    "рвёт коннекты, глушит Kick и DeviceChecker. Сторож чинит канал каждые 0.25 с. " ..
+    "Если статус «хук: нет» — исполнитель без метатаблицы, работает только приманка.")
 L:EndSection()
 
 L:Section("ПРОИЗВОДИТЕЛЬНОСТЬ")
@@ -907,11 +682,7 @@ local function SetState(s)
 end
 
 local function ToggleMenu()
-    if menuState == "open" then
-        SetState("closed")
-    else
-        SetState("open")
-    end
+    if menuState == "open" then SetState("closed") else SetState("open") end
 end
 
 minBtn.MouseButton1Click:Connect(function() SetState("minimized") end)
@@ -1037,6 +808,304 @@ ApplyAccessories = function(on)
             end
         end
     end
+end
+
+--=============================================================
+--  [БАЙПАС] ЯДРО
+--  Заменяет разовый снос:
+--    ReplicatedStorage.Security.RemoteEvent:Destroy()
+--    ReplicatedStorage.Security[""]:Destroy()
+--    ReplicatedStorage.Security:Destroy()
+--    LP.PlayerScripts.Client.DeviceChecker:Destroy()
+--  Destroy() не рвёт коннекты, поэтому канал не умирает от простого
+--  сноса. Здесь реальный RemoteEvent подменяется локальной приманкой:
+--  сервер держит ссылку на свой экземпляр и FireClient уходит в пустоту,
+--  клиентский обработчик не запускается и Kick не вызывается.
+--=============================================================
+Bypass.Log = function(t)
+    if SS.BypassVerbose then print("[SleepScript][BAC] " .. tostring(t)) end
+end
+
+Bypass.Status = function(text, col)
+    if not Bypass.statusLbl then return end
+    Bypass.statusLbl.Text = text
+    Bypass.statusLbl.TextColor3 = col or C.dim
+end
+
+Bypass.RefreshStatus = function()
+    local hookTxt = Bypass.hooked and "хук: да" or "хук: нет"
+    local col = Bypass.hooked and C.accent2 or Color3.fromRGB(255, 200, 60)
+    Bypass.Status(("%s • kick %d • снос %d • приманка %d")
+        :format(hookTxt, Bypass.kicks, Bypass.killed, Bypass.recreated), col)
+end
+
+local function waitFor(getter, timeout)
+    local t0 = os.clock()
+    while os.clock() - t0 < (timeout or 6) do
+        local v = getter()
+        if v then return v end
+        task.wait(0.08)
+    end
+    return getter()
+end
+
+local function isOurDummy(inst)
+    return inst and Bypass.mine[inst] == true
+end
+
+-- разрыв всех клиентских подписок на объект
+Bypass.SeverConnections = function(remote)
+    Bypass.blocked[remote] = true
+    if not getconnections then return end
+    local ok, list = pcall(getconnections, remote.OnClientEvent)
+    if not ok or type(list) ~= "table" then return end
+    for _, c in ipairs(list) do
+        pcall(function() c:Disconnect() end)
+    end
+end
+
+-- снос/нейтрализация содержимого Security + установка приманки
+Bypass.Poison = function()
+    if not SS.Bypass then return end
+    local sec = ReplicatedStorage:FindFirstChild("Security")
+
+    if not sec then
+        sec = new("Folder", {Name = "Security", Parent = ReplicatedStorage})
+        Bypass.mine[sec] = true
+        Bypass.recreated += 1
+    elseif not isOurDummy(sec) then
+        Bypass.recreated += 1
+    end
+
+    -- 1) глушим исполняемое внутри, чтобы не успело дёрнуться
+    for _, d in ipairs(sec:GetDescendants()) do
+        if d:IsA("LuaSourceContainer") then
+            pcall(function() d.Disabled = true end)
+        end
+    end
+
+    -- 2) чужие remote-объекты: рвём коннекты и сносим
+    for _, d in ipairs(sec:GetChildren()) do
+        if isOurDummy(d) then continue end
+        if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+            Bypass.SeverConnections(d)
+            pcall(function() d:Destroy() end)
+            Bypass.killed += 1
+        elseif d.Name == "" then
+            pcall(function() d:Destroy() end)
+            Bypass.killed += 1
+        end
+    end
+
+    -- 3) держим приманку с именем RemoteEvent
+    local hasDummy = false
+    for _, d in ipairs(sec:GetChildren()) do
+        if isOurDummy(d) and d.Name == "RemoteEvent" then hasDummy = true break end
+    end
+    if not hasDummy then
+        local dummy = new("RemoteEvent", {Name = "RemoteEvent", Parent = sec})
+        Bypass.mine[dummy] = true
+        dummy.OnClientEvent:Connect(function() end)
+    end
+
+    -- 4) опционально сносим саму папку (жёсткий режим оригинала)
+    if SS.BypassNuke then
+        for _, d in ipairs(sec:GetChildren()) do
+            if not isOurDummy(d) then pcall(function() d:Destroy() end) end
+        end
+    end
+end
+
+-- DeviceChecker: Disabled до Destroy, поиск по всему PlayerScripts
+Bypass.KillDeviceChecker = function(attempts)
+    attempts = math.max(1, attempts or 1)
+    local ps = LP:FindFirstChild("PlayerScripts")
+    if not ps then return 0 end
+    local found = 0
+
+    for i = 1, attempts do
+        local targets = {}
+        local client = ps:FindFirstChild("Client")
+        local dc = client and client:FindFirstChild("DeviceChecker")
+        if dc then table.insert(targets, dc) end
+        if #targets == 0 then
+            for _, v in ipairs(ps:GetDescendants()) do
+                if v.Name:lower():find("devicechecker", 1, true) then
+                    table.insert(targets, v)
+                end
+            end
+        end
+        for _, t in ipairs(targets) do
+            if t:IsA("LuaSourceContainer") then
+                pcall(function() t.Disabled = true end)
+            end
+            pcall(function() t:Destroy() end)
+            found += 1
+        end
+        if found > 0 then break end
+        task.wait(0.3)
+    end
+    return found
+end
+
+-- хук метатаблицы: Kick глушится, FireServer в канал античита режется
+Bypass.Hook = function()
+    if Bypass.hooked then return true end
+    if not getnamecallmethod then return false end
+
+    local function handler(self, ...)
+        local method = getnamecallmethod()
+        if SS.Bypass then
+            if method == "Kick" and (self == LP or self == Players) then
+                Bypass.kicks += 1
+                local msg = tostring((...))
+                table.insert(Bypass.log, ("%s  %s"):format(os.date("%H:%M:%S"), msg))
+                if #Bypass.log > 4 then table.remove(Bypass.log, 1) end
+                print("[SleepScript][BAC] Kick перехвачен: " .. msg)
+                Bypass.RefreshStatus()
+                if SS.BypassHard then return end
+            elseif (method == "FireServer" or method == "InvokeServer") and SS.BypassBlockFire then
+                local parent = self.Parent
+                if Bypass.blocked[self]
+                or (parent and (parent.Name == "Security"
+                    or (parent.Parent and parent.Parent.Name == "Security"))) then
+                    return
+                end
+            end
+        end
+        return Bypass.old(self, ...)
+    end
+
+    local ok = pcall(function()
+        if getrawmetatable and setreadonly and newcclosure then
+            local mt = getrawmetatable(game)
+            Bypass.old = mt.__namecall
+            setreadonly(mt, false)
+            mt.__namecall = newcclosure(handler)
+            setreadonly(mt, true)
+        elseif hookmetamethod then
+            Bypass.old = hookmetamethod(game, "__namecall", handler)
+        else
+            error("нет доступа к метатаблице")
+        end
+    end)
+
+    if ok and Bypass.old then
+        Bypass.hooked = true
+        Bypass.Log("хук __namecall установлен")
+        Bypass.RefreshStatus()
+        return true
+    end
+
+    Bypass.old = nil
+    Bypass.Log("хук не установлен")
+    Bypass.RefreshStatus()
+    return false
+end
+
+Bypass.Unhook = function()
+    if not Bypass.hooked or not Bypass.old then return end
+    pcall(function()
+        if getrawmetatable and setreadonly then
+            local mt = getrawmetatable(game)
+            setreadonly(mt, false)
+            mt.__namecall = Bypass.old
+            setreadonly(mt, true)
+        end
+    end)
+    Bypass.hooked = false
+    Bypass.old = nil
+end
+
+Bypass.DisconnectWatch = function()
+    for _, c in ipairs(Bypass.conns) do pcall(function() c:Disconnect() end) end
+    table.clear(Bypass.conns)
+end
+
+Bypass.Watch = function()
+    local function add(conn)
+        if conn then table.insert(Bypass.conns, conn) end
+    end
+
+    add(ReplicatedStorage.ChildAdded:Connect(function(inst)
+        if inst.Name == "Security" and SS.Bypass then
+            task.delay(0.1, function() Bypass.Poison() end)
+        end
+    end))
+
+    local sec = ReplicatedStorage:FindFirstChild("Security")
+    if sec then
+        add(sec.ChildAdded:Connect(function()
+            if SS.Bypass then task.delay(0.05, function() Bypass.Poison() end) end
+        end))
+    end
+
+    local ps = LP:FindFirstChild("PlayerScripts")
+    local client = ps and ps:FindFirstChild("Client")
+    if client then
+        add(client.ChildAdded:Connect(function(inst)
+            if inst.Name:lower():find("devicechecker", 1, true) and SS.Bypass then
+                task.delay(0.05, function() Bypass.KillDeviceChecker(2) end)
+            end
+        end))
+    end
+end
+
+-- сторож: постоянное поддержание канала в мёртвом состоянии
+Bypass.Loop = function()
+    if Bypass.looping then return end
+    Bypass.looping = true
+    task.spawn(function()
+        while Bypass.active and SS.Bypass do
+            pcall(function()
+                if SS.BypassWatch then Bypass.Poison() end
+                Bypass.KillDeviceChecker(1)
+                if not Bypass.hooked then Bypass.Hook() end
+            end)
+            task.wait(0.25)
+        end
+        Bypass.looping = false
+    end)
+end
+
+Bypass.Start = function()
+    if Bypass.active then return end
+    Bypass.active = true
+    Bypass.Hook()
+    Bypass.Status("инициализация...", C.accent2)
+
+    task.spawn(function()
+        waitFor(function() return ReplicatedStorage:FindFirstChild("Security") end, 8)
+        for i = 1, math.max(1, SS.BypassRetries) do
+            Bypass.Poison()
+            if Bypass.KillDeviceChecker(1) > 0 then break end
+            task.wait(0.2)
+        end
+        Bypass.Log(("приманка %d, снос %d, kick %d")
+            :format(Bypass.recreated, Bypass.killed, Bypass.kicks))
+        Bypass.RefreshStatus()
+        if SS.BypassWatch then Bypass.Watch() end
+        Bypass.Loop()
+    end)
+end
+
+Bypass.Stop = function()
+    Bypass.active = false
+    Bypass.DisconnectWatch()
+    Bypass.Unhook()
+    Bypass.Status("выключен", C.dim)
+    Bypass.Log("байпас снят")
+end
+
+DestroySecurity = function()
+    Bypass.Poison()
+    Bypass.KillDeviceChecker(SS.BypassRetries)
+    Bypass.RefreshStatus()
+    Bypass.Log("ручной снос")
+end
+
+ApplyBypass = function(on)
+    if on then Bypass.Start() else Bypass.Stop() end
 end
 
 --=============================================================
@@ -1254,8 +1323,9 @@ LP.CharacterAdded:Connect(function()
         ApplySkin(SS._curMesh, SS._curTex)
     end
     if SS.Bypass then
-        task.wait(0.5)
-        DestroySecurity()
+        task.wait(0.4)
+        pcall(Bypass.Poison)
+        pcall(Bypass.KillDeviceChecker, SS.BypassRetries)
     end
 end)
 
