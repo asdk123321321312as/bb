@@ -1,10 +1,9 @@
 --[[
 =====================================================================
-   SleepScript  |  Blade Ball  (fixed build)
-   Z        — свернуть / развернуть (полное скрытие)
-   Крестик  — полностью закрыть меню (вернуть: Z)
+   SleepScript  |  Blade Ball  (v1.2 — BAC-fix)
+   Z          — свернуть / развернуть
+   Крестик    — полностью закрыть (вернуть: Z)
    RightShift — быстрый тумблер AutoParry
-   Вёрстка на ручном позиционировании — не зависит от UIListLayout
 =====================================================================
 ]]
 
@@ -18,6 +17,7 @@ local Stats               = game:GetService("Stats")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local CoreGui             = game:GetService("CoreGui")
 local HttpService         = game:GetService("HttpService")
+local TeleportService     = game:GetService("TeleportService")
 
 local LP = Players.LocalPlayer
 local function cam() return workspace.CurrentCamera end
@@ -30,12 +30,19 @@ getgenv().SleepScript = SS
 
 local DEFAULTS = {
     MenuState = "open",
+    -- AutoParry
     AutoParry = false, PingBased = true, PingBasedOffset = 1.95,
     DistanceToParry = 0.65, EmergencyRadius = 10,
-    ClashDistance = 22, ClashSpeed = 0.01, NormalSpeed = 0.05,
-    ParryVisuals = true,
+    ClashDistance = 22, ClashSpeed = 0.05, NormalSpeed = 0.09,
+    ShowRadius = true, RadiusScale = 1,
+    UsePreSim = true, ClickDownOnly = true, ClickJitter = 0.006,
+    ClickMethod = "vim",
+    -- Anti-kick
+    KickMode = "rejoin",
+    -- Visuals (по умолчанию выключено — меньше поводов для BAC)
     FOV = 70, CustomSky = false, SkyId = "rbxassetid://159454299",
     Headless = false, Korblox = false, KorbloxMesh = "rbxassetid://139607718",
+    -- Perf
     Bypass = true, FPSBoost = false, NoEffects = false, NoAccessories = false, FPSCap = 240,
     Overlay = true, OverlayGraph = true,
     SkinLock = true,
@@ -55,6 +62,7 @@ local C = {
     dim     = Color3.fromRGB(132, 140, 162),
     off     = Color3.fromRGB(38, 43, 58),
     stroke  = Color3.fromRGB(48, 54, 74),
+    warn    = Color3.fromRGB(255, 170, 60),
 }
 
 local function new(class, props, parent)
@@ -98,9 +106,45 @@ local function makeDraggable(frame, handle)
     end)
 end
 
--- forward-декларации (чтобы колбэки видели их, а не nil)
 local ApplySky, ApplyBody, ApplyFPSBoost, ApplyEffects, ApplyAccessories
 local ApplyBypass, ApplySkin, RenderSkinList, BuildSkinDatabase
+
+--=============================================================
+--  АНТИ-КИК (ставится ДО всего остального)
+--=============================================================
+local oldNamecall
+local function Rejoin()
+    if game.JobId and game.JobId ~= "" then
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP)
+    else
+        TeleportService:Teleport(game.PlaceId, LP)
+    end
+end
+
+local function InstallAntiKick()
+    if not (getrawmetatable and setreadonly and newcclosure) then return end
+    local mt = getrawmetatable(game)
+    if not oldNamecall then oldNamecall = mt.__namecall end
+    setreadonly(mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod and getnamecallmethod() or nil
+        if method == "Kick" and self == LP and SS.Bypass then
+            local mode = SS.KickMode
+            if mode == "block" then
+                return
+            elseif mode == "rejoin" then
+                task.spawn(function()
+                    task.wait(0.2)
+                    pcall(Rejoin)
+                end)
+                return
+            end
+        end
+        return oldNamecall(self, ...)
+    end)
+    setreadonly(mt, true)
+    print("[SleepScript] Anti-Kick: " .. tostring(SS.KickMode))
+end
 
 --=============================================================
 --  КАРКАС ОКНА
@@ -121,27 +165,22 @@ local WIN_W, WIN_H = 560, 360
 local shadow = new("Frame", {
     Parent = gui, Name = "Shadow",
     Size = UDim2.fromOffset(WIN_W + 8, WIN_H + 8),
-    Position = UDim2.fromScale(0.5, 0.5),
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.55,
-    BorderSizePixel = 0,
+    Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.55, BorderSizePixel = 0,
 })
 corner(shadow, 18)
 
 local main = new("Frame", {
     Parent = gui, Name = "Main",
     Size = UDim2.fromOffset(WIN_W, WIN_H),
-    Position = UDim2.fromScale(0.5, 0.5),
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    BackgroundColor3 = C.bg, BorderSizePixel = 0,
-    ClipsDescendants = true, Active = true,
+    Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundColor3 = C.bg, BorderSizePixel = 0, ClipsDescendants = true, Active = true,
 })
 corner(main, 14)
 new("UIGradient", {Rotation = 20, Color = ColorSequence.new(C.bg, C.bg2)}, main)
 new("UIStroke", {Color = C.stroke, Thickness = 1, Transparency = 0.3}, main)
 makeDraggable(main)
 
--- тень следует за окном
 local function syncShadow()
     local p, s = main.Position, main.Size
     shadow.Position = UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset + 6)
@@ -151,10 +190,8 @@ main:GetPropertyChangedSignal("Position"):Connect(syncShadow)
 main:GetPropertyChangedSignal("Size"):Connect(syncShadow)
 syncShadow()
 
--- хедер
 local header = new("Frame", {
-    Parent = main, Size = UDim2.new(1, 0, 0, 52),
-    BackgroundTransparency = 1, Active = true,
+    Parent = main, Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1, Active = true,
 })
 makeDraggable(main, header)
 
@@ -165,7 +202,7 @@ new("TextLabel", {
 })
 local subLbl = new("TextLabel", {
     Parent = header, Size = UDim2.new(1, -140, 0, 14), Position = UDim2.fromOffset(18, 30),
-    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.1",
+    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.2 BAC-fix",
     TextSize = 11, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
 })
 new("UIGradient", {Color = ColorSequence.new(C.accent, C.accent2)}, subLbl)
@@ -184,46 +221,42 @@ local closeBtn = new("TextButton", {
 })
 corner(closeBtn, 8)
 
--- сайдбар
 local sidebar = new("Frame", {
     Parent = main, Size = UDim2.new(0, 150, 1, -62), Position = UDim2.fromOffset(0, 62),
     BackgroundColor3 = C.bg, BackgroundTransparency = 0.35, BorderSizePixel = 0,
 })
-
-local hint = new("TextLabel", {
+new("TextLabel", {
     Parent = sidebar, Size = UDim2.new(1, -20, 0, 14), Position = UDim2.new(0, 10, 1, -22),
     BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Z — свернуть меню",
     TextSize = 10, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
 })
 
--- контейнер страниц
 local contentHolder = new("Frame", {
     Parent = main, Size = UDim2.new(1, -160, 1, -74), Position = UDim2.fromOffset(155, 64),
     BackgroundTransparency = 1,
 })
 
 --=============================================================
---  ВКЛАДКИ (ручные позиции)
+--  ВКЛАДКИ
 --=============================================================
-local pages, tabs, currentTab = {}, {}, nil
+local pages, tabs = {}, {}
 
 local TABS = {
     { key = "AutoParry", label = "AutoParry" },
+    { key = "AntiKick",  label = "Anti-Kick" },
     { key = "Visuals",   label = "Visuals" },
     { key = "Skin",      label = "Скин меча" },
-    { key = "Bypass",    label = "Bypass / FPS" },
+    { key = "Perf",      label = "FPS / Bypass" },
     { key = "Overlay",   label = "Оверлей" },
 }
 
 local function CreatePage()
-    local p = new("ScrollingFrame", {
+    return new("ScrollingFrame", {
         Parent = contentHolder, Size = UDim2.fromScale(1, 1),
         BackgroundTransparency = 1, BorderSizePixel = 0,
         CanvasSize = UDim2.new(), ScrollBarThickness = 3,
         ScrollBarImageColor3 = C.accent, Visible = false,
-        AutomaticCanvasSize = Enum.AutomaticSize.None,
     })
-    return p
 end
 
 local function selectTab(key)
@@ -236,16 +269,15 @@ local function selectTab(key)
             TextColor3 = on and Color3.new(1, 1, 1) or C.dim,
         }):Play()
     end
-    currentTab = key
 end
 
 for i, t in ipairs(TABS) do
     local btn = new("TextButton", {
-        Parent = sidebar, Size = UDim2.new(1, -20, 0, 30),
-        Position = UDim2.fromOffset(10, 6 + (i - 1) * 36),
+        Parent = sidebar, Size = UDim2.new(1, -20, 0, 29),
+        Position = UDim2.fromOffset(10, 4 + (i - 1) * 33),
         BackgroundColor3 = C.off, BackgroundTransparency = 0.55,
         Text = "   " .. t.label, Font = Enum.Font.GothamMedium,
-        TextSize = 13, TextColor3 = C.dim,
+        TextSize = 12, TextColor3 = C.dim,
         TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false,
     })
     corner(btn, 8)
@@ -255,11 +287,10 @@ for i, t in ipairs(TABS) do
 end
 
 --=============================================================
---  РУЧНОЙ ЛЕЙАУТ СТРАНИЦЫ
+--  ЛЕЙАУТ / КОМПОНЕНТЫ
 --=============================================================
 local function NewLayout(page)
     local L = { page = page, y = 8, sec = nil, secTop = 0, sy = 0 }
-
     function L:Section(title)
         local sec = new("Frame", {
             Parent = self.page, Size = UDim2.new(1, 0, 0, 40),
@@ -271,16 +302,14 @@ local function NewLayout(page)
         self.sec, self.secTop, self.sy = sec, self.y, 10
         if title then
             new("TextLabel", {
-                Parent = sec, Size = UDim2.new(1, -20, 0, 16),
-                Position = UDim2.fromOffset(10, 10), BackgroundTransparency = 1,
-                Font = Enum.Font.GothamBold, Text = title, TextSize = 12,
-                TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = sec, Size = UDim2.new(1, -20, 0, 16), Position = UDim2.fromOffset(10, 10),
+                BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = title,
+                TextSize = 12, TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
             })
             self.sy = 32
         end
         return sec
     end
-
     function L:Row(h)
         local row = new("Frame", {
             Parent = self.sec, Size = UDim2.new(1, -20, 0, h),
@@ -289,7 +318,6 @@ local function NewLayout(page)
         self.sy = self.sy + h + 8
         return row
     end
-
     function L:EndSection()
         local h = self.sy + 4
         self.sec.Size = UDim2.new(1, 0, 0, h)
@@ -297,13 +325,9 @@ local function NewLayout(page)
         self.sec = nil
         self.page.CanvasSize = UDim2.new(0, 0, 0, self.y + 8)
     end
-
     return L
 end
 
---=============================================================
---  КОМПОНЕНТЫ (заполняют готовую строку)
---=============================================================
 local Sync = {}
 
 local function AddToggle(row, name, default, callback)
@@ -313,10 +337,8 @@ local function AddToggle(row, name, default, callback)
         TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
     })
     local btn = new("TextButton", {
-        Parent = row, Size = UDim2.fromOffset(38, 20),
-        Position = UDim2.new(1, -38, 0.5, -10),
-        BackgroundColor3 = default and C.accent or C.off,
-        Text = "", AutoButtonColor = false,
+        Parent = row, Size = UDim2.fromOffset(38, 20), Position = UDim2.new(1, -38, 0.5, -10),
+        BackgroundColor3 = default and C.accent or C.off, Text = "", AutoButtonColor = false,
     })
     corner(btn, 10)
     local knob = new("Frame", {
@@ -325,7 +347,6 @@ local function AddToggle(row, name, default, callback)
         BackgroundColor3 = Color3.fromRGB(255, 255, 255), BorderSizePixel = 0,
     })
     corner(knob, 8)
-
     local state = default
     local function render(fire)
         TweenService:Create(btn, TweenInfo.new(0.18),
@@ -363,7 +384,6 @@ local function AddSlider(row, name, min, max, default, decimals, callback)
         AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
         BackgroundColor3 = Color3.fromRGB(255, 255, 255), BorderSizePixel = 0})
     corner(knob, 6)
-
     local value = default
     local function set(v, fire)
         value = math.clamp(v, min, max)
@@ -397,10 +417,9 @@ end
 
 local function AddButton(row, name, callback, col)
     local btn = new("TextButton", {
-        Parent = row, Size = UDim2.fromScale(1, 1),
-        BackgroundColor3 = col or C.off, Text = name,
-        Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = C.text,
-        AutoButtonColor = false,
+        Parent = row, Size = UDim2.fromScale(1, 1), BackgroundColor3 = col or C.off,
+        Text = name, Font = Enum.Font.GothamMedium, TextSize = 12,
+        TextColor3 = C.text, AutoButtonColor = false,
     })
     corner(btn, 8)
     btn.MouseButton1Click:Connect(safe(callback))
@@ -415,11 +434,10 @@ end
 
 local function AddTextbox(row, placeholder, default, callback)
     local box = new("TextBox", {
-        Parent = row, Size = UDim2.fromScale(1, 1),
-        BackgroundColor3 = C.off, Text = default or "", PlaceholderText = placeholder,
-        Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = C.text,
-        PlaceholderColor3 = C.dim, ClearTextOnFocus = false,
-        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = row, Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.off,
+        Text = default or "", PlaceholderText = placeholder, Font = Enum.Font.Gotham,
+        TextSize = 12, TextColor3 = C.text, PlaceholderColor3 = C.dim,
+        ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left,
     })
     corner(box, 8)
     new("UIPadding", {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)}, box)
@@ -427,7 +445,7 @@ local function AddTextbox(row, placeholder, default, callback)
     return box
 end
 
-local function AddHint(row, text, h)
+local function AddHint(row, text)
     new("TextLabel", {
         Parent = row, Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
         Font = Enum.Font.Gotham, TextWrapped = true, TextSize = 11,
@@ -436,13 +454,38 @@ local function AddHint(row, text, h)
     })
 end
 
+-- выбор из вариантов (для режима кика / метода клика)
+local function AddChoices(row, options, current, callback)
+    local n = #options
+    local btns = {}
+    for i, opt in ipairs(options) do
+        local b = new("TextButton", {
+            Parent = row, Size = UDim2.new(1 / n, -4, 1, 0),
+            Position = UDim2.new((i - 1) / n, 2, 0, 0),
+            BackgroundColor3 = (opt.value == current) and C.accent or C.off,
+            Text = opt.label, Font = Enum.Font.Gotham, TextSize = 11,
+            TextColor3 = C.text, AutoButtonColor = false,
+        })
+        corner(b, 7)
+        b.MouseButton1Click:Connect(safe(function()
+            for _, x in ipairs(btns) do
+                TweenService:Create(x, TweenInfo.new(0.12), {BackgroundColor3 = C.off}):Play()
+            end
+            TweenService:Create(b, TweenInfo.new(0.12), {BackgroundColor3 = C.accent}):Play()
+            callback(opt.value)
+        end))
+        table.insert(btns, b)
+    end
+end
+
 --=============================================================
 --  СТРАНИЦА: AUTOPARRY
 --=============================================================
 local L = NewLayout(pages.AutoParry)
 L:Section("PARRY")
 AddToggle(L:Row(24), "AutoParry", SS.AutoParry, function(v) SS.AutoParry = v end)
-AddToggle(L:Row(24), "ParryVisuals", SS.ParryVisuals, function(v) SS.ParryVisuals = v end)
+AddToggle(L:Row(24), "Показывать радиус", SS.ShowRadius, function(v) SS.ShowRadius = v end)
+AddSlider(L:Row(36), "Размер радиуса", 0.2, 3, SS.RadiusScale, 1, function(v) SS.RadiusScale = v end)
 L:EndSection()
 
 L:Section("ТАЙМИНГ")
@@ -456,6 +499,49 @@ L:Section("КЛАШ")
 AddSlider(L:Row(36), "ClashDistance", 5, 60, SS.ClashDistance, 0, function(v) SS.ClashDistance = v end)
 AddSlider(L:Row(36), "ClashSpeed", 0.01, 0.2, SS.ClashSpeed, 2, function(v) SS.ClashSpeed = v end)
 AddSlider(L:Row(36), "NormalSpeed", 0.01, 0.3, SS.NormalSpeed, 2, function(v) SS.NormalSpeed = v end)
+L:EndSection()
+
+L:Section("СОВМЕСТИМОСТЬ С BAC")
+AddToggle(L:Row(24), "PreSimulation (мягче)", SS.UsePreSim, function(v) SS.UsePreSim = v end)
+AddToggle(L:Row(24), "Клик только вниз", SS.ClickDownOnly, function(v) SS.ClickDownOnly = v end)
+AddSlider(L:Row(36), "Jitter клика", 0, 0.03, SS.ClickJitter, 3, function(v) SS.ClickJitter = v end)
+do
+    local row = L:Row(26)
+    AddChoices(row, {
+        { label = "VirtualInput", value = "vim" },
+        { label = "mouse1click",  value = "mouse" },
+    }, SS.ClickMethod, function(v) SS.ClickMethod = v end)
+end
+AddHint(L:Row(30), "Если BAC кикает — включи 'PreSimulation' + 'Клик только вниз'.")
+L:EndSection()
+
+--=============================================================
+--  СТРАНИЦА: ANTI-KICK
+--=============================================================
+L = NewLayout(pages.AntiKick)
+L:Section("РЕЖИМ КИКА")
+do
+    local row = L:Row(28)
+    AddChoices(row, {
+        { label = "Rejoin", value = "rejoin" },
+        { label = "Block",  value = "block" },
+        { label = "Off",    value = "off" },
+    }, SS.KickMode, function(v) SS.KickMode = v end)
+end
+AddHint(L:Row(34), "Rejoin — при кике от BAC блокирует дисконнект и возвращает в тот же сервер. Block — просто не отпускает. Off — как обычно.")
+L:EndSection()
+
+L:Section("ЗАЩИТА")
+AddToggle(L:Row(24), "Bypass (хук namecall)", SS.Bypass, function(v)
+    SS.Bypass = v
+    ApplyBypass(v)
+end)
+AddButton(L:Row(26), "Переустановить Anti-Kick", function() InstallAntiKick() end)
+AddButton(L:Row(26), "Вернуться на этот сервер", function() pcall(Rejoin) end)
+L:EndSection()
+
+L:Section("ЕСЛИ КИКАЕТ ВСЁ РАВНО")
+AddHint(L:Row(52), "1) Выключи Korblox / Headless и Custom Sky.\n2) Поставь ClickDownOnly = ON и PreSimulation = ON.\n3) Подними NormalSpeed до 0.1.")
 L:EndSection()
 
 --=============================================================
@@ -476,25 +562,23 @@ AddToggle(L:Row(24), "CustomSky", SS.CustomSky, function(v)
 end)
 do
     local row = L:Row(26)
-    local names = {"Sunset", "Night", "Cloudy", "Space"}
-    local ids = {
-        ["Sunset"] = "rbxassetid://159454299",
-        ["Night"]  = "rbxassetid://57055771",
-        ["Cloudy"] = "rbxassetid://271042910",
-        ["Space"]  = "rbxassetid://133883647",
+    local list = {
+        { "Sunset", "rbxassetid://159454299" },
+        { "Night",  "rbxassetid://57055771" },
+        { "Cloudy", "rbxassetid://271042910" },
+        { "Space",  "rbxassetid://133883647" },
     }
-    for i, nm in ipairs(names) do
+    for i, t in ipairs(list) do
         local b = new("TextButton", {
-            Parent = row,
-            Size = UDim2.new(0.25, -5, 1, 0),
+            Parent = row, Size = UDim2.new(0.25, -5, 1, 0),
             Position = UDim2.new((i - 1) * 0.25, 0, 0, 0),
-            BackgroundColor3 = C.off, Text = nm, Font = Enum.Font.Gotham,
+            BackgroundColor3 = C.off, Text = t[1], Font = Enum.Font.Gotham,
             TextSize = 11, TextColor3 = C.text, AutoButtonColor = false,
         })
         corner(b, 7)
         b.MouseButton1Click:Connect(safe(function()
-            SS.SkyId = ids[nm]
-            if SS.CustomSky then ApplySky(ids[nm]) end
+            SS.SkyId = t[2]
+            if SS.CustomSky then ApplySky(t[2]) end
         end))
     end
 end
@@ -532,12 +616,11 @@ L:EndSection()
 
 L:Section("СПИСОК")
 do
-    local row = L:Row(200)
+    local row = L:Row(190)
     skinListFrame = new("ScrollingFrame", {
-        Parent = row, Size = UDim2.fromScale(1, 1),
-        BackgroundTransparency = 1, BorderSizePixel = 0,
-        CanvasSize = UDim2.new(), ScrollBarThickness = 3,
-        ScrollBarImageColor3 = C.accent,
+        Parent = row, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+        BorderSizePixel = 0, CanvasSize = UDim2.new(),
+        ScrollBarThickness = 3, ScrollBarImageColor3 = C.accent,
     })
 end
 L:EndSection()
@@ -554,14 +637,9 @@ end)
 L:EndSection()
 
 --=============================================================
---  СТРАНИЦА: BYPASS / FPS
+--  СТРАНИЦА: FPS / BYPASS
 --=============================================================
-L = NewLayout(pages.Bypass)
-L:Section("АНТИЧИТ")
-AddToggle(L:Row(24), "Bypass", SS.Bypass, function(v) SS.Bypass = v; ApplyBypass(v) end)
-AddHint(L:Row(30), "Блокирует кик, защищает GUI, разрешает локальные CFrame-правки.")
-L:EndSection()
-
+L = NewLayout(pages.Perf)
 L:Section("ПРОИЗВОДИТЕЛЬНОСТЬ")
 AddToggle(L:Row(24), "FPS Boost", SS.FPSBoost, function(v) SS.FPSBoost = v; ApplyFPSBoost(v) end)
 AddToggle(L:Row(24), "Убрать эффекты", SS.NoEffects, function(v) SS.NoEffects = v; ApplyEffects(v) end)
@@ -573,18 +651,6 @@ AddSlider(L:Row(36), "FPS Cap", 30, 360, SS.FPSCap, 0, function(v)
     SS.FPSCap = v
     pcall(function() if setfpscap then setfpscap(v) end end)
 end)
-L:EndSection()
-
---=============================================================
---  СТРАНИЦА: ОВЕРЛЕЙ
---=============================================================
-L = NewLayout(pages.Overlay)
-L:Section("ОТДЕЛЬНОЕ МЕНЮ")
-AddToggle(L:Row(24), "Overlay (FPS / Ping)", SS.Overlay, function(v)
-    SS.Overlay = v
-    if getgenv().SleepScriptOverlay then getgenv().SleepScriptOverlay.Enabled = v end
-end)
-AddToggle(L:Row(24), "График", SS.OverlayGraph, function(v) SS.OverlayGraph = v end)
 L:EndSection()
 
 L:Section("КОНФИГ")
@@ -602,6 +668,18 @@ AddButton(L:Row(26), "Загрузить конфиг", function()
 end)
 L:EndSection()
 
+--=============================================================
+--  СТРАНИЦА: ОВЕРЛЕЙ
+--=============================================================
+L = NewLayout(pages.Overlay)
+L:Section("ОТДЕЛЬНОЕ МЕНЮ")
+AddToggle(L:Row(24), "Overlay (FPS / Ping)", SS.Overlay, function(v)
+    SS.Overlay = v
+    if getgenv().SleepScriptOverlay then getgenv().SleepScriptOverlay.Enabled = v end
+end)
+AddToggle(L:Row(24), "График", SS.OverlayGraph, function(v) SS.OverlayGraph = v end)
+L:EndSection()
+
 selectTab("AutoParry")
 
 --=============================================================
@@ -617,41 +695,28 @@ corner(pill, 23)
 new("UIStroke", {Color = C.accent, Transparency = 0.35, Thickness = 1}, pill)
 makeDraggable(pill)
 
-local menuState = "open"
-local busy = false
+local menuState, busy = "open", false
 
 local function SetState(s)
     if busy or s == menuState then return end
     busy = true
     if s == "open" then
-        main.Visible = true
-        shadow.Visible = true
-        pill.Visible = false
+        main.Visible, shadow.Visible, pill.Visible = true, true, false
         main.Size = UDim2.fromOffset(46, 46)
-        local t = TweenService:Create(main, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-            {Size = UDim2.fromOffset(WIN_W, WIN_H)})
-        t:Play()
+        TweenService:Create(main, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+            {Size = UDim2.fromOffset(WIN_W, WIN_H)}):Play()
         task.delay(0.3, function() busy = false end)
-    elseif s == "closed" or s == "minimized" then
+    else
         local t = TweenService:Create(main, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
             {Size = UDim2.fromOffset(46, 46)})
         t:Play()
         t.Completed:Wait()
-        main.Visible = false
-        shadow.Visible = false
+        main.Visible, shadow.Visible = false, false
         pill.Visible = (s == "minimized")
         busy = false
     end
     menuState = s
     SS.MenuState = s
-end
-
-local function ToggleMenu()
-    if menuState == "open" then
-        SetState("closed")
-    else
-        SetState("open")
-    end
 end
 
 minBtn.MouseButton1Click:Connect(function() SetState("minimized") end)
@@ -662,23 +727,22 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if UserInputService:GetFocusedTextBox() then return end
     if input.KeyCode == Enum.KeyCode.Z then
-        ToggleMenu()
+        SetState(menuState == "open" and "closed" or "open")
     elseif input.KeyCode == Enum.KeyCode.RightShift then
         SS.AutoParry = not SS.AutoParry
         if Sync["AutoParry"] then Sync["AutoParry"].Set(SS.AutoParry, false) end
     end
 end)
 
-if SS.MenuState == "closed" or SS.MenuState == "minimized" then
+if SS.MenuState ~= "open" then
     main.Size = UDim2.fromOffset(46, 46)
-    main.Visible = false
-    shadow.Visible = false
+    main.Visible, shadow.Visible = false, false
     pill.Visible = (SS.MenuState == "minimized")
     menuState = SS.MenuState
 end
 
 --=============================================================
---  РЕАЛИЗАЦИЯ: НЕБО / ТЕЛО / ПЕРФ / БАЙПАС
+--  РЕАЛИЗАЦИЯ: НЕБО / ТЕЛО / ПЕРФ
 --=============================================================
 ApplySky = function(id)
     local old = Lighting:FindFirstChild("SleepSky")
@@ -767,7 +831,7 @@ ApplyAccessories = function(on)
     for _, plr in pairs(Players:GetPlayers()) do
         if plr ~= LP and plr.Character then
             for _, v in pairs(plr.Character:GetChildren()) do
-                if v:IsA("Accessory") or v:IsA("Hat") then
+                if v:IsA("Accessory") or v:IsA("Accoutrement") then
                     for _, d in pairs(v:GetDescendants()) do
                         if d:IsA("BasePart") or d:IsA("Decal") then
                             d.Transparency = on and 1 or 0
@@ -779,18 +843,8 @@ ApplyAccessories = function(on)
     end
 end
 
-local oldNamecall
 ApplyBypass = function(on)
-    if not (getrawmetatable and setreadonly and newcclosure) then return end
-    local mt = getrawmetatable(game)
-    if not oldNamecall then oldNamecall = mt.__namecall end
-    setreadonly(mt, false)
-    mt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        if method == "Kick" and self == LP and SS.Bypass then return end
-        return oldNamecall(self, ...)
-    end)
-    setreadonly(mt, true)
+    InstallAntiKick()
 end
 
 --=============================================================
@@ -869,8 +923,7 @@ RenderSkinList = function(filter)
         if filter == "" or skin.Name:lower():find(filter:lower(), 1, true) then
             n += 1
             local b = new("TextButton", {
-                Parent = skinListFrame,
-                Size = UDim2.new(1, -8, 0, 24),
+                Parent = skinListFrame, Size = UDim2.new(1, -8, 0, 24),
                 Position = UDim2.new(0, 0, 0, (n - 1) * 28),
                 BackgroundColor3 = C.off, Text = "   " .. skin.Name,
                 Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = C.text,
@@ -894,7 +947,7 @@ BuildSkinDatabase()
 RenderSkinList("")
 
 --=============================================================
---  АВТОПАРРИ
+--  АВТОПАРРИ (BAC-safe)
 --=============================================================
 local LastClick, LastBallHit, IsParrying, frameCounter = 0, nil, false, 0
 local BallsFolder = workspace:FindFirstChild("Balls") or workspace:WaitForChild("Balls", 5)
@@ -904,9 +957,9 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
 local r, m
-if SS.ParryVisuals then
+if SS.ShowRadius then
     r = new("Part", {Name = "SleepParryCircle", Parent = workspace,
-        Anchored = true, CanCollide = false, Transparency = 0.3,
+        Anchored = true, CanCollide = false, Transparency = 1,
         Material = Enum.Material.Neon, Size = Vector3.new(1, 1, 1)})
     m = new("SpecialMesh", {MeshId = "rbxassetid://3270017"}, r)
 end
@@ -925,7 +978,21 @@ local function GetBall()
     return nil
 end
 
-local function IsTargeted()
+-- скорость шара: сначала пробуем родной констрейнт игры
+local function BallSpeed(ball)
+    local z = ball:FindFirstChild("zoomies")
+    if z and z:IsA("LinearVelocity") then
+        local ok, v = pcall(function() return z.VectorVelocity.Magnitude end)
+        if ok and v then return v end
+    end
+    return ball.AssemblyLinearVelocity.Magnitude
+end
+
+local function IsTargeted(ball)
+    if ball then
+        local t = ball:GetAttribute("target")
+        if t ~= nil then return t == LP.Name end
+    end
     if not LP.Character then return false end
     return LP.Character:GetAttribute("Targeted") == true
         or LP.Character:FindFirstChild("Highlight") ~= nil
@@ -934,19 +1001,36 @@ end
 local function SendClick(isClashing, ball)
     if not SS.AutoParry or IsParrying then return end
     local now = tick()
-    local cd = isClashing and SS.ClashSpeed or SS.NormalSpeed
+    local jitter = SS.ClickJitter > 0
+        and (math.random() * SS.ClickJitter * 2 - SS.ClickJitter) or 0
+    local cd = (isClashing and SS.ClashSpeed or SS.NormalSpeed) + jitter
+
     if not isClashing and LastBallHit == ball and (now - LastClick) < 0.5 then return end
     if (now - LastClick) < cd then return end
+
     IsParrying, LastClick, LastBallHit = true, now, ball
-    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+
+    if SS.ClickMethod == "mouse" and mouse1click then
+        if SS.ClickDownOnly and mouse1press then
+            mouse1press()
+            task.delay(0.01, function() if mouse1release then mouse1release() end end)
+        else
+            mouse1click()
+        end
+    else
+        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+        if not SS.ClickDownOnly then
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+        end
+    end
+
     task.delay(cd, function() IsParrying = false end)
 end
 
 local function UpdateVisuals(root, distance, state)
-    if not SS.ParryVisuals or not r then return end
+    if not SS.ShowRadius or not r then return end
     r.CFrame = root.CFrame * CFrame.new(0, -2.6, 0) * CFrame.Angles(math.rad(90), 0, 0)
-    local targetSize = math.clamp(distance * 0.8, 5, 65)
+    local targetSize = math.clamp(distance * 0.8, 5, 65) * (SS.RadiusScale or 1)
     m.Scale = m.Scale:Lerp(Vector3.new(targetSize, targetSize, 0.5), 0.5)
     if state == "clash" then
         r.Color, r.Transparency = Color3.fromRGB(255, 0, 0), 0.05
@@ -957,7 +1041,7 @@ local function UpdateVisuals(root, distance, state)
     end
 end
 
-RunService.PostSimulation:Connect(function()
+local function ParryStep()
     if not SS.AutoParry then
         if r then r.Transparency = 1 end
         return
@@ -970,20 +1054,27 @@ RunService.PostSimulation:Connect(function()
     if not Ball then if r then r.Transparency = 1 end return end
 
     local BallPos, PlayerPos = Ball.Position, Root.Position
-    local Velocity = Ball.AssemblyLinearVelocity
-    local Speed = Velocity.Magnitude
+    local Speed = BallSpeed(Ball)
     local Distance = (PlayerPos - BallPos).Magnitude
-    local dot = (PlayerPos - BallPos).Unit:Dot(Velocity.Unit)
+    local dot = (PlayerPos - BallPos).Unit * 1
+    local vel = Ball.AssemblyLinearVelocity
+    if vel.Magnitude > 0.01 then dot = (PlayerPos - BallPos).Unit:Dot(vel.Unit) end
 
     if dot < 0 then LastBallHit = nil end
 
-    local Targeted = IsTargeted()
+    local Targeted = IsTargeted(Ball)
     local IsClashing = Targeted and Distance <= SS.ClashDistance
 
     frameCounter += 1
-    if r and frameCounter % 2 == 0 then
-        r.Transparency = 0.3
-        UpdateVisuals(Root, Distance, IsClashing and "clash" or (Targeted and "target" or "neutral"))
+
+    -- ВАЖНО: скрытие радиуса работает всегда, а не только когда визуалы включены
+    if r then
+        if not SS.ShowRadius then
+            r.Transparency = 1
+        elseif frameCounter % 2 == 0 then
+            r.Transparency = 0.3
+            UpdateVisuals(Root, Distance, IsClashing and "clash" or (Targeted and "target" or "neutral"))
+        end
     end
 
     if IsClashing then
@@ -997,6 +1088,13 @@ RunService.PostSimulation:Connect(function()
             SendClick(false, Ball)
         end
     end
+end
+
+RunService.PreSimulation:Connect(function()
+    if SS.UsePreSim then ParryStep() end
+end)
+RunService.PostSimulation:Connect(function()
+    if not SS.UsePreSim then ParryStep() end
 end)
 
 LP.CharacterAdded:Connect(function()
@@ -1066,7 +1164,6 @@ RunService.RenderStepped:Connect(function()
             pingLbl.Text = "PING  " .. ping .. " ms"
             pingLbl.TextColor3 = ping < 80 and C.accent2
                 or (ping < 150 and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(255, 90, 90))
-
             table.insert(hist, fps)
             if #hist > 24 then table.remove(hist, 1) end
             for _, v in ipairs(graph:GetChildren()) do
@@ -1090,10 +1187,11 @@ end)
 --=============================================================
 --  ИНИЦИАЛИЗАЦИЯ
 --=============================================================
+InstallAntiKick()
+
 task.spawn(function()
     if cam() then cam().FieldOfView = SS.FOV end
     if SS.CustomSky then ApplySky(SS.SkyId) end
-    if SS.Bypass then ApplyBypass(true) end
     if SS.FPSBoost then ApplyFPSBoost(true) end
     if SS.NoEffects then ApplyEffects(true) end
     if SS.NoAccessories then ApplyAccessories(true) end
@@ -1107,4 +1205,4 @@ task.spawn(function()
     end
 end)
 
-print("[SleepScript] Загружено. Z — меню, RightShift — AutoParry")
+print("[SleepScript] Загружено. Anti-Kick: " .. SS.KickMode .. " | Z — меню")
