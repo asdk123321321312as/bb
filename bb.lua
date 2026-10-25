@@ -1,8 +1,8 @@
 --[[
 =====================================================================
-   SleepScript | Blade Ball (v1.5 — singleton, анти-дубль)
-   ВАЖНО: перед инжектом лучше ПЕРЕЗАЙТИ в игру (убить старые скрипты)
-   Z — свернуть, Крестик — закрыть, RightShift — AutoParry
+   SleepScript | Blade Ball (v1.6 — минимальный старт + снапшот кика)
+   СТАРТ: включено ТОЛЬКО окно. Всё остальное — по одному.
+   В момент кика в лог пишется список активных функций.
 =====================================================================
 ]]
 
@@ -18,12 +18,12 @@ local CoreGui             = game:GetService("CoreGui")
 local HttpService         = game:GetService("HttpService")
 local TeleportService     = game:GetService("TeleportService")
 
-local LP  = Players.LocalPlayer
-local PG  = LP:FindFirstChildOfClass("PlayerGui")
+local LP = Players.LocalPlayer
+local PG = LP:FindFirstChildOfClass("PlayerGui")
 local function cam() return workspace.CurrentCamera end
 
 --=============================================================
---  SINGLETON: убиваем предыдущий экземпляр
+--  SINGLETON
 --=============================================================
 local Conns = {}
 local function track(c) table.insert(Conns, c); return c end
@@ -33,45 +33,41 @@ if getgenv().SleepScriptCleanup then
     pcall(getgenv().SleepScriptCleanup)
     KilledPrevious = true
 end
-
 for _, name in ipairs({ "SleepScript", "SleepScriptOverlay" }) do
     for _, root in ipairs({ CoreGui, PG }) do
-        if root then
-            local o = root:FindFirstChild(name)
-            if o then o:Destroy() end
-        end
+        if root then local o = root:FindFirstChild(name); if o then o:Destroy() end end
     end
 end
 do
     local oc = workspace:FindFirstChild("SleepParryCircle")
     if oc then oc:Destroy() end
 end
-
 getgenv().SleepScriptCleanup = function()
     for _, c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
     Conns = {}
 end
 
 --=============================================================
---  КОНФИГ
+--  КОНФИГ — по умолчанию ВСЁ ВЫКЛЮЧЕНО
 --=============================================================
 local SS = getgenv().SleepScript or {}
 getgenv().SleepScript = SS
 
 local DEFAULTS = {
     MenuState = "open", GuiInPlayerGui = true,
+    -- ВСЁ ВЫКЛ по умолчанию для чистого теста
     AutoParry = false, PingBased = true, PingBasedOffset = 1.95,
     DistanceToParry = 0.65, EmergencyRadius = 10, EmergencyClick = false,
     ClashDistance = 22, ClashSpeed = 0.05, NormalSpeed = 0.10,
     OneClickPerBall = true, MaxCPS = 8, ClickJitter = 0.012,
-    ShowRadius = true, RadiusScale = 1,
+    ShowRadius = false, RadiusScale = 1,
     UsePreSim = true, ClickDownOnly = true, ClickMethod = "vim",
-    UseHook = true, KickMode = "rejoin",
-    DestroySecurity = true, DestroyDevice = true, WatchPrompt = true,
+    UseHook = false, KickMode = "rejoin",
+    DestroySecurity = false, DestroyDevice = false, WatchPrompt = true,
     FOV = 70, CustomSky = false, SkyId = "rbxassetid://159454299",
     Headless = false, Korblox = false, KorbloxMesh = "rbxassetid://139607718",
     FPSBoost = false, NoEffects = false, NoAccessories = false, FPSCap = 240,
-    Overlay = true, SkinLock = false,
+    Overlay = false, SkinLock = false,
 }
 for k, v in pairs(DEFAULTS) do if SS[k] == nil then SS[k] = v end end
 
@@ -81,6 +77,7 @@ local C = {
     accent2 = Color3.fromRGB(0, 229, 192), text = Color3.fromRGB(236, 239, 250),
     dim = Color3.fromRGB(132, 140, 162), off = Color3.fromRGB(38, 43, 58),
     stroke = Color3.fromRGB(48, 54, 74), bad = Color3.fromRGB(255, 92, 92),
+    warn = Color3.fromRGB(255, 190, 70),
 }
 
 local function new(class, props, parent)
@@ -123,13 +120,14 @@ end
 
 local ApplySky, ApplyBody, ApplyFPSBoost, ApplyEffects, ApplyAccessories
 local ApplySkin, RenderSkinList, BuildSkinDatabase, InstallAntiKick, UpdateHookStatus
-local statusLbl, kickLbl, reportLbl
+local statusLbl, kickLbl, reportLbl, Snapshot
 
 --=============================================================
---  ХУК (ставится ОДИН раз, не наслаивается)
+--  СНАПШОТ АКТИВНЫХ ФУНКЦИЙ + ЛОГ КИКОВ
 --=============================================================
-local HookMode, KickCount = "none", 0
-local KickLog = {}
+local HookMode = "off"
+local KickLog = getgenv().SleepScriptKickLog or {}
+getgenv().SleepScriptKickLog = KickLog
 local oldNamecall
 
 local function wrap(f) if newcclosure then return newcclosure(f) end return f end
@@ -142,10 +140,28 @@ local function Rejoin()
     end
 end
 
+Snapshot = function()
+    local f = {}
+    if SS.AutoParry then f[#f + 1] = "PARRY" end
+    if HookMode ~= "none" and HookMode ~= "off" then f[#f + 1] = "HOOK" end
+    if SS.ShowRadius then f[#f + 1] = "RADIUS" end
+    if SS.Overlay then f[#f + 1] = "OVERLAY" end
+    if SS.CustomSky then f[#f + 1] = "SKY" end
+    if SS.Headless then f[#f + 1] = "HEADLESS" end
+    if SS.Korblox then f[#f + 1] = "KORBLOX" end
+    if SS.FPSBoost then f[#f + 1] = "FPSBOOST" end
+    if SS.NoEffects then f[#f + 1] = "NOEFFECTS" end
+    if SS.NoAccessories then f[#f + 1] = "NOACC" end
+    if SS.SkinLock or SS._curMesh then f[#f + 1] = "SKIN" end
+    if SS.DestroySecurity then f[#f + 1] = "DESTROY_SEC" end
+    if SS.DestroyDevice then f[#f + 1] = "DESTROY_DEV" end
+    f[#f + 1] = SS.GuiInPlayerGui and "gui=PlayerGui" or "gui=CoreGui"
+    return table.concat(f, ", ")
+end
+
 local function logKick(src)
-    KickCount += 1
-    table.insert(KickLog, os.date("%H:%M:%S") .. "  " .. src)
-    if #KickLog > 12 then table.remove(KickLog, 1) end
+    table.insert(KickLog, os.date("%H:%M:%S") .. " [" .. src .. "] актив: " .. Snapshot())
+    if #KickLog > 20 then table.remove(KickLog, 1) end
     pcall(UpdateHookStatus)
 end
 
@@ -162,25 +178,25 @@ end
 UpdateHookStatus = function()
     if statusLbl then
         local map = {
-            already = "Хук: уже стоял с прошлого запуска (не наслоен)",
+            already = "Хук: уже стоял с прошлого запуска",
             hookmetamethod = "Хук: hookmetamethod ✔",
             getrawmetatable = "Хук: getrawmetatable ✔",
             off = "Хук: выключен",
-            none = "Хук: НЕ УСТАНОВЛЕН ✖ (нет API хуков)",
+            none = "Хук: НЕ УСТАНОВЛЕН ✖",
         }
         statusLbl.Text = map[HookMode] or ("Хук: " .. HookMode)
-        statusLbl.TextColor3 = (HookMode == "none" or HookMode == "off") and C.bad or C.accent2
+        statusLbl.TextColor3 = (HookMode == "none" or HookMode == "off") and C.dim or C.accent2
     end
     if kickLbl then
-        kickLbl.Text = "Событий кика: " .. KickCount
-            .. (#KickLog > 0 and ("  •  " .. KickLog[#KickLog]) or "")
+        kickLbl.Text = "Киков: " .. #KickLog
+            .. (#KickLog > 0 and ("  •  " .. KickLog[#KickLog]) or "  •  пока чисто")
     end
 end
 
 InstallAntiKick = function()
     if not SS.UseHook then HookMode = "off"; UpdateHookStatus(); return end
     if getgenv().SleepScriptHooked then HookMode = "already"; UpdateHookStatus(); return end
-    if HookMode ~= "none" and HookMode ~= "off" then UpdateHookStatus(); return end
+    if HookMode ~= "off" and HookMode ~= "none" then UpdateHookStatus(); return end
 
     if hookmetamethod and getnamecallmethod then
         local ok = pcall(function()
@@ -192,8 +208,7 @@ InstallAntiKick = function()
             end))
         end)
         if ok then
-            HookMode = "hookmetamethod"
-            getgenv().SleepScriptHooked = true
+            HookMode = "hookmetamethod"; getgenv().SleepScriptHooked = true
             UpdateHookStatus(); return
         end
     end
@@ -211,8 +226,7 @@ InstallAntiKick = function()
             setreadonly(mt, true)
         end)
         if ok then
-            HookMode = "getrawmetatable"
-            getgenv().SleepScriptHooked = true
+            HookMode = "getrawmetatable"; getgenv().SleepScriptHooked = true
             UpdateHookStatus(); return
         end
     end
@@ -272,10 +286,11 @@ new("TextLabel", {
     BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = "SleepScript",
     TextSize = 17, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
 })
-local sub = new("TextLabel", {
+new("TextLabel", {
     Parent = header, Size = UDim2.new(1, -140, 0, 14), Position = UDim2.fromOffset(18, 30),
     BackgroundTransparency = 1, Font = Enum.Font.Gotham,
-    Text = "Blade Ball • v1.5" .. (KilledPrevious and " • старый экземпляр убит" or ""),
+    Text = "Blade Ball • v1.6 • старт пустой"
+        .. (KilledPrevious and " • старый убит" or ""),
     TextSize = 11, TextColor3 = KilledPrevious and C.accent2 or C.dim,
     TextXAlignment = Enum.TextXAlignment.Left,
 })
@@ -310,13 +325,13 @@ local contentHolder = new("Frame", {
 
 local pages, tabs = {}, {}
 local TABS = {
+    { key = "Start",   label = "СТАРТ" },
     { key = "AutoParry", label = "AutoParry" },
     { key = "AntiKick",  label = "Anti-Kick" },
     { key = "Diag",      label = "Диагностика" },
     { key = "Visuals",   label = "Visuals" },
-    { key = "Skin",      label = "Скин меча" },
+    { key = "Skin",      label = "Скин" },
     { key = "Perf",      label = "FPS" },
-    { key = "Overlay",   label = "Оверлей" },
 }
 
 local function CreatePage()
@@ -342,8 +357,8 @@ end
 
 for i, t in ipairs(TABS) do
     local btn = new("TextButton", {
-        Parent = sidebar, Size = UDim2.new(1, -20, 0, 28),
-        Position = UDim2.fromOffset(10, 4 + (i - 1) * 31),
+        Parent = sidebar, Size = UDim2.new(1, -20, 0, 27),
+        Position = UDim2.fromOffset(10, 4 + (i - 1) * 30),
         BackgroundColor3 = C.off, BackgroundTransparency = 0.55,
         Text = "   " .. t.label, Font = Enum.Font.GothamMedium,
         TextSize = 12, TextColor3 = C.dim,
@@ -544,45 +559,54 @@ local function AddChoices(row, options, current, callback)
 end
 
 --=============================================================
---  РЕЖИМЫ
+--  СТРАНИЦА СТАРТ
 --=============================================================
-local function StealthMode()
-    SS.UseHook, SS.ShowRadius, SS.Overlay = false, false, false
-    SS.CustomSky, SS.Headless, SS.Korblox = false, false, false
-    SS.FPSBoost, SS.NoEffects, SS.NoAccessories = false, false, false
-    SS.DestroySecurity, SS.DestroyDevice = false, false
-    SS.AutoParry = false
-    if r then r.Transparency = 1 end
-    if getgenv().SleepScriptOverlay then getgenv().SleepScriptOverlay.Enabled = false end
-    ApplySky(nil); ApplyBody()
-    ApplyFPSBoost(false); ApplyEffects(false); ApplyAccessories(false)
+L = NewLayout(pages.Start)
+L:Section("ПОШАГОВЫЙ ТЕСТ")
+AddHint(L:Row(84),
+    "Сейчас включено ТОЛЬКО окно.\n" ..
+    "1) Поиграй 2-3 минуты. Кикнуло? Смотри лог в Диагностике — там будет 'актив: gui=...'.\n" ..
+    "2) Не кикнуло — включай ОДНО и снова играй 2-3 минуты.\n" ..
+    "3) Порядок: OVERLAY -> RADIUS -> HOOK -> DESTROY_SEC -> PARRY.")
+L:EndSection()
+L:Section("БЫСТРЫЕ КНОПКИ")
+AddButton(L:Row(26), "Включить ВСЁ", function()
     for n, v in pairs({
-        ["AutoParry"] = false, ["Показывать радиус"] = false,
-        ["Overlay (FPS / Ping)"] = false, ["CustomSky"] = false,
-        ["Headless"] = false, ["Korblox"] = false, ["FPS Boost"] = false,
-        ["Убрать эффекты"] = false, ["Убрать аксессуары других"] = false,
+        ["AutoParry"] = true, ["Overlay (FPS / Ping)"] = true,
+        ["Показывать радиус"] = true, ["Хук __namecall"] = true,
+        ["Удалить Security (RS)"] = true, ["Удалить DeviceChecker"] = true,
+    }) do
+        if Sync[n] then Sync[n].Set(v, true) end
+    end
+end)
+AddButton(L:Row(26), "Выключить ВСЁ", function()
+    for n, v in pairs({
+        ["AutoParry"] = false, ["Overlay (FPS / Ping)"] = false,
+        ["Показывать радиус"] = false, ["Хук __namecall"] = false,
         ["Удалить Security (RS)"] = false, ["Удалить DeviceChecker"] = false,
-    }) do if Sync[n] then Sync[n].Set(v, false) end end
-    print("[SleepScript] STEALTH: всё выключено. Включай по одному.")
-end
+        ["CustomSky"] = false, ["Headless"] = false, ["Korblox"] = false,
+        ["FPS Boost"] = false, ["Убрать эффекты"] = false,
+        ["Убрать аксессуары других"] = false,
+    }) do
+        if Sync[n] then Sync[n].Set(v, true) end
+    end
+    if r then r.Transparency = 1 end
+end, Color3.fromRGB(60, 44, 44))
+AddButton(L:Row(26), "Показать, что активно", function()
+    local s = Snapshot()
+    print("[SleepScript] АКТИВНО: " .. s)
+    if kickLbl then kickLbl.Text = "Активно: " .. s end
+end)
+L:EndSection()
+L:Section("ВАЖНО")
+AddHint(L:Row(70),
+    "Проверь папку autoexec в инжекторе! Если там лежит старый скрипт — он " ..
+    "запускается при каждом входе вместе с новым, и они дерутся за клики.",
+    C.warn)
+L:EndSection()
 
-local function HumanMode()
-    SS.OneClickPerBall, SS.MaxCPS = true, 8
-    SS.EmergencyClick, SS.UsePreSim = false, true
-    SS.ClickDownOnly, SS.ClickJitter = true, 0.012
-    SS.ClashSpeed, SS.NormalSpeed = 0.05, 0.10
-    for n, v in pairs({
-        ["One click на шар"] = true, ["Max CPS"] = 8,
-        ["Emergency click"] = false, ["PreSimulation"] = true,
-        ["Клик только вниз"] = true,
-    }) do if Sync[n] then Sync[n].Set(v, false) end end
-    print("[SleepScript] Human Mode")
-end
-
---=============================================================
---  СТРАНИЦЫ
---=============================================================
-local L = NewLayout(pages.AutoParry)
+--============ AUTOPARRY ============
+L = NewLayout(pages.AutoParry)
 L:Section("PARRY")
 AddToggle(L:Row(24), "AutoParry", SS.AutoParry, function(v) SS.AutoParry = v end)
 AddToggle(L:Row(24), "Показывать радиус", SS.ShowRadius, function(v) SS.ShowRadius = v end)
@@ -593,7 +617,6 @@ AddToggle(L:Row(24), "One click на шар", SS.OneClickPerBall, function(v) SS
 AddSlider(L:Row(36), "Max CPS", 1, 20, SS.MaxCPS, 0, function(v) SS.MaxCPS = v end)
 AddToggle(L:Row(24), "Emergency click", SS.EmergencyClick, function(v) SS.EmergencyClick = v end)
 AddSlider(L:Row(36), "Jitter клика", 0, 0.05, SS.ClickJitter, 3, function(v) SS.ClickJitter = v end)
-AddButton(L:Row(26), "Включить Human Mode", HumanMode)
 L:EndSection()
 L:Section("ТАЙМИНГ")
 AddToggle(L:Row(24), "PingBased", SS.PingBased, function(v) SS.PingBased = v end)
@@ -620,14 +643,14 @@ L:EndSection()
 L = NewLayout(pages.AntiKick)
 L:Section("СОСТОЯНИЕ")
 statusLbl = new("TextLabel", {
-    Parent = L:Row(30), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+    Parent = L:Row(20), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
     Font = Enum.Font.GothamBold, Text = "Хук: ...", TextSize = 11,
-    TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
+    TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
 })
 kickLbl = new("TextLabel", {
-    Parent = L:Row(16), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
-    Font = Enum.Font.Gotham, Text = "Событий кика: 0", TextSize = 11,
-    TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = L:Row(34), Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+    Font = Enum.Font.Gotham, Text = "Киков: 0", TextSize = 10,
+    TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
 })
 do
     local row = L:Row(28)
@@ -649,7 +672,7 @@ AddToggle(L:Row(24), "Следить за диалогом кика", SS.WatchPr
 AddButton(L:Row(26), "ПРИМЕНИТЬ BYPASS СЕЙЧАС", function()
     if SS.DestroySecurity then
         local s = ReplicatedStorage:FindFirstChild("Security")
-        if s then s:Destroy(); print("[SleepScript] Security удалён") else print("[SleepScript] Security НЕ найден") end
+        if s then s:Destroy(); print("Security удалён") else print("Security НЕ найден") end
     end
     if SS.DestroyDevice then
         local ps = LP:FindFirstChild("PlayerScripts")
@@ -662,57 +685,55 @@ AddButton(L:Row(26), "ПРИМЕНИТЬ BYPASS СЕЙЧАС", function()
                 end
             end
         end
-        print("[SleepScript] Снесено клиентских скриптов: " .. n)
+        print("Снесено клиентских скриптов: " .. n)
     end
 end)
 AddButton(L:Row(26), "Вернуться на этот сервер", function() pcall(Rejoin) end)
 L:EndSection()
-L:Section("КРАЙНИЕ МЕРЫ")
-AddButton(L:Row(26), "STEALTH (выключить ВСЁ)", StealthMode, Color3.fromRGB(48, 62, 92))
+L:Section("GUI")
 AddButton(L:Row(26), "GUI в PlayerGui", function()
     SS.GuiInPlayerGui = true
     gui.Parent = LP:FindFirstChildOfClass("PlayerGui") or CoreGui
 end)
-AddButton(L:Row(26), "GUI в CoreGui", function()
+AddButton(L:Row(26), "GUI в CoreGui (скрытый)", function()
     SS.GuiInPlayerGui = false
     gui.Parent = (gethui and gethui()) or CoreGui
 end)
 L:EndSection()
 
 --============ ДИАГНОСТИКА ============
-local reportText = ""
 local function BuildReport()
     local t = {}
     local function add(k, v) table.insert(t, k .. ": " .. tostring(v)) end
 
+    add("== СЕЙЧАС АКТИВНО ==", "")
+    add("функции", Snapshot())
+
     add("== ЭКЗЕМПЛЯР ==", "")
     add("предыдущий убит", KilledPrevious)
-    add("активных коннектов", #Conns)
-    add("хук уже стоял", getgenv().SleepScriptHooked == true)
+    add("коннектов живо", #Conns)
+    add("хук стоял раньше", getgenv().SleepScriptHooked == true)
+    add("киков в логе", #KickLog)
     add("GUI parent", gui.Parent and gui.Parent:GetFullName() or "nil")
-    add("старых GUI в CoreGui", (CoreGui:FindFirstChild("SleepScript") and 1 or 0))
-    add("старых GUI в PlayerGui", (PG and PG:FindFirstChild("SleepScript") and 1 or 0))
-    add("SleepParryCircle в workspace", workspace:FindFirstChild("SleepParryCircle") ~= nil)
 
     add("== EXECUTOR ==", "")
     add("name", (identifyexecutor and (select(1, identifyexecutor()))) or "?")
     add("hookmetamethod", hookmetamethod ~= nil)
     add("getrawmetatable", getrawmetatable ~= nil)
-    add("setreadonly", setreadonly ~= nil)
     add("newcclosure", newcclosure ~= nil)
     add("getnamecallmethod", getnamecallmethod ~= nil)
     add("gethui", gethui ~= nil)
     add("mouse1click", mouse1click ~= nil)
     add("TouchEnabled", UserInputService.TouchEnabled)
+    add("autoexec файлов", "проверь вручную")
 
     add("== ИГРА ==", "")
     add("PlaceId", game.PlaceId)
     add("PlaceVersion", game.PlaceVersion)
     add("Balls есть", workspace:FindFirstChild("Balls") ~= nil)
     add("Хук", HookMode)
-    add("Событий кика", KickCount)
 
-    add("== ReplicatedStorage (security-like) ==", "")
+    add("== RS security-like ==", "")
     local found = {}
     for _, v in pairs(ReplicatedStorage:GetChildren()) do
         local n = v.Name:lower()
@@ -721,21 +742,16 @@ local function BuildReport()
         end
     end
     add("найдено", #found > 0 and table.concat(found, " | ") or "НЕТ")
-    add("Security есть", ReplicatedStorage:FindFirstChild("Security") ~= nil)
 
     add("== PlayerScripts ==", "")
     local ps = LP:FindFirstChild("PlayerScripts")
     if ps then
         local list = {}
         for _, v in pairs(ps:GetDescendants()) do
-            if v:IsA("LocalScript") or v:IsA("ModuleScript") then
-                table.insert(list, v.Name)
-            end
+            if v:IsA("LocalScript") or v:IsA("ModuleScript") then table.insert(list, v.Name) end
         end
         add("скриптов", #list)
         add("список", #list > 0 and table.concat(list, ", ") or "пусто")
-    else
-        add("PlayerScripts", "НЕТ")
     end
 
     add("== CoreGui ==", "")
@@ -743,19 +759,23 @@ local function BuildReport()
     for _, v in pairs(CoreGui:GetChildren()) do table.insert(cgList, v.Name) end
     add("дети", table.concat(cgList, ", "))
 
-    add("== ЛОГ КИКОВ ==", "")
+    add("== ЛОГ КИКОВ (с активом) ==", "")
     for _, l in ipairs(KickLog) do table.insert(t, "  " .. l) end
 
-    reportText = table.concat(t, "\n")
-    if reportLbl then reportLbl.Text = reportText end
-    print("[SleepScript] ОТЧЁТ:\n" .. reportText)
+    local txt = table.concat(t, "\n")
+    if reportLbl then reportLbl.Text = txt end
+    print("[SleepScript] ОТЧЁТ:\n" .. txt)
 end
 
 L = NewLayout(pages.Diag)
 L:Section("ОТЧЁТ")
 AddButton(L:Row(26), "СОБРАТЬ ОТЧЁТ", BuildReport)
+AddButton(L:Row(26), "Очистить лог киков", function()
+    for i = #KickLog, 1, -1 do table.remove(KickLog, i) end
+    UpdateHookStatus()
+end)
 do
-    local row = L:Row(250)
+    local row = L:Row(230)
     local sf = new("ScrollingFrame", {
         Parent = row, Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.off,
         BorderSizePixel = 0, CanvasSize = UDim2.new(),
@@ -766,7 +786,7 @@ do
     reportLbl = new("TextLabel", {
         Parent = sf, Size = UDim2.new(1, -6, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
-        Font = Enum.Font.Code, TextSize = 11, TextColor3 = C.text,
+        Font = Enum.Font.Code, TextSize = 10, TextColor3 = C.text,
         Text = "Нажми СОБРАТЬ ОТЧЁТ", TextWrapped = true,
         TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
     })
@@ -777,7 +797,7 @@ do
 end
 L:EndSection()
 
---============ VISUALS / SKIN / PERF / OVERLAY ============
+--============ VISUALS / SKIN / PERF ============
 L = NewLayout(pages.Visuals)
 L:Section("КАМЕРА")
 AddSlider(L:Row(36), "Field of View", 40, 120, SS.FOV, 0, function(v)
@@ -829,7 +849,7 @@ AddButton(L:Row(26), "Сбросить скин", function() ApplySkin(nil, nil)
 L:EndSection()
 L:Section("СПИСОК")
 do
-    local row = L:Row(170)
+    local row = L:Row(160)
     skinListFrame = new("ScrollingFrame", {
         Parent = row, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
         BorderSizePixel = 0, CanvasSize = UDim2.new(),
@@ -853,28 +873,14 @@ AddSlider(L:Row(36), "FPS Cap", 30, 360, SS.FPSCap, 0, function(v)
     SS.FPSCap = v; pcall(function() if setfpscap then setfpscap(v) end end)
 end)
 L:EndSection()
-L:Section("КОНФИГ")
-AddButton(L:Row(26), "Сохранить конфиг", function()
-    pcall(function() writefile("SleepScript.json", HttpService:JSONEncode(SS)) end)
-end)
-AddButton(L:Row(26), "Загрузить конфиг", function()
-    local ok, data = pcall(function() return readfile("SleepScript.json") end)
-    if ok and data then
-        local tb = HttpService:JSONDecode(data)
-        for k, v in pairs(tb) do SS[k] = v end
-    end
-end)
-L:EndSection()
-
-L = NewLayout(pages.Overlay)
-L:Section("ОТДЕЛЬНОЕ МЕНЮ")
+L:Section("ОТДЕЛЬНОЕ ОКНО FPS/PING")
 AddToggle(L:Row(24), "Overlay (FPS / Ping)", SS.Overlay, function(v)
     SS.Overlay = v
     if getgenv().SleepScriptOverlay then getgenv().SleepScriptOverlay.Enabled = v end
 end)
 L:EndSection()
 
-selectTab("AutoParry")
+selectTab("Start")
 
 --=============================================================
 --  МЕНЮ
@@ -1040,7 +1046,6 @@ local function ExtractSkin(inst)
         if not mesh and d:IsA("MeshPart") and d.MeshId ~= "" then mesh = d.MeshId end
         if not tex and d:IsA("Decal") and d.Texture ~= "" then tex = d.Texture end
         if not tex and d:IsA("Texture") and d.Texture ~= "" then tex = d.Texture end
-        if not tex and d:IsA("SpecialMesh") and d.TextureId ~= "" then tex = d.TextureId end
         if mesh and tex then break end
     end
     if mesh or tex then
@@ -1057,10 +1062,7 @@ BuildSkinDatabase = function()
     push(ReplicatedStorage:FindFirstChild("SwordSkins"))
     push(ReplicatedStorage:FindFirstChild("Skins"))
     local assets = ReplicatedStorage:FindFirstChild("Assets")
-    if assets then
-        push(assets:FindFirstChild("Swords"))
-        push(assets:FindFirstChild("Skins"))
-    end
+    if assets then push(assets:FindFirstChild("Swords")); push(assets:FindFirstChild("Skins")) end
     for _, root in ipairs(roots) do
         for _, ch in ipairs(root:GetChildren()) do pcall(ExtractSkin, ch) end
     end
@@ -1126,12 +1128,16 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
 local r, m
-if SS.ShowRadius then
-    r = new("Part", {Name = "SleepParryCircle", Parent = workspace,
-        Anchored = true, CanCollide = false, Transparency = 1,
-        Material = Enum.Material.Neon, Size = Vector3.new(1, 1, 1)})
-    m = new("SpecialMesh", {MeshId = "rbxassetid://3270017"}, r)
+
+local function ensureRadius()
+    if SS.ShowRadius and not r then
+        r = new("Part", {Name = "SleepParryCircle", Parent = workspace,
+            Anchored = true, CanCollide = false, Transparency = 1,
+            Material = Enum.Material.Neon, Size = Vector3.new(1, 1, 1)})
+        m = new("SpecialMesh", {MeshId = "rbxassetid://3270017"}, r)
+    end
 end
+ensureRadius()
 
 local function GetBall()
     if not BallsFolder then return nil end
@@ -1216,6 +1222,8 @@ local function UpdateVisuals(root, distance, state)
 end
 
 local function ParryStep()
+    ensureRadius()
+    if not SS.ShowRadius and r then r.Transparency = 1 end
     if not SS.AutoParry then if r then r.Transparency = 1 end return end
     local Char = LP.Character
     local Root = Char and Char:FindFirstChild("HumanoidRootPart")
@@ -1235,13 +1243,9 @@ local function ParryStep()
     local IsClashing = Targeted and Distance <= SS.ClashDistance
 
     frameCounter += 1
-    if r then
-        if not SS.ShowRadius then
-            r.Transparency = 1
-        elseif frameCounter % 2 == 0 then
-            r.Transparency = 0.3
-            UpdateVisuals(Root, Distance, IsClashing and "clash" or (Targeted and "target" or "neutral"))
-        end
+    if r and SS.ShowRadius and frameCounter % 2 == 0 then
+        r.Transparency = 0.3
+        UpdateVisuals(Root, Distance, IsClashing and "clash" or (Targeted and "target" or "neutral"))
     end
 
     if IsClashing then
@@ -1271,12 +1275,12 @@ track(LP.CharacterAdded:Connect(function()
     end
 end))
 
--- авто-возврат по системному диалогу
+-- авто-возврат по системному диалогу (ловит серверный кик)
 task.spawn(function()
     local ok = pcall(function()
-        local prompt = CoreGui:WaitForChild("RobloxPromptGui", 20)
+        local prompt = CoreGui:WaitForChild("RobloxPromptGui", 25)
         if not prompt then return end
-        local overlay = prompt:WaitForChild("promptOverlay", 20)
+        local overlay = prompt:WaitForChild("promptOverlay", 25)
         if not overlay then return end
         track(overlay:GetPropertyChangedSignal("Visible"):Connect(function()
             if overlay.Visible and SS.KickMode == "rejoin" and SS.WatchPrompt then
@@ -1311,19 +1315,19 @@ else
 end
 
 local panel = new("Frame", {
-    Parent = ov, Size = UDim2.fromOffset(170, 66), Position = UDim2.new(0, 20, 0, 90),
+    Parent = ov, Size = UDim2.fromOffset(170, 62), Position = UDim2.new(0, 20, 0, 90),
     BackgroundColor3 = C.bg, BackgroundTransparency = 0.15, BorderSizePixel = 0,
 })
 corner(panel, 10)
 new("UIStroke", {Color = C.accent, Transparency = 0.5, Thickness = 1}, panel)
 makeDraggable(panel)
 local fpsLbl = new("TextLabel", {
-    Parent = panel, Size = UDim2.new(1, -20, 0, 18), Position = UDim2.fromOffset(10, 12),
+    Parent = panel, Size = UDim2.new(1, -20, 0, 18), Position = UDim2.fromOffset(10, 10),
     BackgroundTransparency = 1, Font = Enum.Font.Code, Text = "FPS  0",
     TextSize = 15, TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
 })
 local pingLbl = new("TextLabel", {
-    Parent = panel, Size = UDim2.new(1, -20, 0, 18), Position = UDim2.fromOffset(10, 34),
+    Parent = panel, Size = UDim2.new(1, -20, 0, 18), Position = UDim2.fromOffset(10, 32),
     BackgroundTransparency = 1, Font = Enum.Font.Code, Text = "PING  0 ms",
     TextSize = 15, TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Left,
 })
@@ -1350,34 +1354,14 @@ end))
 --  ИНИЦИАЛИЗАЦИЯ
 --=============================================================
 InstallAntiKick()
+UpdateHookStatus()
 
 task.spawn(function()
-    if cam() then cam().FieldOfView = SS.FOV end
     if SS.CustomSky then ApplySky(SS.SkyId) end
     if SS.FPSBoost then ApplyFPSBoost(true) end
     if SS.NoEffects then ApplyEffects(true) end
     if SS.NoAccessories then ApplyAccessories(true) end
-end)
-
-task.spawn(function()
-    task.wait(2)
-    if SS.DestroySecurity then
-        local s = ReplicatedStorage:FindFirstChild("Security")
-        if s then s:Destroy(); print("[SleepScript] Security удалён") else print("[SleepScript] Security НЕ найден") end
-    end
-    if SS.DestroyDevice then
-        local ps = LP:FindFirstChild("PlayerScripts")
-        local n = 0
-        if ps then
-            for _, v in pairs(ps:GetDescendants()) do
-                local nm = v.Name:lower()
-                if nm:find("devicechecker") or nm:find("bac") or nm:find("anticheat") then
-                    pcall(function() v:Destroy() end); n += 1
-                end
-            end
-        end
-        print("[SleepScript] Снесено клиентских скриптов: " .. n)
-    end
+    ApplyBody()
 end)
 
 task.spawn(function()
@@ -1388,5 +1372,4 @@ task.spawn(function()
     end
 end)
 
-BuildReport()
-print("[SleepScript] v1.5. Предыдущий экземпляр убит: " .. tostring(KilledPrevious))
+print("[SleepScript] v1.6. Старт пустой. Активно: " .. Snapshot())
