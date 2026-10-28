@@ -73,8 +73,8 @@ local Gui = new("ScreenGui", {
 
 local Main = new("Frame", {
     Name = "Main",
-    Size = UDim2.fromOffset(310, 430),
-    Position = UDim2.new(0.5, -155, 0.5, -215),
+    Size = UDim2.fromOffset(310, 440),
+    Position = UDim2.new(0.5, -155, 0.5, -220),
     BackgroundColor3 = THEME.BG,
     BorderSizePixel = 0,
 }, Gui)
@@ -90,7 +90,6 @@ local Header = new("Frame", {
 }, Main)
 corner(Header, 12)
 
--- заплатка, чтобы низ шапки был ровным
 new("Frame", {
     Size = UDim2.new(1, 0, 0, 12),
     Position = UDim2.new(0, 0, 1, -12),
@@ -169,39 +168,34 @@ local Content = new("ScrollingFrame", {
     ScrollBarThickness = 2,
     ScrollBarImageColor3 = THEME.ACCENT,
     CanvasSize = UDim2.new(0, 0, 0, 0),
-    AutomaticCanvasSize = Enum.AutomaticCanvasSize.Y,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    ZIndex = 1,
 }, Main)
 
-new("UIListLayout", {
-    Padding = UDim.new(0, 6),
-    SortOrder = Enum.SortOrder.LayoutOrder,
-}, Content)
+local CURSOR = 8
 
-new("UIPadding", {
-    PaddingTop = UDim.new(0, 10),
-    PaddingBottom = UDim.new(0, 10),
-    PaddingLeft = UDim.new(0, 12),
-    PaddingRight = UDim.new(0, 12),
-}, Content)
+local function place(obj, height)
+    obj.Size = UDim2.new(1, -24, 0, height)
+    obj.Position = UDim2.new(0, 12, 0, CURSOR)
+    obj.Parent = Content
+    CURSOR = CURSOR + height + 6
+    return obj
+end
 
 -- ---------- Элементы ----------
 local function Section(text)
-    new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 22),
+    place(new("TextLabel", {
         BackgroundTransparency = 1,
         Text = string.upper(text),
         TextColor3 = THEME.SUB,
         Font = Enum.Font.GothamBold,
         TextSize = 10,
         TextXAlignment = Enum.TextXAlignment.Left,
-    }, Content)
+    }), 22)
 end
 
 local function Toggle(text, default, callback)
-    local Row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 30),
-        BackgroundTransparency = 1,
-    }, Content)
+    local Row = new("Frame", { BackgroundTransparency = 1 })
 
     new("TextLabel", {
         Size = UDim2.new(1, -60, 1, 0),
@@ -248,14 +242,12 @@ local function Toggle(text, default, callback)
     end
 
     Btn.MouseButton1Click:Connect(function() set(not state) end)
+    place(Row, 30)
     return set
 end
 
 local function Slider(text, min, max, default, decimals, callback)
-    local Row = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 40),
-        BackgroundTransparency = 1,
-    }, Content)
+    local Row = new("Frame", { BackgroundTransparency = 1 })
 
     new("TextLabel", {
         Size = UDim2.new(0.6, 0, 0, 16),
@@ -338,6 +330,7 @@ local function Slider(text, min, max, default, decimals, callback)
     end)
 
     apply(default, false)
+    place(Row, 40)
     return function(v) apply(v, false) end
 end
 
@@ -359,6 +352,8 @@ Slider("NormalSpeed", 0, 0.3, SETTINGS.NormalSpeed, 3, function(v) SETTINGS.Norm
 Section("Визуал")
 Toggle("Visuals", SETTINGS.Visuals, function(v) SETTINGS.Visuals = v end)
 Toggle("ShowRadius", SETTINGS.ShowRadius, function(v) SETTINGS.ShowRadius = v end)
+
+Content.CanvasSize = UDim2.new(0, 0, 0, CURSOR + 10)
 
 -- ==================== ПЕРЕТАСКИВАНИЕ ОКНА ====================
 local dragging, dragStart, startPos
@@ -412,7 +407,6 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
--- визуальный круг
 local r = Instance.new("Part")
 r.Name = "SleepscriptCircle"
 r.Anchored = true
