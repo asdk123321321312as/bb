@@ -42,6 +42,8 @@ local BAD_TAGS = {
     ["FORCEFIELD"] = true, ["BAC"] = true, ["AntiCheat"] = true, ["AC"] = true,
 }
 
+local HOOK_LOG = {}
+
 local function IsBACName(name)
     name = string.lower(tostring(name))
     return string.find(name, "security", 1, true) ~= nil
@@ -52,26 +54,31 @@ local function IsBACName(name)
         or name == "bac" or name == "ac"
 end
 
+local function IsBACCall(self, args)
+    local a1, a2 = args[1], args[2]
+    if type(a1) == "string" and BAD_TAGS[a1] then return true end
+    if type(a2) == "string" and BAD_TAGS[a2] then return true end
+
+    local n = self.Name
+    if BAD_TAGS[n] or IsBACName(n) then return true end
+
+    local p = self.Parent
+    local depth = 0
+    while p and depth < 8 do
+        if IsBACName(p.Name) then return true end
+        p = p.Parent
+        depth = depth + 1
+    end
+    return false
+end
+
+-- Security оставляем живым, иначе его RemoteEvent умирает вместе с папкой
 local function KillBAC()
     local found = {}
-
-    local function scan(parent, depth)
-        for _, o in ipairs(parent:GetChildren()) do
-            if IsBACName(o.Name) then
-                table.insert(found, o:GetFullName())
-                pcall(function() o:Destroy() end)
-            elseif depth > 0 and (o:IsA("Folder") or o:IsA("Model")) then
-                scan(o, depth - 1)
-            end
-        end
-    end
-
-    scan(ReplicatedStorage, 2)
-
     local ps = Player:FindFirstChild("PlayerScripts")
     local client = ps and ps:FindFirstChild("Client")
     if client then
-        for _, name in ipairs({ "DeviceChecker", "Checker", "AntiCheat", "ClientChecker" }) do
+        for _, name in ipairs({ "DeviceChecker", "ClientChecker" }) do
             local d = client:FindFirstChild(name)
             if d then
                 table.insert(found, "Client." .. name)
@@ -79,61 +86,72 @@ local function KillBAC()
             end
         end
     end
-
+    if ReplicatedStorage:FindFirstChild("Security") then
+        table.insert(found, "Security (kept alive)")
+    end
     return found
 end
 
 -- ==================== ГЛАВНЫЙ ХУК ====================
-pcall(function()
-    local mt = getrawmetatable(game)
-    local oldNamecall = mt.__namecall
-    setreadonly(mt, false)
+local function Handler(self, ...)
+    local method = getnamecallmethod()
 
-    local wrap = newcclosure or function(f) return f end
-
-    mt.__namecall = wrap(function(self, ...)
-        local method = getnamecallmethod()
-
-        if method == "Kick" then
-            if SETTINGS.AntiKick then
-                local msg = string.lower(tostring((...)))
-                if string.find(msg, "bac", 1, true) or string.find(msg, "exploit", 1, true) then
-                    return
-                end
-            end
-        elseif method == "FireServer" or method == "InvokeServer" then
-            if SETTINGS.AntiCheat then
-                local args = { ... }
-
-                -- 1) ремоут-тег в аргументах (так палят большинство античитов)
-                local a1, a2 = args[1], args[2]
-                if type(a1) == "string" and BAD_TAGS[a1] then return end
-                if type(a2) == "string" and BAD_TAGS[a2] then return end
-
-                -- 2) имя самого ремоута
-                local n = self.Name
-                if BAD_TAGS[n] or IsBACName(n) then return end
-
-                -- 3) имя любого родителя до 4 уровней вверх
-                local p = self.Parent
-                local depth = 0
-                while p and depth < 4 do
-                    if IsBACName(p.Name) then return end
-                    p = p.Parent
-                    depth = depth + 1
-                end
+    if method == "Kick" then
+        if SETTINGS.AntiKick then
+            local msg = string.lower(tostring((...)))
+            if string.find(msg, "bac", 1, true) or string.find(msg, "exploit", 1, true) then
+                return true
             end
         end
+    elseif method == "FireServer" or method == "InvokeServer" then
+        if SETTINGS.AntiCheat then
+            local args = { ... }
+            local full = self:GetFullName()
 
-        return oldNamecall(self, ...)
-    end)
+            if not HOOK_LOG[full] then
+                HOOK_LOG[full] = true
+                print("[Sleepscript][FS]", full)
+            end
 
-    setreadonly(mt, true)
-end)
+            if IsBACCall(self, args) then
+                print("[Sleepscript] BLOCKED", full)
+                return true
+            end
+        end
+    end
 
-if SETTINGS.AntiCheat then
-    print("[Sleepscript] BAC killed:", table.concat(KillBAC(), " | "))
+    return false
 end
+
+local function InstallHook()
+    if hookmetamethod then
+        local old
+        old = hookmetamethod(game, "__namecall", function(self, ...)
+            if Handler(self, ...) then return end
+            return old(self, ...)
+        end)
+        return true
+    end
+
+    if getrawmetatable then
+        local mt = getrawmetatable(game)
+        local old = mt.__namecall
+        setreadonly(mt, false)
+        local wrap = newcclosure or function(f) return f end
+        mt.__namecall = wrap(function(self, ...)
+            if Handler(self, ...) then return end
+            return old(self, ...)
+        end)
+        setreadonly(mt, true)
+        return true
+    end
+
+    return false
+end
+
+local hookOk, hookRes = pcall(InstallHook)
+print("[Sleepscript] hook:", (hookOk and hookRes) and "installed" or "FAILED")
+print("[Sleepscript] BAC killed:", table.concat(KillBAC(), " | "))
 
 -- ==================== ТЕМА ====================
 local THEME = {
@@ -576,7 +594,6 @@ local function SendClick(isClashing, ball)
     LastClick = now
     LastBallHit = ball
 
-    -- кликаем в реальной позиции курсора, а не в 0,0 — так клик выглядит "живым"
     local pos = UserInputService:GetMouseLocation()
     VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
     VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0)
