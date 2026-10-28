@@ -17,6 +17,8 @@ getgenv().Sleepscript = {
     ["NormalSpeed"] = 0.05,
     ["Visuals"] = true,
     ["ShowRadius"] = true,
+    ["AntiCheat"] = true,
+    ["AntiKick"] = true,
 }
 
 local SETTINGS = getgenv().Sleepscript
@@ -28,8 +30,52 @@ local Stats = game:GetService("Stats")
 local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Player = Players.LocalPlayer
+
+-- ==================== BAC BYPASS ====================
+-- Blade Ball Anti-Cheat сидит в ReplicatedStorage.Security и PlayerScripts.Client.DeviceChecker
+local function KillBAC()
+    for _, name in ipairs({ "Security", "BAC", "AntiCheat" }) do
+        local o = ReplicatedStorage:FindFirstChild(name)
+        if o then pcall(function() o:Destroy() end) end
+    end
+
+    local ps = Player:FindFirstChild("PlayerScripts")
+    local client = ps and ps:FindFirstChild("Client")
+    local dc = client and client:FindFirstChild("DeviceChecker")
+    if dc then pcall(function() dc:Destroy() end) end
+end
+
+if SETTINGS.AntiCheat then
+    KillBAC()
+    task.spawn(function()
+        while task.wait(2) do
+            if SETTINGS.AntiCheat then KillBAC() end
+        end
+    end)
+end
+
+-- ==================== ANTIKICK ====================
+-- BAC кикает через Lua-метод Kick, его можно перехватить
+if SETTINGS.AntiKick then
+    pcall(function()
+        local oldKick = Player.Kick
+        local newKick = newcclosure(function(self, msg)
+            local text = string.lower(tostring(msg or ""))
+            if string.find(text, "bac") or string.find(text, "exploit") then
+                return
+            end
+            return oldKick(self, msg)
+        end)
+        if hookfunction then
+            hookfunction(oldKick, newKick)
+        else
+            Player.Kick = newKick
+        end
+    end)
+end
 
 -- ==================== ТЕМА ====================
 local THEME = {
@@ -71,10 +117,13 @@ local Gui = new("ScreenGui", {
     IgnoreGuiInset = true,
 }, parentGui)
 
+if protect_gui then pcall(protect_gui, Gui) end
+if syn and syn.protect_gui then pcall(syn.protect_gui, Gui) end
+
 local Main = new("Frame", {
     Name = "Main",
     Size = UDim2.fromOffset(310, 120),
-    Position = UDim2.new(0.5, -155, 0.5, -270),
+    Position = UDim2.new(0.5, -155, 0.5, -280),
     BackgroundColor3 = THEME.BG,
     BorderSizePixel = 0,
 }, Gui)
@@ -152,7 +201,7 @@ local Close = new("TextButton", {
 }, Header)
 corner(Close, 6)
 
--- ---------- Контент (обычный Frame, без скролла) ----------
+-- ---------- Контент ----------
 local Content = new("Frame", {
     Size = UDim2.new(1, 0, 0, 0),
     Position = UDim2.new(0, 0, 0, 50),
@@ -341,7 +390,13 @@ Section("Визуал")
 Toggle("Visuals", SETTINGS.Visuals, function(v) SETTINGS.Visuals = v end)
 Toggle("ShowRadius", SETTINGS.ShowRadius, function(v) SETTINGS.ShowRadius = v end)
 
--- подгоняем окно под содержимое
+Section("Защита")
+Toggle("AntiCheat (kill BAC)", SETTINGS.AntiCheat, function(v)
+    SETTINGS.AntiCheat = v
+    if v then KillBAC() end
+end)
+Toggle("AntiKick", SETTINGS.AntiKick, function(v) SETTINGS.AntiKick = v end)
+
 local FINAL_H = 50 + CURSOR + 10
 Content.Size = UDim2.new(1, 0, 0, CURSOR + 6)
 Main.Size = UDim2.fromOffset(310, FINAL_H)
@@ -399,7 +454,7 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
--- визуальный круг живёт на камере, чтобы не мусорить в workspace
+-- круг на камере, чтобы не мусорить в workspace
 local r = Instance.new("Part")
 r.Name = "Circle"
 r.Anchored = true
