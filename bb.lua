@@ -35,17 +35,23 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Player = Players.LocalPlayer
 
 -- ==================== BAC BYPASS ====================
--- Blade Ball Anti-Cheat сидит в ReplicatedStorage.Security и PlayerScripts.Client.DeviceChecker
+local BAC_NAMES = { "Security", "BAC", "AntiCheat", "Anti_Cheat", "Anti-Cheat", "Anticheat" }
+local DEVICE_NAMES = { "DeviceChecker", "Checker", "AntiCheat", "ClientChecker" }
+
 local function KillBAC()
-    for _, name in ipairs({ "Security", "BAC", "AntiCheat" }) do
+    for _, name in ipairs(BAC_NAMES) do
         local o = ReplicatedStorage:FindFirstChild(name)
         if o then pcall(function() o:Destroy() end) end
     end
 
     local ps = Player:FindFirstChild("PlayerScripts")
     local client = ps and ps:FindFirstChild("Client")
-    local dc = client and client:FindFirstChild("DeviceChecker")
-    if dc then pcall(function() dc:Destroy() end) end
+    if client then
+        for _, name in ipairs(DEVICE_NAMES) do
+            local d = client:FindFirstChild(name)
+            if d then pcall(function() d:Destroy() end) end
+        end
+    end
 end
 
 if SETTINGS.AntiCheat then
@@ -58,22 +64,26 @@ if SETTINGS.AntiCheat then
 end
 
 -- ==================== ANTIKICK ====================
--- BAC кикает через Lua-метод Kick, его можно перехватить
+-- Kick идёт через __namecall, поэтому хукаем метатаблицу game, а не сам метод
 if SETTINGS.AntiKick then
     pcall(function()
-        local oldKick = Player.Kick
-        local newKick = newcclosure(function(self, msg)
-            local text = string.lower(tostring(msg or ""))
-            if string.find(text, "bac") or string.find(text, "exploit") then
-                return
+        local mt = getrawmetatable(game)
+        local oldNamecall = mt.__namecall
+        setreadonly(mt, false)
+
+        local wrap = newcclosure or function(f) return f end
+
+        mt.__namecall = wrap(function(self, ...)
+            if getnamecallmethod() == "Kick" then
+                local msg = string.lower(tostring((...)))
+                if string.find(msg, "bac") or string.find(msg, "exploit") then
+                    return
+                end
             end
-            return oldKick(self, msg)
+            return oldNamecall(self, ...)
         end)
-        if hookfunction then
-            hookfunction(oldKick, newKick)
-        else
-            Player.Kick = newKick
-        end
+
+        setreadonly(mt, true)
     end)
 end
 
@@ -387,8 +397,14 @@ Slider("ClashSpeed", 0, 0.2, SETTINGS.ClashSpeed, 3, function(v) SETTINGS.ClashS
 Slider("NormalSpeed", 0, 0.3, SETTINGS.NormalSpeed, 3, function(v) SETTINGS.NormalSpeed = v end)
 
 Section("Визуал")
-Toggle("Visuals", SETTINGS.Visuals, function(v) SETTINGS.Visuals = v end)
-Toggle("ShowRadius", SETTINGS.ShowRadius, function(v) SETTINGS.ShowRadius = v end)
+Toggle("Visuals", SETTINGS.Visuals, function(v)
+    SETTINGS.Visuals = v
+    SyncPart()
+end)
+Toggle("ShowRadius", SETTINGS.ShowRadius, function(v)
+    SETTINGS.ShowRadius = v
+    SyncPart()
+end)
 
 Section("Защита")
 Toggle("AntiCheat (kill BAC)", SETTINGS.AntiCheat, function(v)
@@ -454,7 +470,7 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
--- круг на камере, чтобы не мусорить в workspace
+-- круг создаём, но в дерево пускаем только когда он реально нужен
 local r = Instance.new("Part")
 r.Name = "Circle"
 r.Anchored = true
@@ -467,11 +483,19 @@ r.Massless = true
 r.Transparency = 1
 r.Material = Enum.Material.Neon
 r.Size = Vector3.new(1, 1, 1)
-r.Parent = workspace.CurrentCamera or workspace
+r.Parent = nil
 
 local m = Instance.new("SpecialMesh", r)
 m.MeshId = "rbxassetid://3270017"
 m.Scale = Vector3.new(1, 1, 0.5)
+
+function SyncPart()
+    if SETTINGS.Visuals and SETTINGS.ShowRadius then
+        if not r.Parent then r.Parent = workspace.CurrentCamera or workspace end
+    else
+        r.Parent = nil
+    end
+end
 
 local function GetBall()
     if not BallsFolder then return nil end
@@ -512,10 +536,7 @@ local function SendClick(isClashing, ball)
 end
 
 local function UpdateVisuals(root, distance, state)
-    if not SETTINGS.Visuals or not SETTINGS.ShowRadius then
-        r.Transparency = 1
-        return
-    end
+    if not r.Parent then return end
 
     r.CFrame = root.CFrame * CFrame.new(0, -2.6, 0) * CFrame.Angles(math.rad(90), 0, 0)
     local targetSize = math.clamp(distance * 0.8, 5, 65)
@@ -533,24 +554,17 @@ local function UpdateVisuals(root, distance, state)
     end
 end
 
+SyncPart()
+
 RunService.PostSimulation:Connect(function()
-    if not SETTINGS.AutoParry then
-        r.Transparency = 1
-        return
-    end
+    if not SETTINGS.AutoParry then return end
 
     local Char = Player.Character
     local Root = Char and Char:FindFirstChild("HumanoidRootPart")
-    if not Root then
-        r.Transparency = 1
-        return
-    end
+    if not Root then return end
 
     local Ball = GetBall()
-    if not Ball then
-        r.Transparency = 1
-        return
-    end
+    if not Ball then return end
 
     local BallPos, PlayerPos = Ball.Position, Root.Position
     local Velocity = Ball.AssemblyLinearVelocity
