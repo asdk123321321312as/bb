@@ -34,44 +34,44 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Player = Players.LocalPlayer
 
--- ==================== ПОИСК BAC ====================
+-- ==================== ОПОЗНАВАНИЕ BAC ====================
+local BAD_TAGS = {
+    ["CHECKER"] = true, ["CHECKER_1"] = true, ["OneMoreTime"] = true,
+    ["checkingSPEED"] = true, ["PERMAIDBAN"] = true, ["BANREMOTE"] = true,
+    ["KICKREMOTE"] = true, ["TeleportDetect"] = true, ["GUI_CHECK"] = true,
+    ["FORCEFIELD"] = true, ["BAC"] = true, ["AntiCheat"] = true, ["AC"] = true,
+}
+
 local function IsBACName(name)
     name = string.lower(tostring(name))
-    return string.find(name, "security", 1, true)
-        or string.find(name, "anticheat", 1, true)
-        or string.find(name, "anti_cheat", 1, true)
-        or string.find(name, "anti-cheat", 1, true)
-        or string.find(name, "checker", 1, true)
-        or name == "bac"
-        or name == "ac"
+    return string.find(name, "security", 1, true) ~= nil
+        or string.find(name, "anticheat", 1, true) ~= nil
+        or string.find(name, "anti_cheat", 1, true) ~= nil
+        or string.find(name, "anti-cheat", 1, true) ~= nil
+        or string.find(name, "checker", 1, true) ~= nil
+        or name == "bac" or name == "ac"
 end
-
-local BAC_NAMES = { "Security", "BAC", "AntiCheat", "Anti_Cheat", "Anti-Cheat", "Anticheat", "AC" }
-local DEVICE_NAMES = { "DeviceChecker", "Checker", "AntiCheat", "ClientChecker" }
 
 local function KillBAC()
     local found = {}
 
-    for _, name in ipairs(BAC_NAMES) do
-        local o = ReplicatedStorage:FindFirstChild(name)
-        if o then
-            table.insert(found, "RS." .. name)
-            pcall(function() o:Destroy() end)
+    local function scan(parent, depth)
+        for _, o in ipairs(parent:GetChildren()) do
+            if IsBACName(o.Name) then
+                table.insert(found, o:GetFullName())
+                pcall(function() o:Destroy() end)
+            elseif depth > 0 and (o:IsA("Folder") or o:IsA("Model")) then
+                scan(o, depth - 1)
+            end
         end
     end
 
-    -- добиваем по имени, если переименовали
-    for _, o in ipairs(ReplicatedStorage:GetChildren()) do
-        if IsBACName(o.Name) then
-            table.insert(found, "RS." .. o.Name)
-            pcall(function() o:Destroy() end)
-        end
-    end
+    scan(ReplicatedStorage, 2)
 
     local ps = Player:FindFirstChild("PlayerScripts")
     local client = ps and ps:FindFirstChild("Client")
     if client then
-        for _, name in ipairs(DEVICE_NAMES) do
+        for _, name in ipairs({ "DeviceChecker", "Checker", "AntiCheat", "ClientChecker" }) do
             local d = client:FindFirstChild(name)
             if d then
                 table.insert(found, "Client." .. name)
@@ -84,7 +84,6 @@ local function KillBAC()
 end
 
 -- ==================== ГЛАВНЫЙ ХУК ====================
--- Всё висит на __namecall: и гашение кика, и блокировка отчётов BAC на сервер
 pcall(function()
     local mt = getrawmetatable(game)
     local oldNamecall = mt.__namecall
@@ -102,14 +101,24 @@ pcall(function()
                     return
                 end
             end
-        elseif method == "FireServer" then
+        elseif method == "FireServer" or method == "InvokeServer" then
             if SETTINGS.AntiCheat then
+                local args = { ... }
+
+                -- 1) ремоут-тег в аргументах (так палят большинство античитов)
+                local a1, a2 = args[1], args[2]
+                if type(a1) == "string" and BAD_TAGS[a1] then return end
+                if type(a2) == "string" and BAD_TAGS[a2] then return end
+
+                -- 2) имя самого ремоута
+                local n = self.Name
+                if BAD_TAGS[n] or IsBACName(n) then return end
+
+                -- 3) имя любого родителя до 4 уровней вверх
                 local p = self.Parent
                 local depth = 0
-                while p and depth < 3 do
-                    if IsBACName(p.Name) then
-                        return
-                    end
+                while p and depth < 4 do
+                    if IsBACName(p.Name) then return end
                     p = p.Parent
                     depth = depth + 1
                 end
@@ -123,7 +132,7 @@ pcall(function()
 end)
 
 if SETTINGS.AntiCheat then
-    print("[Sleepscript] BAC killed:", table.concat(KillBAC(), ", "))
+    print("[Sleepscript] BAC killed:", table.concat(KillBAC(), " | "))
 end
 
 -- ==================== ТЕМА ====================
@@ -448,7 +457,7 @@ end)
 Section("Защита")
 Toggle("AntiCheat (kill BAC)", SETTINGS.AntiCheat, function(v)
     SETTINGS.AntiCheat = v
-    if v then print("[Sleepscript] BAC killed:", table.concat(KillBAC(), ", ")) end
+    if v then print("[Sleepscript] BAC killed:", table.concat(KillBAC(), " | ")) end
 end)
 Toggle("AntiKick", SETTINGS.AntiKick, function(v) SETTINGS.AntiKick = v end)
 
@@ -567,8 +576,10 @@ local function SendClick(isClashing, ball)
     LastClick = now
     LastBallHit = ball
 
-    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+    -- кликаем в реальной позиции курсора, а не в 0,0 — так клик выглядит "живым"
+    local pos = UserInputService:GetMouseLocation()
+    VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
+    VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0)
 
     task.delay(cd, function() IsParrying = false end)
 end
