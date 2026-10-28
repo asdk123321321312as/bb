@@ -1,1882 +1,432 @@
 --[[
-=====================================================================
-   SleepScript  |  Blade Ball  (v1.8 + BAC stealth + AC remote-bypass)
-   Z        — свернуть / развернуть (полное скрытие)
-   Крестик  — полностью закрыть меню (вернуть: Z)
-   RightShift — быстрый тумблер AutoParry
-   Вёрстка на ручном позиционировании — не зависит от UIListLayout
-=====================================================================
-]]
+    ╔══════════════════════════════════════════╗
+    ║              S L E E P S C R I P T          ║
+    ║            Blade Ball  •  AutoParry         ║
+    ║                                             ║
+    ║   Меню открыть/закрыть:  [ Z ]              ║
+    ║   Быстрый вкл/выкл AutoParry: [ L ]         ║
+    ╚══════════════════════════════════════════╝
+--]]
 
+-- ===================== Services =====================
 local Players             = game:GetService("Players")
 local RunService          = game:GetService("RunService")
+local Stats               = game:GetService("Stats")
 local UserInputService    = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local TweenService        = game:GetService("TweenService")
-local Lighting            = game:GetService("Lighting")
-local Stats               = game:GetService("Stats")
-local ReplicatedStorage   = game:GetService("ReplicatedStorage")
-local CoreGui             = game:GetService("CoreGui")
-local HttpService         = game:GetService("HttpService")
+local Player              = Players.LocalPlayer
 
-local LP = Players.LocalPlayer
-local function cam() return workspace.CurrentCamera end
-
---=============================================================
---  КОНФИГ
---=============================================================
-local SS = getgenv().SleepScript or {}
-getgenv().SleepScript = SS
-
-local DEFAULTS = {
-    MenuState = "open",
-    AutoParry = false, PingBased = true, PingBasedOffset = 1.95,
-    DistanceToParry = 0.65, EmergencyRadius = 10,
-    ClashDistance = 22, ClashSpeed = 0.01, NormalSpeed = 0.05,
-    ParryVisuals = true, FXInWorkspace = true,
-    RemoteParry = true, ClickFallback = true,
-    GuardVisual = true, KeepFOV = true, InstantVisual = false,
-    FOV = 70, CustomSky = false, SkyId = "rbxassetid://159454299",
-    Headless = false, Korblox = false, KorbloxMesh = "rbxassetid://139607718",
-    Bypass = true, DestroySecurity = true,
-    BypassHard = true, BypassBlockFire = true, BypassWatch = true,
-    BypassNuke = false, BypassVerbose = false, BypassRetries = 6,
-    BypassHide = true, Stealth = true, StealthDelay = 20, OnKick = "swallow",
-    FPSBoost = false, NoEffects = false, NoAccessories = false, FPSCap = 240,
-    Overlay = true, OverlayGraph = true,
-    SkinLock = true,
+-- ===================== Config =====================
+getgenv().Sleep = {
+    AutoParry       = true,
+    PingBased       = true,
+    PingBasedOffset = 1.95,
+    DistanceToParry = 0.65,
+    EmergencyRadius = 10,
+    ClashDistance   = 22,
+    ClashSpeed      = 0.01,
+    NormalSpeed     = 0.05,
+    Visuals         = true,   -- Крутилка радиуса (вкл/выкл)
 }
-for k, v in pairs(DEFAULTS) do if SS[k] == nil then SS[k] = v end end
+local CFG = getgenv().Sleep
 
---=============================================================
---  ПАЛИТРА / ХЕЛПЕРЫ
---=============================================================
-local C = {
-    bg      = Color3.fromRGB(11, 13, 20),
-    bg2     = Color3.fromRGB(18, 21, 31),
-    card    = Color3.fromRGB(23, 27, 39),
-    accent  = Color3.fromRGB(124, 92, 255),
-    accent2 = Color3.fromRGB(0, 229, 192),
-    text    = Color3.fromRGB(236, 239, 250),
-    dim     = Color3.fromRGB(132, 140, 162),
-    off     = Color3.fromRGB(38, 43, 58),
-    stroke  = Color3.fromRGB(48, 54, 74),
-    warn    = Color3.fromRGB(255, 200, 60),
-    bad     = Color3.fromRGB(255, 120, 120),
-    good    = Color3.fromRGB(90, 220, 140),
+-- ===================== Theme =====================
+local Theme = {
+    Bg     = Color3.fromRGB(12, 12, 15),
+    Bg2    = Color3.fromRGB(22, 22, 27),
+    Stroke = Color3.fromRGB(48, 48, 58),
+    Accent = Color3.fromRGB(138, 100, 255),
+    Text   = Color3.fromRGB(238, 238, 244),
+    Sub    = Color3.fromRGB(140, 140, 152),
+    Off    = Color3.fromRGB(46, 46, 54),
 }
 
-local function new(class, props, parent)
-    local o = Instance.new(class)
-    for k, v in pairs(props or {}) do o[k] = v end
-    if parent then o.Parent = parent end
-    return o
+-- ===================== GUI =====================
+local gui = Instance.new("ScreenGui")
+gui.Name = "Sleepscript"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = Player:WaitForChild("PlayerGui")
+
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.Size = UDim2.fromOffset(300, 430)
+main.Position = UDim2.new(0.5, -150, 0.5, -215)
+main.BackgroundColor3 = Theme.Bg
+main.BackgroundTransparency = 0.12
+main.BorderSizePixel = 0
+main.Active = true
+main.Parent = gui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 14)
+mainCorner.Parent = main
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Theme.Stroke
+mainStroke.Thickness = 1
+mainStroke.Transparency = 0.25
+mainStroke.Parent = main
+
+local scale = Instance.new("UIScale")
+scale.Scale = 1
+scale.Parent = main
+
+-- Header
+local header = Instance.new("Frame")
+header.Name = "Header"
+header.Size = UDim2.new(1, 0, 0, 46)
+header.BackgroundColor3 = Theme.Bg2
+header.BackgroundTransparency = 0.25
+header.BorderSizePixel = 0
+header.Parent = main
+
+local hCorner = Instance.new("UICorner")
+hCorner.CornerRadius = UDim.new(0, 14)
+hCorner.Parent = header
+
+local hFix = Instance.new("Frame") -- чтобы низ хедера был прямым
+hFix.Size = UDim2.new(1, 0, 0, 14)
+hFix.Position = UDim2.new(0, 0, 1, -14)
+hFix.BackgroundColor3 = Theme.Bg2
+hFix.BackgroundTransparency = 0.25
+hFix.BorderSizePixel = 0
+hFix.Parent = header
+
+local accent = Instance.new("Frame")
+accent.Size = UDim2.new(1, -28, 0, 2)
+accent.Position = UDim2.new(0, 14, 1, -2)
+accent.BackgroundColor3 = Theme.Accent
+accent.BorderSizePixel = 0
+accent.Parent = header
+
+local title = Instance.new("TextLabel")
+title.Text = "Sleepscript"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 18
+title.TextColor3 = Theme.Text
+title.BackgroundTransparency = 1
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Position = UDim2.new(0, 16, 0, 8)
+title.Size = UDim2.new(0.7, 0, 0, 22)
+title.Parent = header
+
+local subtitle = Instance.new("TextLabel")
+subtitle.Text = "Blade Ball • AutoParry"
+subtitle.Font = Enum.Font.Gotham
+subtitle.TextSize = 11
+subtitle.TextColor3 = Theme.Sub
+subtitle.BackgroundTransparency = 1
+subtitle.TextXAlignment = Enum.TextXAlignment.Left
+subtitle.Position = UDim2.new(0, 16, 0, 27)
+subtitle.Size = UDim2.new(0.7, 0, 0, 14)
+subtitle.Parent = header
+
+-- Кнопка закрытия
+local closeBtn = Instance.new("TextButton")
+closeBtn.Text = "✕"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 15
+closeBtn.TextColor3 = Theme.Sub
+closeBtn.BackgroundColor3 = Theme.Off
+closeBtn.BackgroundTransparency = 0.4
+closeBtn.BorderSizePixel = 0
+closeBtn.Size = UDim2.fromOffset(26, 26)
+closeBtn.Position = UDim2.new(1, -34, 0, 10)
+closeBtn.AutoButtonColor = false
+closeBtn.Parent = header
+
+local cbCorner = Instance.new("UICorner")
+cbCorner.CornerRadius = UDim.new(0, 8)
+cbCorner.Parent = closeBtn
+
+-- Тело со скроллом
+local body = Instance.new("ScrollingFrame")
+body.Size = UDim2.new(1, -16, 1, -58)
+body.Position = UDim2.new(0, 8, 0, 52)
+body.BackgroundTransparency = 1
+body.BorderSizePixel = 0
+body.ScrollBarThickness = 3
+body.ScrollBarImageColor3 = Theme.Accent
+body.CanvasSize = UDim2.new(0, 0, 0, 0)
+body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+body.Parent = main
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 8)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = body
+
+local pad = Instance.new("UIPadding")
+pad.PaddingTop = UDim.new(0, 4)
+pad.PaddingLeft = UDim.new(0, 4)
+pad.PaddingRight = UDim.new(0, 8)
+pad.PaddingBottom = UDim.new(0, 6)
+pad.Parent = body
+
+-- ===================== Helpers =====================
+local function makeToggle(label, key)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 34)
+    row.BackgroundTransparency = 1
+    row.LayoutOrder = 100
+    row.Parent = body
+
+    local txt = Instance.new("TextLabel")
+    txt.Text = label
+    txt.Font = Enum.Font.Gotham
+    txt.TextSize = 13
+    txt.TextColor3 = Theme.Text
+    txt.BackgroundTransparency = 1
+    txt.TextXAlignment = Enum.TextXAlignment.Left
+    txt.Size = UDim2.new(0.7, 0, 1, 0)
+    txt.Parent = row
+
+    local btn = Instance.new("TextButton")
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.BorderSizePixel = 0
+    btn.Size = UDim2.fromOffset(44, 22)
+    btn.Position = UDim2.new(1, -44, 0.5, -11)
+    btn.BackgroundColor3 = CFG[key] and Theme.Accent or Theme.Off
+    btn.Parent = row
+
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(1, 0)
+    bc.Parent = btn
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.fromOffset(18, 18)
+    knob.Position = CFG[key] and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    knob.BorderSizePixel = 0
+    knob.Parent = btn
+
+    local kc = Instance.new("UICorner")
+    kc.CornerRadius = UDim.new(1, 0)
+    kc.Parent = knob
+
+    btn.MouseButton1Click:Connect(function()
+        CFG[key] = not CFG[key]
+        TweenService:Create(btn, TweenInfo.new(0.18), {
+            BackgroundColor3 = CFG[key] and Theme.Accent or Theme.Off
+        }):Play()
+        TweenService:Create(knob, TweenInfo.new(0.18), {
+            Position = CFG[key] and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
+        }):Play()
+    end)
 end
 
-local function corner(o, r) new("UICorner", {CornerRadius = UDim.new(0, r or 10)}, o) end
+local function makeSlider(label, key, min, max, step)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, 0, 0, 40)
+    row.BackgroundTransparency = 1
+    row.LayoutOrder = 100
+    row.Parent = body
 
-local function safe(fn)
-    return function(...)
-        local ok, err = pcall(fn, ...)
-        if not ok then warn("[SleepScript] " .. tostring(err)) end
+    local txt = Instance.new("TextLabel")
+    txt.Text = label
+    txt.Font = Enum.Font.Gotham
+    txt.TextSize = 13
+    txt.TextColor3 = Theme.Text
+    txt.BackgroundTransparency = 1
+    txt.TextXAlignment = Enum.TextXAlignment.Left
+    txt.Size = UDim2.new(0.7, 0, 0, 16)
+    txt.Parent = row
+
+    local decimals = step < 1 and 2 or 0
+    local val = Instance.new("TextLabel")
+    val.Text = string.format("%." .. decimals .. "f", CFG[key])
+    val.Font = Enum.Font.GothamMedium
+    val.TextSize = 12
+    val.TextColor3 = Theme.Accent
+    val.BackgroundTransparency = 1
+    val.TextXAlignment = Enum.TextXAlignment.Right
+    val.Size = UDim2.new(0.3, 0, 0, 16)
+    val.Position = UDim2.new(0.7, 0, 0, 0)
+    val.Parent = row
+
+    local bar = Instance.new("TextButton")
+    bar.Text = ""
+    bar.AutoButtonColor = false
+    bar.BackgroundColor3 = Theme.Off
+    bar.BorderSizePixel = 0
+    bar.Size = UDim2.new(1, 0, 0, 6)
+    bar.Position = UDim2.new(0, 0, 0, 26)
+    bar.Parent = row
+
+    local barC = Instance.new("UICorner")
+    barC.CornerRadius = UDim.new(1, 0)
+    barC.Parent = bar
+
+    local fill = Instance.new("Frame")
+    fill.BackgroundColor3 = Theme.Accent
+    fill.BorderSizePixel = 0
+    fill.Size = UDim2.new((CFG[key] - min) / (max - min), 0, 1, 0)
+    fill.Parent = bar
+
+    local fillC = Instance.new("UICorner")
+    fillC.CornerRadius = UDim.new(1, 0)
+    fillC.Parent = fill
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.fromOffset(14, 14)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    knob.BorderSizePixel = 0
+    knob.AnchorPoint = Vector2.new(0.5, 0.5)
+    knob.Position = UDim2.new((CFG[key] - min) / (max - min), 0, 0.5, 0)
+    knob.Parent = bar
+
+    local knobC = Instance.new("UICorner")
+    knobC.CornerRadius = UDim.new(1, 0)
+    knobC.Parent = knob
+
+    local function setFromX(x)
+        local rel = math.clamp((x - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+        local v = min + (max - min) * rel
+        v = math.floor(v / step + 0.5) * step
+        CFG[key] = v
+        local r = (v - min) / (max - min)
+        fill.Size = UDim2.new(r, 0, 1, 0)
+        knob.Position = UDim2.new(r, 0, 0.5, 0)
+        val.Text = string.format("%." .. decimals .. "f", v)
     end
-end
 
-local function makeDraggable(frame, handle)
-    handle = handle or frame
-    local dragging, dragInput, dragStart, startPos
-    handle.InputBegan:Connect(function(input)
+    local dragging = false
+    bar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-            dragging, dragStart, startPos = true, input.Position, frame.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then dragging = false end
-            end)
+            dragging = true
+            setFromX(input.Position.X)
         end
-    end)
-    handle.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
     end)
     UserInputService.InputChanged:Connect(function(input)
-        if input == dragInput and dragging then
-            local d = input.Position - dragStart
-            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
-                                       startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+            setFromX(input.Position.X)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
         end
     end)
 end
 
--- forward-декларации (чтобы колбэки видели их, а не nil)
-local ApplySky, ApplyBody, ApplyFPSBoost, ApplyEffects, ApplyAccessories
-local ApplyBypass, DestroySecurity, ApplySkin, RenderSkinList, BuildSkinDatabase
-
---=============================================================
---  [БАЙПАС] СОСТОЯНИЕ
---=============================================================
-local Bypass = {
-    active    = false,
-    looping   = false,
-    hooked    = false,
-    old       = nil,
-    blocked   = setmetatable({}, {__mode = "k"}),
-    mine      = setmetatable({}, {__mode = "k"}),
-    conns     = {},
-    statusLbl = nil,
-    onKickRow = nil,
-    kicks     = 0,
-    killed    = 0,
-    recreated = 0,
-    spoofed   = 0,
-    scripted  = 0,
-    rejoinCD  = 0,
-    log       = {},
-}
-
---=============================================================
---  [AC BYPASS] ПЕРЕХВАТ ПАРИ-РЕМОУТА + TOKEN SPOOF
---=============================================================
-local Remote = {
-    enabled        = false,
-    token          = nil,
-    tokenFound     = false,
-    hooked         = false,
-    ready          = false,
-    captured       = nil,
-    capturedRemote = nil,
-    capturedArgs   = nil,
-    selfFiring     = false,
-    statusLbl      = nil,
-    reverted       = {},
-    original       = {},
-    conns          = {},
-    prevNamecall   = nil,
-    namecallHooked = false,
-}
-
-function Remote.Log(t)
-    if SS.BypassVerbose then print("[SleepScript][AC] " .. tostring(t)) end
+local function makeHeader(text, order)
+    local lbl = Instance.new("TextLabel")
+    lbl.Text = text
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 11
+    lbl.TextColor3 = Theme.Sub
+    lbl.BackgroundTransparency = 1
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Size = UDim2.new(1, 0, 0, 18)
+    lbl.LayoutOrder = order
+    lbl.Parent = body
 end
 
-function Remote.RefreshStatus()
-    if not Remote.statusLbl then return end
-    local txt, col
-    if Remote.ready and Remote.tokenFound then
-        txt = "ремоут: перехвачен • " .. tostring(Remote.capturedRemote and Remote.capturedRemote.Name or "?")
-        col = C.accent2
-    elseif Remote.tokenFound then
-        txt = "токен: ок • жду первый пари (клик для захвата)"
-        col = C.warn
-    else
-        txt = "токен не найден • клик-фолбэк"
-        col = C.dim
-    end
-    Remote.statusLbl.Text = txt
-    Remote.statusLbl.TextColor3 = col
-end
+-- ===================== Build menu =====================
+makeHeader("MAIN", 1)
+makeToggle("AutoParry", "AutoParry")
+makeToggle("Visuals (радиус)", "Visuals")
 
-function Remote.Toast(title, content)
-    task.spawn(function()
-        pcall(function()
-            local parent = (gethui and gethui()) or CoreGui
-            if not parent then return end
-            local holder = parent:FindFirstChild("SleepScript_Toasts")
-            if not holder then
-                holder = new("ScreenGui", {
-                    Name = "SleepScript_Toasts", ResetOnSpawn = false,
-                    IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-                    Parent = parent,
-                })
-                new("Frame", {
-                    Name = "List", Parent = holder,
-                    AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -18, 0, 18),
-                    Size = UDim2.fromOffset(300, 0), BackgroundTransparency = 1,
-                })
-                new("UIListLayout", {Padding = UDim.new(0, 8), Parent = holder.List})
-            end
-            local list = holder.List
+makeHeader("ПАРАМЕТРЫ ПАРИ", 2)
+makeToggle("Ping Based", "PingBased")
+makeSlider("Ping Based Offset", "PingBasedOffset", 0, 5, 0.05)
+makeSlider("Distance to Parry", "DistanceToParry", 0.1, 5, 0.05)
+makeSlider("Emergency Radius", "EmergencyRadius", 1, 40, 1)
+makeSlider("Clash Distance", "ClashDistance", 5, 60, 1)
+makeSlider("Clash Speed", "ClashSpeed", 0.01, 0.2, 0.01)
+makeSlider("Normal Speed", "NormalSpeed", 0.01, 0.3, 0.01)
 
-            local f = new("Frame", {
-                Parent = list, Size = UDim2.fromOffset(300, 64),
-                BackgroundColor3 = C.card, BackgroundTransparency = 0.05,
-                BorderSizePixel = 0, ClipsDescendants = true,
-            })
-            corner(f, 12)
-            new("UIStroke", {Color = C.accent, Transparency = 0.5, Thickness = 1}, f)
-            new("TextLabel", {
-                Parent = f, BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
-                Text = tostring(title or "SleepScript"), TextSize = 13,
-                TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
-                Position = UDim2.fromOffset(14, 10), Size = UDim2.new(1, -28, 0, 16),
-            })
-            new("TextLabel", {
-                Parent = f, BackgroundTransparency = 1, Font = Enum.Font.Gotham,
-                Text = tostring(content or ""), TextSize = 11, TextWrapped = true,
-                TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
-                TextYAlignment = Enum.TextYAlignment.Top,
-                Position = UDim2.fromOffset(14, 28), Size = UDim2.new(1, -28, 0, 28),
-            })
+local hint = Instance.new("TextLabel")
+hint.Text = "[ Z ] открыть/закрыть меню   •   [ L ] AutoParry"
+hint.Font = Enum.Font.Gotham
+hint.TextSize = 10
+hint.TextColor3 = Theme.Sub
+hint.BackgroundTransparency = 1
+hint.TextXAlignment = Enum.TextXAlignment.Center
+hint.Size = UDim2.new(1, 0, 0, 16)
+hint.LayoutOrder = 200
+hint.Parent = body
 
-            task.wait(3.5)
-            local out = TweenService:Create(f, TweenInfo.new(0.25), {BackgroundTransparency = 1})
-            out:Play()
-            out.Completed:Wait()
-            f:Destroy()
-        end)
-    end)
-end
-
-Remote.Valid = function(args)
-    return type(args) == "table" and #args >= 8
-end
-
-Remote.FindToken = function()
-    if Remote.tokenFound then return true end
-    if not getgc or not debug or not debug.getupvalues then return false end
-
-    for _, fn in pairs(getgc(true)) do
-        if type(fn) == "function" then
-            local ok, src = pcall(debug.info, fn, "s")
-            if ok and type(src) == "string" and src:find("PRY", 1, true) then
-                local ok2, ups = pcall(debug.getupvalues, fn)
-                if ok2 and type(ups) == "table" then
-                    for _, v in pairs(ups) do
-                        if type(v) == "function" then
-                            Remote.token = v
-                            Remote.tokenFound = true
-                            break
-                        end
-                    end
-                end
-            end
-        end
-        if Remote.tokenFound then break end
-    end
-
-    Remote.Log("токен найден: " .. tostring(Remote.tokenFound))
-    Remote.RefreshStatus()
-    return Remote.tokenFound
-end
-
-Remote.Tokenize = function(remote_uid)
-    if not Remote.token then return "" end
-    local time = tostring(math.floor(workspace:GetServerTimeNow() * 100))
-    local ok, key = pcall(Remote.token, remote_uid, "TIME")
-    if not ok or type(key) ~= "string" or key == "" then return "" end
-    local characters = table.create(#time)
-    for index = 1, #time do
-        characters[index] = string.char(bit32.bxor(
-            (string.byte(time, index) + index) % 256,
-            string.byte(key, (index - 1) % #key + 1)
-        ))
-    end
-    return table.concat(characters)
-end
-
-Remote.Capture = function(remote, args)
-    if not Remote.enabled or Remote.selfFiring then return end
-    if not Remote.Valid(args) then return end
-    if Remote.reverted[remote] then return end
-
-    Remote.reverted[remote] = args
-    Remote.captured = { remote = remote, args = args }
-
-    local name = tostring(remote.Name):lower()
-    local cur  = Remote.capturedRemote
-    local better = (not cur)
-        or (name:find("parry", 1, true) and not tostring(cur.Name):lower():find("parry", 1, true))
-
-    if better then
-        Remote.capturedRemote = remote
-        Remote.capturedArgs = args
-    end
-
-    if not Remote.ready then
-        Remote.ready = true
-        Remote.Log("пакет пари перехвачен: " .. remote:GetFullName())
-        Remote.RefreshStatus()
-        Remote.Toast("VIREX", "Anti-cheat Bypassed")
-    end
-end
-
-Remote.HookRemote = function(remote)
-    if not remote then return end
-    if Remote.reverted[remote] then return end
-
-    local meta = getrawmetatable(remote)
-    if not meta or Remote.original[meta] then return end
-    Remote.original[meta] = true
-
-    if setreadonly then setreadonly(meta, false) end
-    local old = meta.__index
-    meta.__index = function(self, key)
-        if (key == "FireServer" and self:IsA("RemoteEvent"))
-        or (key == "InvokeServer" and self:IsA("RemoteFunction")) then
-            return function(_, ...)
-                local args = {...}
-                pcall(Remote.Capture, self, args)
-                return old(self, key)(_, unpack(args))
-            end
-        end
-        return old(self, key)
-    end
-    if setreadonly then setreadonly(meta, true) end
-end
-
-Remote.HookAll = function()
-    for _, r in pairs(ReplicatedStorage:GetDescendants()) do
-        if r:IsA("RemoteEvent") or r:IsA("RemoteFunction") then
-            pcall(Remote.HookRemote, r)
-        end
-    end
-    if not Remote.conns.hookAdded then
-        Remote.conns.hookAdded = ReplicatedStorage.DescendantAdded:Connect(function(inst)
-            if inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction") then
-                pcall(Remote.HookRemote, inst)
+-- ===================== Перетаскивание =====================
+local dragging, dragStart, startPos
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
             end
         end)
     end
-end
-
-Remote.namecallHandler = function(self, ...)
-    if Remote.enabled then
-        local method = getnamecallmethod and getnamecallmethod()
-        if method == "FireServer" or method == "InvokeServer" then
-            if typeof(self) == "Instance" and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction")) then
-                pcall(Remote.Capture, self, {...})
-            end
-        end
-    end
-    if Remote.prevNamecall then return Remote.prevNamecall(self, ...) end
-end
-
-Remote.HookNamecall = function(force)
-    if Remote.namecallHooked and not force then return end
-    if not getnamecallmethod or not getrawmetatable then return end
-    local ok = pcall(function()
-        local mt = getrawmetatable(game)
-        if not mt then error("нет метатаблицы") end
-        Remote.prevNamecall = mt.__namecall
-        if setreadonly then setreadonly(mt, false) end
-        local handler = Remote.namecallHandler
-        if newcclosure then handler = newcclosure(handler) end
-        mt.__namecall = handler
-        if setreadonly then setreadonly(mt, true) end
-    end)
-    if ok then
-        Remote.namecallHooked = true
-        Remote.Log("namecall-хук AC установлен")
-    end
-end
-
-Remote.Fire = function(curveCF)
-    if not Remote.capturedRemote or not Remote.capturedArgs then return false end
-    if not Remote.tokenFound then return false end
-    local camera = cam()
-    if not camera then return false end
-
-    local is_mobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-    local aim_target
-    if is_mobile then
-        local vp = camera.ViewportSize
-        aim_target = {math.floor(vp.X / 2), math.floor(vp.Y / 2)}
-    else
-        local ok, mouse = pcall(function() return UserInputService:GetMouseLocation() end)
-        if ok and mouse then
-            aim_target = {math.floor(mouse.X), math.floor(mouse.Y)}
-        else
-            local vp = camera.ViewportSize
-            aim_target = {math.floor(vp.X / 2), math.floor(vp.Y / 2)}
-        end
-    end
-
-    local event_data = {}
-    local alive = workspace:FindFirstChild("Alive")
-    if alive then
-        for _, entity in pairs(alive:GetChildren()) do
-            if entity.PrimaryPart then
-                local ok, sp = pcall(function() return camera:WorldToScreenPoint(entity.PrimaryPart.Position) end)
-                if ok then event_data[entity.Name] = sp end
-            end
-        end
-    end
-
-    local packet = {
-        Remote.capturedArgs[1],
-        Remote.capturedArgs[2],
-        Remote.Tokenize(Remote.capturedArgs[2]),
-        0.5,
-        curveCF or camera.CFrame,
-        event_data,
-        aim_target,
-        false,
-    }
-
-    Remote.selfFiring = true
-    local ok = pcall(function()
-        if Remote.capturedRemote:IsA("RemoteEvent") then
-            Remote.capturedRemote:FireServer(unpack(packet))
-        elseif Remote.capturedRemote:IsA("RemoteFunction") then
-            Remote.capturedRemote:InvokeServer(unpack(packet))
-        end
-    end)
-    Remote.selfFiring = false
-    return ok
-end
-
-Remote.Start = function()
-    Remote.enabled = true
-    Remote.HookAll()
-    Remote.HookNamecall(true)
-
-    if not Remote.FindToken() then
-        Remote.Log("токен не найден — повторный поиск")
-        task.spawn(function()
-            for _ = 1, 30 do
-                task.wait(1)
-                if not Remote.enabled then return end
-                if Remote.FindToken() then break end
-            end
-            Remote.RefreshStatus()
-        end)
-    else
-        Remote.hooked = true
-    end
-    Remote.RefreshStatus()
-end
-
-Remote.Stop = function()
-    Remote.enabled = false
-    Remote.RefreshStatus()
-end
-
---=============================================================
---  [GUARD] АНТИ-BAC ДЛЯ ВИЗУАЛА
---  Снимает baseline значений ДО изменения и вешает __index-хук:
---  когда значение читает игра (BAC, checkcaller == false) — она видит
---  ИСХОДНОЕ значение, а ты видишь своё. Так BAC никогда не ловит
---  расхождение по FOV / Lighting / телу и не кикает.
---=============================================================
-local Guard = {
-    enabled = true,
-    hooked  = false,
-    base    = {},   -- instance -> { key -> исходное значение }
-    ours    = false,
-}
-
-function Guard.Watch(inst, keys)
-    if not inst then return end
-    local b = Guard.base[inst]
-    if not b then b = {}; Guard.base[inst] = b end
-    Guard.ours = true
-    for _, k in ipairs(keys) do
-        if b[k] == nil then
-            local ok, v = pcall(function() return inst[k] end)
-            if ok then b[k] = v end
-        end
-    end
-    Guard.ours = false
-end
-
--- записать значение так, чтобы BAC продолжал видеть исходное
-function Guard.Set(inst, key, value)
-    if not inst then return end
-    Guard.Watch(inst, {key})
-    pcall(function() inst[key] = value end)
-end
-
-function Guard.SpoofActive()
-    if not Guard.enabled then return false end
-    if Guard.ours then return false end
-    if checkcaller then
-        return checkcaller() == false
-    end
-    return true
-end
-
-function Guard.Hook()
-    if Guard.hooked or not getrawmetatable then return end
-    local ok = pcall(function()
-        local mt = getrawmetatable(game)
-        if not mt then error("нет метатаблицы") end
-        Guard.oldIndex = mt.__index
-        if setreadonly then setreadonly(mt, false) end
-        local handler = function(self, key)
-            if Guard.enabled and not Guard.ours and Guard.base[self] then
-                local v = Guard.base[self][key]
-                if v ~= nil then
-                    if not checkcaller or checkcaller() == false then
-                        return v
-                    end
-                end
-            end
-            return Guard.oldIndex(self, key)
-        end
-        if newcclosure then handler = newcclosure(handler) end
-        mt.__index = handler
-        if setreadonly then setreadonly(mt, true) end
-    end)
-    if ok then Guard.hooked = true end
-end
-
---=============================================================
---  КАРКАС ОКНА
---=============================================================
-if getgenv().SleepScriptGui then getgenv().SleepScriptGui:Destroy() end
-if getgenv().SleepScriptOverlay then getgenv().SleepScriptOverlay:Destroy() end
-
-local GUI_NAMES = {"GamepadService", "HapticService", "VRService", "ContentProvider"}
-local gui = new("ScreenGui", {
-    Name = GUI_NAMES[math.random(#GUI_NAMES)] .. math.random(100, 999),
-    ResetOnSpawn = false,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true,
-})
-getgenv().SleepScriptGui = gui
-pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
-if not gui.Parent then gui.Parent = (gethui and gethui()) or CoreGui end
-
-local WIN_W, WIN_H = 560, 380
-
-local shadow = new("Frame", {
-    Parent = gui, Name = "Shadow",
-    Size = UDim2.fromOffset(WIN_W + 8, WIN_H + 8),
-    Position = UDim2.fromScale(0.5, 0.5),
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.55,
-    BorderSizePixel = 0,
-})
-corner(shadow, 18)
-
-local main = new("Frame", {
-    Parent = gui, Name = "Main",
-    Size = UDim2.fromOffset(WIN_W, WIN_H),
-    Position = UDim2.fromScale(0.5, 0.5),
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    BackgroundColor3 = C.bg, BorderSizePixel = 0,
-    ClipsDescendants = true, Active = true,
-})
-corner(main, 14)
-new("UIGradient", {Rotation = 20, Color = ColorSequence.new(C.bg, C.bg2)}, main)
-new("UIStroke", {Color = C.stroke, Thickness = 1, Transparency = 0.3}, main)
-makeDraggable(main)
-
-local function syncShadow()
-    local p, s = main.Position, main.Size
-    shadow.Position = UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset + 6)
-    shadow.Size = UDim2.new(s.X.Scale, s.X.Offset + 8, s.Y.Scale, s.Y.Offset + 8)
-end
-main:GetPropertyChangedSignal("Position"):Connect(syncShadow)
-main:GetPropertyChangedSignal("Size"):Connect(syncShadow)
-syncShadow()
-
-local header = new("Frame", {
-    Parent = main, Size = UDim2.new(1, 0, 0, 52),
-    BackgroundTransparency = 1, Active = true,
-})
-makeDraggable(main, header)
-
-new("TextLabel", {
-    Parent = header, Size = UDim2.new(1, -140, 0, 18), Position = UDim2.fromOffset(18, 12),
-    BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = "SleepScript",
-    TextSize = 17, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
-})
-local subLbl = new("TextLabel", {
-    Parent = header, Size = UDim2.new(1, -140, 0, 14), Position = UDim2.fromOffset(18, 30),
-    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Blade Ball  •  v1.8 + guard",
-    TextSize = 11, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
-})
-new("UIGradient", {Color = ColorSequence.new(C.accent, C.accent2)}, subLbl)
-
-local minBtn = new("TextButton", {
-    Parent = header, Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, -76, 0, 12),
-    BackgroundColor3 = C.off, Text = "—", Font = Enum.Font.GothamBold,
-    TextSize = 15, TextColor3 = C.text, AutoButtonColor = false,
-})
-corner(minBtn, 8)
-
-local closeBtn = new("TextButton", {
-    Parent = header, Size = UDim2.fromOffset(28, 28), Position = UDim2.new(1, -42, 0, 12),
-    BackgroundColor3 = C.off, Text = "×", Font = Enum.Font.GothamBold,
-    TextSize = 17, TextColor3 = C.text, AutoButtonColor = false,
-})
-corner(closeBtn, 8)
-
-local sidebar = new("Frame", {
-    Parent = main, Size = UDim2.new(0, 150, 1, -62), Position = UDim2.fromOffset(0, 62),
-    BackgroundColor3 = C.bg, BackgroundTransparency = 0.35, BorderSizePixel = 0,
-})
-
-new("TextLabel", {
-    Parent = sidebar, Size = UDim2.new(1, -20, 0, 14), Position = UDim2.new(0, 10, 1, -22),
-    BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = "Z — свернуть меню",
-    TextSize = 10, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
-})
-
-local contentHolder = new("Frame", {
-    Parent = main, Size = UDim2.new(1, -160, 1, -74), Position = UDim2.fromOffset(155, 64),
-    BackgroundTransparency = 1,
-})
-
---=============================================================
---  ВКЛАДКИ
---=============================================================
-local pages, tabs, currentTab = {}, {}, nil
-
-local TABS = {
-    { key = "AutoParry", label = "AutoParry" },
-    { key = "Visuals",   label = "Visuals" },
-    { key = "Skin",      label = "Скин меча" },
-    { key = "Bypass",    label = "Bypass / FPS" },
-    { key = "Overlay",   label = "Оверлей" },
-}
-
-local function CreatePage()
-    return new("ScrollingFrame", {
-        Parent = contentHolder, Size = UDim2.fromScale(1, 1),
-        BackgroundTransparency = 1, BorderSizePixel = 0,
-        CanvasSize = UDim2.new(), ScrollBarThickness = 3,
-        ScrollBarImageColor3 = C.accent, Visible = false,
-        AutomaticCanvasSize = Enum.AutomaticSize.None,
-    })
-end
-
-local function selectTab(key)
-    for k, p in pairs(pages) do p.Visible = (k == key) end
-    for k, b in pairs(tabs) do
-        local on = (k == key)
-        TweenService:Create(b, TweenInfo.new(0.15), {
-            BackgroundColor3 = on and C.accent or C.off,
-            BackgroundTransparency = on and 0 or 0.55,
-            TextColor3 = on and Color3.new(1, 1, 1) or C.dim,
-        }):Play()
-    end
-    currentTab = key
-end
-
-for i, t in ipairs(TABS) do
-    local btn = new("TextButton", {
-        Parent = sidebar, Size = UDim2.new(1, -20, 0, 30),
-        Position = UDim2.fromOffset(10, 6 + (i - 1) * 36),
-        BackgroundColor3 = C.off, BackgroundTransparency = 0.55,
-        Text = "   " .. t.label, Font = Enum.Font.GothamMedium,
-        TextSize = 13, TextColor3 = C.dim,
-        TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false,
-    })
-    corner(btn, 8)
-    btn.MouseButton1Click:Connect(function() selectTab(t.key) end)
-    tabs[t.key] = btn
-    pages[t.key] = CreatePage()
-end
-
---=============================================================
---  РУЧНОЙ ЛЕЙАУТ
---=============================================================
-local function NewLayout(page)
-    local L = { page = page, y = 8, sec = nil, secTop = 0, sy = 0 }
-
-    function L:Section(title)
-        local sec = new("Frame", {
-            Parent = self.page, Size = UDim2.new(1, 0, 0, 40),
-            Position = UDim2.new(0, 0, 0, self.y),
-            BackgroundColor3 = C.card, BackgroundTransparency = 0.2, BorderSizePixel = 0,
-        })
-        corner(sec, 10)
-        new("UIStroke", {Color = C.stroke, Transparency = 0.55, Thickness = 1}, sec)
-        self.sec, self.secTop, self.sy = sec, self.y, 10
-        if title then
-            new("TextLabel", {
-                Parent = sec, Size = UDim2.new(1, -20, 0, 16),
-                Position = UDim2.fromOffset(10, 10), BackgroundTransparency = 1,
-                Font = Enum.Font.GothamBold, Text = title, TextSize = 12,
-                TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
-            })
-            self.sy = 32
-        end
-        return sec
-    end
-
-    function L:Row(h)
-        local row = new("Frame", {
-            Parent = self.sec, Size = UDim2.new(1, -20, 0, h),
-            Position = UDim2.fromOffset(10, self.sy), BackgroundTransparency = 1,
-        })
-        self.sy = self.sy + h + 8
-        return row
-    end
-
-    function L:EndSection()
-        local h = self.sy + 4
-        self.sec.Size = UDim2.new(1, 0, 0, h)
-        self.y = self.secTop + h + 10
-        self.sec = nil
-        self.page.CanvasSize = UDim2.new(0, 0, 0, self.y + 8)
-    end
-
-    return L
-end
-
---=============================================================
---  КОМПОНЕНТЫ
---=============================================================
-local Sync = {}
-
-local function AddToggle(row, name, default, callback)
-    new("TextLabel", {
-        Parent = row, Size = UDim2.new(1, -50, 1, 0), BackgroundTransparency = 1,
-        Font = Enum.Font.Gotham, Text = name, TextSize = 12,
-        TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
-    })
-    local btn = new("TextButton", {
-        Parent = row, Size = UDim2.fromOffset(38, 20),
-        Position = UDim2.new(1, -38, 0.5, -10),
-        BackgroundColor3 = default and C.accent or C.off,
-        Text = "", AutoButtonColor = false,
-    })
-    corner(btn, 10)
-    local knob = new("Frame", {
-        Parent = btn, Size = UDim2.fromOffset(16, 16),
-        Position = default and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8),
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255), BorderSizePixel = 0,
-    })
-    corner(knob, 8)
-
-    local state = default
-    local function render(fire)
-        TweenService:Create(btn, TweenInfo.new(0.18),
-            {BackgroundColor3 = state and C.accent or C.off}):Play()
-        TweenService:Create(knob, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            {Position = state and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)}):Play()
-        if fire and callback then callback(state) end
-    end
-    btn.MouseButton1Click:Connect(function() state = not state; render(true) end)
-    local obj = { Set = function(v, fire) state = v; render(fire) end, Get = function() return state end }
-    Sync[name] = obj
-    return obj
-end
-
-local function AddSlider(row, name, min, max, default, decimals, callback)
-    new("TextLabel", {
-        Parent = row, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1,
-        Font = Enum.Font.Gotham, Text = name, TextSize = 12,
-        TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
-    })
-    local val = new("TextLabel", {
-        Parent = row, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1,
-        Font = Enum.Font.GothamMedium, Text = tostring(default), TextSize = 12,
-        TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Right,
-    })
-    local bar = new("TextButton", {
-        Parent = row, Size = UDim2.new(1, 0, 0, 6), Position = UDim2.new(0, 0, 1, -8),
-        BackgroundColor3 = C.off, Text = "", AutoButtonColor = false,
-    })
-    corner(bar, 3)
-    local fill = new("Frame", {Parent = bar, Size = UDim2.new(0, 0, 1, 0),
-        BackgroundColor3 = C.accent, BorderSizePixel = 0})
-    corner(fill, 3)
-    local knob = new("Frame", {Parent = bar, Size = UDim2.fromOffset(12, 12),
-        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 0, 0.5, 0),
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255), BorderSizePixel = 0})
-    corner(knob, 6)
-
-    local value = default
-    local function set(v, fire)
-        value = math.clamp(v, min, max)
-        local a = (value - min) / (max - min)
-        fill.Size = UDim2.new(a, 0, 1, 0)
-        knob.Position = UDim2.new(a, 0, 0.5, 0)
-        local m = 10 ^ (decimals or 0)
-        val.Text = tostring(math.floor(value * m + 0.5) / m)
-        if fire and callback then callback(value) end
-    end
-    local dragging = false
-    local function update(input)
-        local a = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
-        set(min + (max - min) * a, true)
-    end
-    bar.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1
-        or i.UserInputType == Enum.UserInputType.Touch then dragging = true; update(i) end
-    end)
-    bar.InputEnded:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1
-        or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
-    end)
-    UserInputService.InputChanged:Connect(function(i)
-        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement
-        or i.UserInputType == Enum.UserInputType.Touch) then update(i) end
-    end)
-    set(default, false)
-    return { Set = function(v) set(v, false) end, Get = function() return value end }
-end
-
-local function AddButton(row, name, callback, col)
-    local btn = new("TextButton", {
-        Parent = row, Size = UDim2.fromScale(1, 1),
-        BackgroundColor3 = col or C.off, Text = name,
-        Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = C.text,
-        AutoButtonColor = false,
-    })
-    corner(btn, 8)
-    btn.MouseButton1Click:Connect(safe(callback))
-    btn.MouseEnter:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = C.accent}):Play()
-    end)
-    btn.MouseLeave:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = col or C.off}):Play()
-    end)
-    return btn
-end
-
-local function AddTextbox(row, placeholder, default, callback)
-    local box = new("TextBox", {
-        Parent = row, Size = UDim2.fromScale(1, 1),
-        BackgroundColor3 = C.off, Text = default or "", PlaceholderText = placeholder,
-        Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = C.text,
-        PlaceholderColor3 = C.dim, ClearTextOnFocus = false,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    })
-    corner(box, 8)
-    new("UIPadding", {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)}, box)
-    box.FocusLost:Connect(function() if callback then safe(callback)(box.Text) end end)
-    return box
-end
-
-local function AddHint(row, text, h)
-    new("TextLabel", {
-        Parent = row, Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
-        Font = Enum.Font.Gotham, TextWrapped = true, TextSize = 11,
-        TextColor3 = C.dim, Text = text, TextXAlignment = Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Top,
-    })
-end
-
---=============================================================
---  СТРАНИЦА: AUTOPARRY
---=============================================================
-local L = NewLayout(pages.AutoParry)
-L:Section("PARRY")
-AddToggle(L:Row(24), "AutoParry", SS.AutoParry, function(v) SS.AutoParry = v end)
-AddToggle(L:Row(24), "ParryVisuals", SS.ParryVisuals, function(v)
-    SS.ParryVisuals = v
-    if setFX then setFX(v) end
 end)
-AddToggle(L:Row(24), "FX в workspace", SS.FXInWorkspace, function(v)
-    SS.FXInWorkspace = v
-    if setFX then setFX(SS.ParryVisuals) end
-end)
-L:EndSection()
-
-L:Section("AC BYPASS (REMOTE PARRY)")
-AddToggle(L:Row(24), "Remote Parry", SS.RemoteParry, function(v)
-    SS.RemoteParry = v
-    if v then Remote.Start() else Remote.Stop() end
-end)
-AddToggle(L:Row(24), "Клик-фолбэк", SS.ClickFallback, function(v) SS.ClickFallback = v end)
-do
-    local row = L:Row(18)
-    Remote.statusLbl = new("TextLabel", {
-        Parent = row, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-        Font = Enum.Font.Code, Text = "ремоут: ожидание", TextSize = 11,
-        TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
-    })
-end
-AddButton(L:Row(26), "Найти пари-ремоут сейчас", function()
-    Remote.Start()
-    Remote.FindToken()
-    Remote.RefreshStatus()
-end)
-L:EndSection()
-
-L:Section("ТАЙМИНГ")
-AddToggle(L:Row(24), "PingBased", SS.PingBased, function(v) SS.PingBased = v end)
-AddSlider(L:Row(36), "PingBasedOffset", 0, 5, SS.PingBasedOffset, 2, function(v) SS.PingBasedOffset = v end)
-AddSlider(L:Row(36), "DistanceToParry", 0.05, 3, SS.DistanceToParry, 2, function(v) SS.DistanceToParry = v end)
-AddSlider(L:Row(36), "EmergencyRadius", 1, 30, SS.EmergencyRadius, 0, function(v) SS.EmergencyRadius = v end)
-L:EndSection()
-
-L:Section("КЛАШ")
-AddSlider(L:Row(36), "ClashDistance", 5, 60, SS.ClashDistance, 0, function(v) SS.ClashDistance = v end)
-AddSlider(L:Row(36), "ClashSpeed", 0.01, 0.2, SS.ClashSpeed, 2, function(v) SS.ClashSpeed = v end)
-AddSlider(L:Row(36), "NormalSpeed", 0.01, 0.3, SS.NormalSpeed, 2, function(v) SS.NormalSpeed = v end)
-L:EndSection()
-
---=============================================================
---  СТРАНИЦА: VISUALS
---=============================================================
-L = NewLayout(pages.Visuals)
-
-L:Section("АНТИ-BAC (GUARD)")
-AddToggle(L:Row(24), "Guard визуала", SS.GuardVisual, function(v)
-    SS.GuardVisual = v
-    Guard.enabled = v
-    if v then Guard.Hook() end
-end)
-AddToggle(L:Row(24), "Держать FOV", SS.KeepFOV, function(v) SS.KeepFOV = v end)
-AddToggle(L:Row(24), "Мгновенный визуал", SS.InstantVisual, function(v) SS.InstantVisual = v end)
-AddButton(L:Row(26), "Применить визуал сейчас", function()
-    if cam() then Guard.Set(cam(), "FieldOfView", SS.FOV) end
-    if SS.CustomSky then ApplySky(SS.SkyId) end
-    ApplyBody()
-    if SS.FPSBoost then ApplyFPSBoost(true) end
-    print("[SleepScript] визуал применён")
-end, Color3.fromRGB(40, 62, 46))
-AddHint(L:Row(74),
-    "Guard снимает слепок значений ДО изменения и подсовывает BAC исходные — " ..
-    "он видит «родной» FOV/небо/тело и не кикает, а ты видишь свои настройки. " ..
-    "Небо правится в родном Sky игры, новые инстансы в Lighting не создаются.")
-L:EndSection()
-
-L:Section("КАМЕРА")
-AddSlider(L:Row(36), "Field of View", 40, 120, SS.FOV, 0, function(v)
-    SS.FOV = v
-    if cam() then Guard.Set(cam(), "FieldOfView", v) end
-end)
-L:EndSection()
-
-L:Section("НЕБО")
-AddToggle(L:Row(24), "CustomSky", SS.CustomSky, function(v)
-    SS.CustomSky = v
-    if v then ApplySky(SS.SkyId) else ApplySky(nil) end
-end)
-do
-    local row = L:Row(26)
-    local names = {"Sunset", "Night", "Cloudy", "Space"}
-    local ids = {
-        ["Sunset"] = "rbxassetid://159454299",
-        ["Night"]  = "rbxassetid://57055771",
-        ["Cloudy"] = "rbxassetid://271042910",
-        ["Space"]  = "rbxassetid://133883647",
-    }
-    for i, nm in ipairs(names) do
-        local b = new("TextButton", {
-            Parent = row,
-            Size = UDim2.new(0.25, -5, 1, 0),
-            Position = UDim2.new((i - 1) * 0.25, 0, 0, 0),
-            BackgroundColor3 = C.off, Text = nm, Font = Enum.Font.Gotham,
-            TextSize = 11, TextColor3 = C.text, AutoButtonColor = false,
-        })
-        corner(b, 7)
-        b.MouseButton1Click:Connect(safe(function()
-            SS.SkyId = ids[nm]
-            if SS.CustomSky then ApplySky(ids[nm]) end
-        end))
-    end
-end
-AddTextbox(L:Row(26), "Свой Sky ID", SS.SkyId, function(t)
-    if t ~= "" then
-        SS.SkyId = t
-        if SS.CustomSky then ApplySky(t) end
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+    or input.UserInputType == Enum.UserInputType.Touch) then
+        local d = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
+        )
     end
 end)
-L:EndSection()
 
-L:Section("ТЕЛО")
-AddToggle(L:Row(24), "Headless", SS.Headless, function(v) SS.Headless = v; ApplyBody() end)
-AddToggle(L:Row(24), "Korblox", SS.Korblox, function(v) SS.Korblox = v; ApplyBody() end)
-AddTextbox(L:Row(26), "Korblox Mesh ID", SS.KorbloxMesh, function(t)
-    SS.KorbloxMesh = t
-    if SS.Korblox then ApplyBody() end
-end)
-L:EndSection()
-
---=============================================================
---  СТРАНИЦА: СКИН
---=============================================================
-local skinListFrame
-L = NewLayout(pages.Skin)
-L:Section("ПОИСК")
-local searchBox = AddTextbox(L:Row(26), "Поиск скина...", "", function(t) RenderSkinList(t) end)
-AddButton(L:Row(26), "Обновить список скинов", function()
-    BuildSkinDatabase()
-    RenderSkinList(searchBox.Text)
-end)
-AddToggle(L:Row(24), "SkinLock (не сбрасывать)", SS.SkinLock, function(v) SS.SkinLock = v end)
-AddButton(L:Row(26), "Сбросить скин", function() ApplySkin(nil, nil) end, Color3.fromRGB(72, 42, 42))
-L:EndSection()
-
-L:Section("СПИСОК")
-do
-    local row = L:Row(200)
-    skinListFrame = new("ScrollingFrame", {
-        Parent = row, Size = UDim2.fromScale(1, 1),
-        BackgroundTransparency = 1, BorderSizePixel = 0,
-        CanvasSize = UDim2.new(), ScrollBarThickness = 3,
-        ScrollBarImageColor3 = C.accent,
-    })
-end
-L:EndSection()
-
-L:Section("ВРУЧНУЮ")
-AddTextbox(L:Row(26), "MeshId", "", function(t)
-    SS._mMesh = t
-    if t ~= "" then ApplySkin(t, SS._mTex) end
-end)
-AddTextbox(L:Row(26), "TextureId", "", function(t)
-    SS._mTex = t
-    if t ~= "" then ApplySkin(SS._mMesh, t) end
-end)
-L:EndSection()
-
---=============================================================
---  СТРАНИЦА: BYPASS / FPS
---=============================================================
-L = NewLayout(pages.Bypass)
-
-L:Section("АНТИЧИТ (BAC)")
-AddToggle(L:Row(24), "Bypass", SS.Bypass, function(v) SS.Bypass = v; ApplyBypass(v) end)
-AddToggle(L:Row(24), "Скрывать исполнителя", SS.BypassHide, function(v)
-    SS.BypassHide = v
-    if v then Bypass.HideExecutor() end
-end)
-AddToggle(L:Row(24), "Глушить Kick (жёстко)", SS.BypassHard, function(v) SS.BypassHard = v end)
-AddToggle(L:Row(24), "Блокировать FireServer античита", SS.BypassBlockFire, function(v) SS.BypassBlockFire = v end)
-AddToggle(L:Row(24), "Сторож пересоздания", SS.BypassWatch, function(v) SS.BypassWatch = v end)
-AddToggle(L:Row(24), "Сносить папку Security", SS.BypassNuke, function(v) SS.BypassNuke = v end)
-AddSlider(L:Row(36), "Попыток сноса", 1, 20, SS.BypassRetries, 0, function(v) SS.BypassRetries = v end)
-AddButton(L:Row(26), "ПРИМЕНИТЬ БАЙПАС СЕЙЧАС", function() DestroySecurity() end, Color3.fromRGB(52, 40, 82))
-do
-    local row = L:Row(18)
-    Bypass.statusLbl = new("TextLabel", {
-        Parent = row, Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-        Font = Enum.Font.Code, Text = "ожидание", TextSize = 11,
-        TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
-    })
-end
-do
-    local row = L:Row(26)
-    Bypass.onKickRow = row
-    local modes = {{"swallow", "Глушить Kick"}, {"rejoin", "Автовозврат"}, {"pass", "Пропускать"}}
-    for i, mm in ipairs(modes) do
-        local b = new("TextButton", {
-            Parent = row, Size = UDim2.new(1/3, -4, 1, 0),
-            Position = UDim2.new((i - 1)/3, 0, 0, 0),
-            BackgroundColor3 = (SS.OnKick == mm[1]) and C.accent or C.off,
-            Text = mm[2], Font = Enum.Font.Gotham, TextSize = 11,
-            TextColor3 = C.text, AutoButtonColor = false,
-        })
-        corner(b, 7)
-        b.MouseButton1Click:Connect(function()
-            SS.OnKick = mm[1]
-            for _, c in ipairs(row:GetChildren()) do
-                if c:IsA("TextButton") then
-                    c.BackgroundColor3 = (c.Text == mm[2]) and C.accent or C.off
-                end
-            end
-        end)
-    end
-end
-AddToggle(L:Row(24), "Тихий старт", SS.Stealth, function(v) SS.Stealth = v end)
-local stealthDelaySlider = AddSlider(L:Row(36), "Задержка изменений, с", 0, 45, SS.StealthDelay, 0, function(v) SS.StealthDelay = v end)
-AddToggle(L:Row(24), "Логировать в консоль", SS.BypassVerbose, function(v) SS.BypassVerbose = v end)
-
-AddButton(L:Row(26), "ПРЕСЕТ: VANILLA (анти-267)", function()
-    SS.Stealth = true
-    SS.StealthDelay = 30
-    SS.BypassHide = false
-    SS.BypassNuke = false
-    SS.BypassBlockFire = false
-    SS.RemoteParry = false
-    SS.CustomSky = false
-    SS.Headless = false
-    SS.Korblox = false
-    SS.FPSBoost = false
-    SS.NoEffects = false
-    SS.GuardVisual = true
-    SS.OnKick = "rejoin"
-    Guard.enabled = true
-    Guard.Hook()
-
-    local toggles = {
-        ["Скрывать исполнителя"] = false,
-        ["Сносить папку Security"] = false,
-        ["Блокировать FireServer античита"] = false,
-        ["Тихий старт"] = true,
-        ["Guard визуала"] = true,
-        ["CustomSky"] = false,
-        ["Headless"] = false,
-        ["Korblox"] = false,
-        ["FPS Boost"] = false,
-        ["Убрать эффекты"] = false,
-        ["Remote Parry"] = false,
-    }
-    for name, val in pairs(toggles) do
-        if Sync[name] then Sync[name].Set(val, false) end
-    end
-    if stealthDelaySlider then stealthDelaySlider.Set(30) end
-    if Bypass.onKickRow then
-        for _, c in ipairs(Bypass.onKickRow:GetChildren()) do
-            if c:IsA("TextButton") then
-                c.BackgroundColor3 = (c.Text == "Автовозврат") and C.accent or C.off
-            end
-        end
-    end
-
-    pcall(ApplyBody)
-    pcall(function() ApplySky(nil) end)
-    pcall(ApplyFPSBoost, false)
-    pcall(ApplyEffects, false)
-    pcall(Remote.Stop)
-    pcall(function() Bypass.HideExecutor() end)
-
-    Bypass.Status("vanilla-пресет — перезайди", C.good)
-    print("[SleepScript] Vanilla-пресет применён — перезайди в игру")
-end, Color3.fromRGB(40, 62, 46))
-
-AddHint(L:Row(96),
-    "Подменяет Security.RemoteEvent локальной приманкой, рвёт коннекты, глушит Kick " ..
-    "и BAC-скрипты, спуфит identifyexecutor.\n" ..
-    "Код 267 — серверный кик: клиент его отменить не может, скрипт просто возвращает " ..
-    "тебя на тот же сервер. Если 267 ловишь часто — жми VANILLA.")
-L:EndSection()
-
-L:Section("ПРОИЗВОДИТЕЛЬНОСТЬ")
-AddToggle(L:Row(24), "FPS Boost", SS.FPSBoost, function(v) SS.FPSBoost = v; ApplyFPSBoost(v) end)
-AddToggle(L:Row(24), "Убрать эффекты", SS.NoEffects, function(v) SS.NoEffects = v; ApplyEffects(v) end)
-AddToggle(L:Row(24), "Убрать аксессуары других", SS.NoAccessories, function(v)
-    SS.NoAccessories = v
-    ApplyAccessories(v)
-end)
-AddSlider(L:Row(36), "FPS Cap", 30, 360, SS.FPSCap, 0, function(v)
-    SS.FPSCap = v
-    pcall(function() if setfpscap then setfpscap(v) end end)
-end)
-L:EndSection()
-
---=============================================================
---  СТРАНИЦА: ОВЕРЛЕЙ
---=============================================================
-L = NewLayout(pages.Overlay)
-L:Section("ОТДЕЛЬНОЕ МЕНЮ")
-AddToggle(L:Row(24), "Overlay (FPS / Ping)", SS.Overlay, function(v)
-    SS.Overlay = v
-    if getgenv().SleepScriptOverlay then getgenv().SleepScriptOverlay.Enabled = v end
-end)
-AddToggle(L:Row(24), "График", SS.OverlayGraph, function(v) SS.OverlayGraph = v end)
-L:EndSection()
-
-L:Section("КОНФИГ")
-AddButton(L:Row(26), "Сохранить конфиг", function()
-    local ok = pcall(function() writefile("SleepScript.json", HttpService:JSONEncode(SS)) end)
-    print(ok and "[SleepScript] Конфиг сохранён" or "[SleepScript] writefile недоступен")
-end)
-AddButton(L:Row(26), "Загрузить конфиг", function()
-    local ok, data = pcall(function() return readfile("SleepScript.json") end)
-    if ok and data then
-        local t = HttpService:JSONDecode(data)
-        for k, v in pairs(t) do SS[k] = v end
-        print("[SleepScript] Конфиг загружен")
-    end
-end)
-L:EndSection()
-
-selectTab("AutoParry")
-
---=============================================================
---  СОСТОЯНИЯ МЕНЮ
---=============================================================
-local pill = new("TextButton", {
-    Parent = gui, Name = "Pill", Size = UDim2.fromOffset(46, 46),
-    Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5),
-    BackgroundColor3 = C.bg, Text = "S", Font = Enum.Font.GothamBold,
-    TextSize = 18, TextColor3 = C.accent, AutoButtonColor = false, Visible = false,
-})
-corner(pill, 23)
-new("UIStroke", {Color = C.accent, Transparency = 0.35, Thickness = 1}, pill)
-makeDraggable(pill)
-
-local menuState = "open"
-local busy = false
-
-local function SetState(s)
-    if busy or s == menuState then return end
-    busy = true
-    if s == "open" then
+-- ===================== Плавное меню (Z) =====================
+local menuOpen = true
+local function setMenu(state)
+    if state then
         main.Visible = true
-        shadow.Visible = true
-        pill.Visible = false
-        main.Size = UDim2.fromOffset(46, 46)
-        local t = TweenService:Create(main, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-            {Size = UDim2.fromOffset(WIN_W, WIN_H)})
+        scale.Scale = 0.85
+        TweenService:Create(scale,
+            TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+            { Scale = 1 }):Play()
+    else
+        local t = TweenService:Create(scale,
+            TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            { Scale = 0.85 })
         t:Play()
-        task.delay(0.3, function() busy = false end)
-    elseif s == "closed" or s == "minimized" then
-        local t = TweenService:Create(main, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
-            {Size = UDim2.fromOffset(46, 46)})
-        t:Play()
-        t.Completed:Wait()
-        main.Visible = false
-        shadow.Visible = false
-        pill.Visible = (s == "minimized")
-        busy = false
+        t.Completed:Connect(function() main.Visible = false end)
     end
-    menuState = s
-    SS.MenuState = s
 end
-
-local function ToggleMenu()
-    if menuState == "open" then SetState("closed") else SetState("open") end
-end
-
-minBtn.MouseButton1Click:Connect(function() SetState("minimized") end)
-closeBtn.MouseButton1Click:Connect(function() SetState("closed") end)
-pill.MouseButton1Click:Connect(function() SetState("open") end)
+closeBtn.MouseButton1Click:Connect(function() setMenu(false); menuOpen = false end)
 
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
-    if UserInputService:GetFocusedTextBox() then return end
     if input.KeyCode == Enum.KeyCode.Z then
-        ToggleMenu()
-    elseif input.KeyCode == Enum.KeyCode.RightShift then
-        SS.AutoParry = not SS.AutoParry
-        if Sync["AutoParry"] then Sync["AutoParry"].Set(SS.AutoParry, false) end
+        menuOpen = not menuOpen
+        setMenu(menuOpen)
+    elseif input.KeyCode == Enum.KeyCode.L then
+        CFG.AutoParry = not CFG.AutoParry
     end
 end)
 
-if SS.MenuState == "closed" or SS.MenuState == "minimized" then
-    main.Size = UDim2.fromOffset(46, 46)
-    main.Visible = false
-    shadow.Visible = false
-    pill.Visible = (SS.MenuState == "minimized")
-    menuState = SS.MenuState
-end
-
---=============================================================
---  РЕАЛИЗАЦИЯ: НЕБО (переиспользуем родной Sky) / ТЕЛО / ПЕРФ
---=============================================================
-local SKY_FACES = {"SkyboxBk","SkyboxDn","SkyboxFt","SkyboxLf","SkyboxRt","SkyboxUp"}
-local origSky = Lighting:FindFirstChildOfClass("Sky")
-local origSkyBackup = nil
-
-if origSky then
-    origSkyBackup = {}
-    for _, f in ipairs(SKY_FACES) do origSkyBackup[f] = origSky[f] end
-end
-
-ApplySky = function(id)
-    local sky = origSky or Lighting:FindFirstChild("SleepSky")
-
-    if not id or id == "" then
-        if sky and origSkyBackup then
-            for _, f in ipairs(SKY_FACES) do
-                Guard.Set(sky, f, origSkyBackup[f])
-            end
-        end
-        return
-    end
-
-    if not sky then
-        sky = new("Sky", {Name = "SleepSky", Parent = Lighting})
-        origSky = sky
-    end
-
-    for _, f in ipairs(SKY_FACES) do
-        Guard.Set(sky, f, id)
-    end
-end
-
-ApplyBody = function()
-    local ch = LP.Character
-    if not ch then return end
-    local head = ch:FindFirstChild("Head")
-    if head then
-        Guard.Set(head, "Transparency", SS.Headless and 1 or 0)
-        for _, d in pairs(head:GetDescendants()) do
-            if d:IsA("Decal") or d:IsA("Texture") then
-                Guard.Set(d, "Transparency", SS.Headless and 1 or 0)
-            end
-        end
-    end
-    if SS.Korblox then
-        local leg = ch:FindFirstChild("Right Leg")
-        if leg then
-            local mesh = leg:FindFirstChildOfClass("SpecialMesh")
-            if mesh then
-                Guard.Set(mesh, "MeshId", SS.KorbloxMesh)
-                Guard.Set(mesh, "TextureId", "")
-            end
-            local dec = leg:FindFirstChildOfClass("Decal")
-            if dec then Guard.Set(dec, "Transparency", 1) end
-        else
-            for _, n in ipairs({"RightUpperLeg", "RightLowerLeg", "RightFoot"}) do
-                local part = ch:FindFirstChild(n)
-                if part and part:IsA("MeshPart") then
-                    pcall(function()
-                        Guard.Set(part, "MeshId", SS.KorbloxMesh)
-                        Guard.Set(part, "TextureID", "")
-                    end)
-                end
-            end
-        end
-    end
-end
-
-local lightBackup = {}
-ApplyFPSBoost = function(on)
-    if on then
-        lightBackup = {
-            shadows = Lighting.GlobalShadows, fog = Lighting.FogEnd,
-            diff = Lighting.EnvironmentDiffuseScale, spec = Lighting.EnvironmentSpecularScale,
-        }
-        Guard.Set(Lighting, "GlobalShadows", false)
-        Guard.Set(Lighting, "FogEnd", 100000)
-        Guard.Set(Lighting, "EnvironmentDiffuseScale", 0)
-        Guard.Set(Lighting, "EnvironmentSpecularScale", 0)
-        for _, v in pairs(Lighting:GetChildren()) do
-            if v:IsA("PostEffect") then Guard.Set(v, "Enabled", false) end
-        end
-        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
-        pcall(function() if setfpscap then setfpscap(SS.FPSCap) end end)
-    else
-        if lightBackup.shadows ~= nil then
-            Guard.Set(Lighting, "GlobalShadows", lightBackup.shadows)
-            Guard.Set(Lighting, "FogEnd", lightBackup.fog)
-            Guard.Set(Lighting, "EnvironmentDiffuseScale", lightBackup.diff)
-            Guard.Set(Lighting, "EnvironmentSpecularScale", lightBackup.spec)
-        end
-        for _, v in pairs(Lighting:GetChildren()) do
-            if v:IsA("PostEffect") then Guard.Set(v, "Enabled", true) end
-        end
-        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
-    end
-end
-
-ApplyEffects = function(on)
-    for _, v in pairs(workspace:GetDescendants()) do
-        if v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Beam") then
-            v.Enabled = not on
-        end
-    end
-end
-
-ApplyAccessories = function(on)
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr ~= LP and plr.Character then
-            for _, v in pairs(plr.Character:GetChildren()) do
-                if v:IsA("Accessory") or v:IsA("Hat") then
-                    for _, d in pairs(v:GetDescendants()) do
-                        if d:IsA("BasePart") or d:IsA("Decal") then
-                            d.Transparency = on and 1 or 0
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
-
---=============================================================
---  [БАЙПАС] ЯДРО
---=============================================================
-Bypass.Log = function(t)
-    if SS.BypassVerbose then print("[SleepScript][BAC] " .. tostring(t)) end
-end
-
-Bypass.Status = function(text, col)
-    if not Bypass.statusLbl then return end
-    Bypass.statusLbl.Text = text
-    Bypass.statusLbl.TextColor3 = col or C.dim
-end
-
-Bypass.RefreshStatus = function()
-    local hookTxt = Bypass.hooked and "хук:да" or "хук:нет"
-    local spoofTxt = Bypass.spoofed > 0 and "спуф:да" or "спуф:нет"
-    local col = (Bypass.hooked and Bypass.spoofed > 0) and C.accent2 or C.warn
-    Bypass.Status(("%s %s • kick %d • скриптов %d • снос %d")
-        :format(hookTxt, spoofTxt, Bypass.kicks, Bypass.scripted, Bypass.killed), col)
-end
-
-local function waitFor(getter, timeout)
-    local t0 = os.clock()
-    while os.clock() - t0 < (timeout or 6) do
-        local v = getter()
-        if v then return v end
-        task.wait(0.08)
-    end
-    return getter()
-end
-
-local function isOurDummy(inst)
-    return inst and Bypass.mine[inst] == true
-end
-
-local function getGlobal(name)
-    local ok, v = pcall(function() return getfenv(0)[name] end)
-    if ok and v ~= nil then return v end
-    return _G[name]
-end
-
-Bypass.SeverConnections = function(remote)
-    Bypass.blocked[remote] = true
-    if not getconnections then return end
-    local ok, list = pcall(getconnections, remote.OnClientEvent)
-    if not ok or type(list) ~= "table" then return end
-    for _, c in ipairs(list) do
-        pcall(function() c:Disconnect() end)
-    end
-end
-
-Bypass.Poison = function()
-    if not SS.Bypass then return end
-    local sec = ReplicatedStorage:FindFirstChild("Security")
-
-    if not sec then
-        sec = new("Folder", {Name = "Security", Parent = ReplicatedStorage})
-        Bypass.mine[sec] = true
-        Bypass.recreated += 1
-    elseif not isOurDummy(sec) then
-        Bypass.recreated += 1
-    end
-
-    for _, d in ipairs(sec:GetDescendants()) do
-        if d:IsA("LuaSourceContainer") then
-            pcall(function() d.Disabled = true end)
-        end
-    end
-
-    for _, d in ipairs(sec:GetChildren()) do
-        if isOurDummy(d) then continue end
-        if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
-            Bypass.SeverConnections(d)
-            pcall(function() d:Destroy() end)
-            Bypass.killed += 1
-        elseif d.Name == "" then
-            pcall(function() d:Destroy() end)
-            Bypass.killed += 1
-        end
-    end
-
-    local hasDummy = false
-    for _, d in ipairs(sec:GetChildren()) do
-        if isOurDummy(d) and d.Name == "RemoteEvent" then hasDummy = true break end
-    end
-    if not hasDummy then
-        local dummy = new("RemoteEvent", {Name = "RemoteEvent", Parent = sec})
-        Bypass.mine[dummy] = true
-        dummy.OnClientEvent:Connect(function() end)
-    end
-
-    if SS.BypassNuke then
-        for _, d in ipairs(sec:GetChildren()) do
-            if not isOurDummy(d) then pcall(function() d:Destroy() end) end
-        end
-    end
-end
-
-Bypass.KillDeviceChecker = function(attempts)
-    attempts = math.max(1, attempts or 1)
-    local ps = LP:FindFirstChild("PlayerScripts")
-    if not ps then return 0 end
-    local found = 0
-
-    for i = 1, attempts do
-        local targets = {}
-        local client = ps:FindFirstChild("Client")
-        local dc = client and client:FindFirstChild("DeviceChecker")
-        if dc then table.insert(targets, dc) end
-        if #targets == 0 then
-            for _, v in ipairs(ps:GetDescendants()) do
-                if v.Name:lower():find("devicechecker", 1, true) then
-                    table.insert(targets, v)
-                end
-            end
-        end
-        for _, t in ipairs(targets) do
-            if t:IsA("LuaSourceContainer") then
-                pcall(function() t.Disabled = true end)
-            end
-            pcall(function() t:Destroy() end)
-            found += 1
-        end
-        if found > 0 then break end
-        task.wait(0.3)
-    end
-    return found
-end
-
-local function matchesBac(nm)
-    if nm == "bac" or nm:match("^bac[_%-]") or nm:match("[_%-]bac$") then return true end
-    for _, p in ipairs({"security", "anticheat", "anti_cheat", "anti cheat", "devicechecker", "exploit"}) do
-        if nm:find(p, 1, true) then return true end
-    end
-    return false
-end
-
-Bypass.KillBacScripts = function()
-    local ps = LP:FindFirstChild("PlayerScripts")
-    if not ps then return 0 end
-    local n = 0
-    for _, v in ipairs(ps:GetDescendants()) do
-        if not (v:IsA("LocalScript") or v:IsA("Script") or v:IsA("ModuleScript")) then continue end
-        if matchesBac(v.Name:lower()) then
-            pcall(function() v.Disabled = true end)
-            pcall(function() v:Destroy() end)
-            n += 1
-        end
-    end
-    return n
-end
-
-Bypass.HideExecutor = function()
-    if not SS.BypassHide then return end
-    if not hookfunction then
-        Bypass.Log("hookfunction недоступен — спуф не встал")
-        Bypass.RefreshStatus()
-        return
-    end
-
-    local done = 0
-    local function cloak(name, fake)
-        local fn = getGlobal(name)
-        if not fn then return end
-        if pcall(hookfunction, fn, fake) then done += 1 end
-    end
-
-    cloak("identifyexecutor", function() return "Roblox", "1.0.0" end)
-    cloak("getexecutorname",  function() return "Roblox" end)
-    cloak("getexploit",       function() return "Roblox" end)
-
-    Bypass.spoofed = done
-    Bypass.Log("спуф исполнителя: " .. done .. " функций")
-    Bypass.RefreshStatus()
-end
-
-Bypass.Rejoin = function()
-    if os.clock() - Bypass.rejoinCD < 3 then return end
-    Bypass.rejoinCD = os.clock()
-    local ts = game:GetService("TeleportService")
-    local ok = pcall(function() ts:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP) end)
-    if not ok then pcall(function() ts:Teleport(game.PlaceId) end) end
-end
-
-Bypass.Hook = function()
-    if Bypass.hooked then return true end
-    if not getnamecallmethod then return false end
-
-    local function handler(self, ...)
-        local method = getnamecallmethod()
-        if SS.Bypass then
-            if method == "Kick" and (self == LP or self == Players) then
-                Bypass.kicks += 1
-                local msg = tostring((...))
-                table.insert(Bypass.log, ("%s  %s"):format(os.date("%H:%M:%S"), msg))
-                if #Bypass.log > 4 then table.remove(Bypass.log, 1) end
-                print("[SleepScript][BAC] Kick перехвачен: " .. msg)
-                Bypass.RefreshStatus()
-
-                local isBAC = msg:find("BAC", 1, true) or msg:find("267", 1, true)
-                if isBAC then
-                    Bypass.Status("BAC 267 — возврат на сервер...", C.bad)
-                    task.spawn(function()
-                        task.wait(0.7)
-                        pcall(Bypass.Rejoin)
-                    end)
-                    return
-                end
-
-                if SS.OnKick == "rejoin" then
-                    task.spawn(Bypass.Rejoin)
-                end
-                if SS.OnKick ~= "pass" then return end
-            elseif (method == "FireServer" or method == "InvokeServer") and SS.BypassBlockFire then
-                local parent = self.Parent
-                if Bypass.blocked[self]
-                or (parent and (parent.Name == "Security"
-                    or (parent.Parent and parent.Parent.Name == "Security"))) then
-                    return
-                end
-            end
-        end
-        return Bypass.old(self, ...)
-    end
-
-    local ok = pcall(function()
-        if getrawmetatable and setreadonly and newcclosure then
-            local mt = getrawmetatable(game)
-            Bypass.old = mt.__namecall
-            setreadonly(mt, false)
-            mt.__namecall = newcclosure(handler)
-            setreadonly(mt, true)
-        elseif hookmetamethod then
-            Bypass.old = hookmetamethod(game, "__namecall", handler)
-        else
-            error("нет доступа к метатаблице")
-        end
-    end)
-
-    if ok and Bypass.old then
-        Bypass.hooked = true
-        Bypass.Log("хук __namecall установлен")
-        Bypass.RefreshStatus()
-        return true
-    end
-
-    Bypass.old = nil
-    Bypass.Log("хук не установлен")
-    Bypass.RefreshStatus()
-    return false
-end
-
-Bypass.Unhook = function()
-    if not Bypass.hooked or not Bypass.old then return end
-    pcall(function()
-        if getrawmetatable and setreadonly then
-            local mt = getrawmetatable(game)
-            setreadonly(mt, false)
-            mt.__namecall = Bypass.old
-            setreadonly(mt, true)
-        end
-    end)
-    Bypass.hooked = false
-    Bypass.old = nil
-    if Remote and Remote.enabled and Remote.namecallHooked then
-        Remote.HookNamecall(true)
-    end
-end
-
-Bypass.DisconnectWatch = function()
-    for _, c in ipairs(Bypass.conns) do pcall(function() c:Disconnect() end) end
-    table.clear(Bypass.conns)
-end
-
-Bypass.Watch = function()
-    local function add(conn)
-        if conn then table.insert(Bypass.conns, conn) end
-    end
-
-    add(ReplicatedStorage.ChildAdded:Connect(function(inst)
-        if inst.Name == "Security" and SS.Bypass then
-            task.delay(0.1, function() Bypass.Poison() end)
-        end
-    end))
-
-    local sec = ReplicatedStorage:FindFirstChild("Security")
-    if sec then
-        add(sec.ChildAdded:Connect(function()
-            if SS.Bypass then task.delay(0.05, function() Bypass.Poison() end) end
-        end))
-    end
-
-    local ps = LP:FindFirstChild("PlayerScripts")
-    local client = ps and ps:FindFirstChild("Client")
-    if client then
-        add(client.ChildAdded:Connect(function(inst)
-            if matchesBac(inst.Name:lower()) and SS.Bypass then
-                task.delay(0.05, function()
-                    pcall(function() inst.Disabled = true end)
-                    pcall(function() inst:Destroy() end)
-                end)
-            end
-        end))
-    end
-end
-
-Bypass.Loop = function()
-    if Bypass.looping then return end
-    Bypass.looping = true
-    task.spawn(function()
-        local tick = 0
-        while Bypass.active and SS.Bypass do
-            tick += 1
-            pcall(function()
-                if SS.BypassWatch then Bypass.Poison() end
-                Bypass.KillDeviceChecker(1)
-                if tick % 4 == 0 then
-                    local n = Bypass.KillBacScripts()
-                    if n > 0 then Bypass.scripted += n end
-                end
-                if not Bypass.hooked then Bypass.Hook() end
-            end)
-            task.wait(0.25)
-        end
-        Bypass.looping = false
-    end)
-end
-
-Bypass.Start = function()
-    if Bypass.active then return end
-    Bypass.active = true
-    Bypass.Hook()
-    Bypass.HideExecutor()
-    local scripts = Bypass.KillBacScripts()
-    Bypass.scripted += scripts
-    Bypass.Log("BAC-скриптов выпилено: " .. scripts)
-    Bypass.Status("инициализация...", C.accent2)
-
-    task.spawn(function()
-        waitFor(function() return ReplicatedStorage:FindFirstChild("Security") end, 8)
-        for i = 1, math.max(1, SS.BypassRetries) do
-            Bypass.Poison()
-            if Bypass.KillDeviceChecker(1) > 0 then break end
-            task.wait(0.2)
-        end
-        Bypass.Log(("приманка %d, снос %d, kick %d")
-            :format(Bypass.recreated, Bypass.killed, Bypass.kicks))
-        Bypass.RefreshStatus()
-        if SS.BypassWatch then Bypass.Watch() end
-        Bypass.Loop()
-    end)
-end
-
-Bypass.Stop = function()
-    Bypass.active = false
-    Bypass.DisconnectWatch()
-    Bypass.Unhook()
-    Bypass.Status("выключен", C.dim)
-    Bypass.Log("байпас снят")
-end
-
-DestroySecurity = function()
-    Bypass.Poison()
-    Bypass.KillDeviceChecker(SS.BypassRetries)
-    Bypass.scripted += Bypass.KillBacScripts()
-    Bypass.RefreshStatus()
-    Bypass.Log("ручной снос")
-end
-
-ApplyBypass = function(on)
-    if on then Bypass.Start() else Bypass.Stop() end
-end
-
---=============================================================
---  РЕАЛИЗАЦИЯ: СКИНЫ
---=============================================================
-local SkinDB = {}
-
-local function ExtractSkin(inst)
-    local mesh, tex
-    for _, d in pairs(inst:GetDescendants()) do
-        if not mesh and d:IsA("SpecialMesh") and d.MeshId ~= "" then mesh = d.MeshId end
-        if not mesh and d:IsA("MeshPart") and d.MeshId ~= "" then mesh = d.MeshId end
-        if not tex and d:IsA("Decal") and d.Texture ~= "" then tex = d.Texture end
-        if not tex and d:IsA("Texture") and d.Texture ~= "" then tex = d.Texture end
-        if not tex and d:IsA("SpecialMesh") and d.TextureId ~= "" then tex = d.TextureId end
-        if mesh and tex then break end
-    end
-    if mesh or tex then
-        local nm = inst.Name:gsub("^Sword_", ""):gsub("_Sword$", ""):gsub("_", " ")
-        if nm == "" or nm == " " then nm = inst.Name end
-        table.insert(SkinDB, {Name = nm, Mesh = mesh, Tex = tex})
-    end
-end
-
-BuildSkinDatabase = function()
-    SkinDB = {}
-    local roots = {}
-    local function push(c) if c then table.insert(roots, c) end end
-    push(ReplicatedStorage:FindFirstChild("Swords"))
-    push(ReplicatedStorage:FindFirstChild("SwordSkins"))
-    push(ReplicatedStorage:FindFirstChild("Skins"))
-    local assets = ReplicatedStorage:FindFirstChild("Assets")
-    if assets then
-        push(assets:FindFirstChild("Swords"))
-        push(assets:FindFirstChild("Skins"))
-        push(assets:FindFirstChild("SwordSkins"))
-    end
-    for _, root in ipairs(roots) do
-        for _, ch in ipairs(root:GetChildren()) do
-            pcall(ExtractSkin, ch)
-        end
-    end
-    table.sort(SkinDB, function(a, b) return a.Name < b.Name end)
-    print("[SleepScript] Найдено скинов: " .. #SkinDB)
-end
-
-local function getSword()
-    local ch = LP.Character
-    if not ch then return nil end
-    return ch:FindFirstChild("Sword") or ch:FindFirstChildOfClass("Tool")
-end
-
-ApplySkin = function(mesh, tex)
-    local sword = getSword()
-    if not sword then return end
-    for _, d in pairs(sword:GetDescendants()) do
-        if d:IsA("SpecialMesh") then
-            if mesh then d.MeshId = mesh end
-            if tex then d.TextureId = tex end
-        elseif d:IsA("MeshPart") then
-            if mesh then pcall(function() d.MeshId = mesh end) end
-        elseif d:IsA("Decal") or d:IsA("Texture") then
-            if tex then d.Texture = tex end
-        end
-    end
-end
-
-RenderSkinList = function(filter)
-    if not skinListFrame then return end
-    filter = filter or ""
-    for _, v in ipairs(skinListFrame:GetChildren()) do
-        if v:IsA("TextButton") then v:Destroy() end
-    end
-    local n = 0
-    for _, skin in ipairs(SkinDB) do
-        if filter == "" or skin.Name:lower():find(filter:lower(), 1, true) then
-            n += 1
-            local b = new("TextButton", {
-                Parent = skinListFrame,
-                Size = UDim2.new(1, -8, 0, 24),
-                Position = UDim2.new(0, 0, 0, (n - 1) * 28),
-                BackgroundColor3 = C.off, Text = "   " .. skin.Name,
-                Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = C.text,
-                TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false,
-            })
-            corner(b, 6)
-            b.MouseButton1Click:Connect(safe(function()
-                SS._curMesh, SS._curTex = skin.Mesh, skin.Tex
-                ApplySkin(skin.Mesh, skin.Tex)
-                TweenService:Create(b, TweenInfo.new(0.15), {BackgroundColor3 = C.accent}):Play()
-                task.delay(0.35, function()
-                    TweenService:Create(b, TweenInfo.new(0.3), {BackgroundColor3 = C.off}):Play()
-                end)
-            end))
-        end
-    end
-    skinListFrame.CanvasSize = UDim2.new(0, 0, 0, n * 28 + 6)
-end
-
-BuildSkinDatabase()
-RenderSkinList("")
-
---=============================================================
---  АВТОПАРРИ
---=============================================================
-local LastClick, LastBallHit, IsParrying, frameCounter = 0, nil, false, 0
+-- ===================== Логика AutoParry =====================
+local LastClick, LastBallHit, IsParrying = 0, nil, false
+local frameCounter = 0
 local BallsFolder = workspace:FindFirstChild("Balls") or workspace:WaitForChild("Balls", 5)
 
 local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
--- FX-кольцо (в workspace по умолчанию — дети Camera BAC замечает чаще)
-local fxPart, fxMesh
-local FX_FOLDER = nil
-
-function setFX(on)
-    if on then
-        if fxPart then fxPart.Transparency = 0.3; return end
-        local parent
-        if SS.FXInWorkspace then
-            FX_FOLDER = FX_FOLDER or workspace:FindFirstChild("SleepFX")
-            if not FX_FOLDER then
-                FX_FOLDER = new("Folder", {Name = "SleepFX", Parent = workspace})
-            end
-            parent = FX_FOLDER
-        else
-            parent = cam() or workspace
-        end
-        fxPart = new("Part", {
-            Name = "FX", Parent = parent,
-            Anchored = true, CanCollide = false, CanTouch = false, CanQuery = false,
-            Transparency = 0.3, Material = Enum.Material.Neon,
-            Size = Vector3.new(1, 1, 1), CastShadow = false,
-        })
-        fxMesh = new("SpecialMesh", {MeshId = "rbxassetid://3270017"}, fxPart)
-    else
-        if fxPart then fxPart.Transparency = 1 end
-    end
-end
-
-if SS.ParryVisuals then setFX(true) end
+-- Крутилка радиуса
+local r = Instance.new("Part")
+r.Name = "SleepCircle"
+r.Parent = workspace
+r.Anchored, r.CanCollide = true, false
+r.Transparency = 0.3
+r.Material = Enum.Material.Neon
+r.Color = Color3.fromRGB(138, 100, 255)
+local m = Instance.new("SpecialMesh", r)
+m.MeshId = "rbxassetid://3270017"
 
 local function GetBall()
     if not BallsFolder then return nil end
@@ -1893,71 +443,85 @@ local function GetBall()
 end
 
 local function IsTargeted()
-    if not LP.Character then return false end
-    return LP.Character:GetAttribute("Targeted") == true
-        or LP.Character:FindFirstChild("Highlight") ~= nil
+    if not Player.Character then return false end
+    return Player.Character:GetAttribute("Targeted") == true
+        or Player.Character:FindFirstChild("Highlight") ~= nil
 end
 
 local function SendClick(isClashing, ball)
-    if not SS.AutoParry or IsParrying then return end
+    if not CFG.AutoParry or IsParrying then return end
     local now = tick()
-    local cd = isClashing and SS.ClashSpeed or SS.NormalSpeed
+    local cd = isClashing and CFG.ClashSpeed or CFG.NormalSpeed
+
     if not isClashing and LastBallHit == ball and (now - LastClick) < 0.5 then return end
     if (now - LastClick) < cd then return end
-    IsParrying, LastClick, LastBallHit = true, now, ball
 
-    local fired = false
-    if SS.RemoteParry and Remote.ready and Remote.tokenFound then
-        fired = Remote.Fire(cam() and cam().CFrame)
-    end
-    if not fired and (SS.ClickFallback or not SS.RemoteParry) then
-        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-    end
+    IsParrying = true
+    LastClick = now
+    LastBallHit = ball
+
+    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
 
     task.delay(cd, function() IsParrying = false end)
 end
 
 local function UpdateVisuals(root, distance, state)
-    if not SS.ParryVisuals or not fxPart or not fxPart.Parent then return end
-    fxPart.CFrame = root.CFrame * CFrame.new(0, -2.6, 0) * CFrame.Angles(math.rad(90), 0, 0)
+    r.CFrame = root.CFrame * CFrame.new(0, -2.6, 0) * CFrame.Angles(math.rad(90), 0, 0)
     local targetSize = math.clamp(distance * 0.8, 5, 65)
-    fxMesh.Scale = fxMesh.Scale:Lerp(Vector3.new(targetSize, targetSize, 0.5), 0.5)
+    m.Scale = m.Scale:Lerp(Vector3.new(targetSize, targetSize, 0.5), 0.5)
+
     if state == "clash" then
-        fxPart.Color, fxPart.Transparency = Color3.fromRGB(255, 0, 0), 0.05
+        r.Color = Color3.fromRGB(255, 70, 70)
+        r.Transparency = 0.05
     elseif state == "target" then
-        fxPart.Color, fxPart.Transparency = Color3.fromRGB(0, 255, 255), 0.1
+        r.Color = Color3.fromRGB(0, 230, 255)
+        r.Transparency = 0.1
     else
-        fxPart.Color, fxPart.Transparency = Color3.fromRGB(150, 240, 255), 0.5
+        r.Color = Color3.fromRGB(138, 100, 255)
+        r.Transparency = 0.5
     end
 end
 
 RunService.PostSimulation:Connect(function()
-    if not SS.AutoParry then
-        if fxPart then fxPart.Transparency = 1 end
+    if not CFG.AutoParry then
+        if r then r.Transparency = 1 end
         return
     end
-    local Char = LP.Character
+
+    local Char = Player.Character
     local Root = Char and Char:FindFirstChild("HumanoidRootPart")
-    if not Root then if fxPart then fxPart.Transparency = 1 end return end
+    if not Root then
+        if r then r.Transparency = 1 end
+        return
+    end
 
     local Ball = GetBall()
-    if not Ball then if fxPart then fxPart.Transparency = 1 end return end
+    if not Ball then
+        if r then r.Transparency = 1 end
+        return
+    end
 
     local BallPos, PlayerPos = Ball.Position, Root.Position
     local Velocity = Ball.AssemblyLinearVelocity
     local Speed = Velocity.Magnitude
     local Distance = (PlayerPos - BallPos).Magnitude
-    local dot = (PlayerPos - BallPos).Unit:Dot(Velocity.Unit)
+
+    local directionToPlayer = (PlayerPos - BallPos).Unit
+    local velocityDirection = Velocity.Unit
+    local dot = directionToPlayer:Dot(velocityDirection)
 
     if dot < 0 then LastBallHit = nil end
 
     local Targeted = IsTargeted()
-    local IsClashing = Targeted and Distance <= SS.ClashDistance
+    local IsClashing = Targeted and Distance <= CFG.ClashDistance
 
-    frameCounter += 1
-    if fxPart and frameCounter % 2 == 0 then
+    frameCounter = frameCounter + 1
+    if CFG.Visuals and frameCounter % 2 == 0 then
+        r.Transparency = 0.3
         UpdateVisuals(Root, Distance, IsClashing and "clash" or (Targeted and "target" or "neutral"))
+    elseif not CFG.Visuals then
+        r.Transparency = 1
     end
 
     if IsClashing then
@@ -1965,160 +529,20 @@ RunService.PostSimulation:Connect(function()
     elseif Targeted and dot > 0 then
         local Ping = (NetworkStats and NetworkStats.Value / 1000) or 0.04
         local TimeToHit = Distance / math.max(Speed, 1)
-        local Threshold = SS.DistanceToParry + (SS.PingBased and Ping * SS.PingBasedOffset or 0)
-        if Speed > 150 then Threshold *= 1.15 end
-        if TimeToHit <= Threshold or Distance <= SS.EmergencyRadius then
+        local PredictionThreshold = CFG.DistanceToParry
+            + (CFG.PingBased and (Ping * CFG.PingBasedOffset) or 0)
+
+        if Speed > 150 then
+            PredictionThreshold = PredictionThreshold * 1.15
+        end
+
+        if TimeToHit <= PredictionThreshold or Distance <= CFG.EmergencyRadius then
             SendClick(false, Ball)
         end
     end
 end)
 
-LP.CharacterAdded:Connect(function()
-    LastBallHit, IsParrying = nil, false
-    task.wait(1)
-    ApplyBody()
-    if SS._curMesh or SS._curTex then
-        task.wait(0.5)
-        ApplySkin(SS._curMesh, SS._curTex)
-    end
-    if SS.Bypass then
-        task.wait(0.4)
-        pcall(Bypass.Poison)
-        pcall(Bypass.KillDeviceChecker, SS.BypassRetries)
-    end
-    if Remote.enabled then
-        task.wait(0.4)
-        pcall(Remote.HookAll)
-    end
+Player.CharacterAdded:Connect(function()
+    LastBallHit = nil
+    IsParrying = false
 end)
-
---=============================================================
---  ОВЕРЛЕЙ FPS / PING
---=============================================================
-local ov = new("ScreenGui", {
-    Name = "SleepScriptOverlay", ResetOnSpawn = false,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true,
-    Enabled = SS.Overlay,
-})
-getgenv().SleepScriptOverlay = ov
-pcall(function() if syn and syn.protect_gui then syn.protect_gui(ov) end end)
-if not ov.Parent then ov.Parent = (gethui and gethui()) or CoreGui end
-
-local panel = new("Frame", {
-    Parent = ov, Size = UDim2.fromOffset(170, 74), Position = UDim2.new(0, 20, 0, 90),
-    BackgroundColor3 = C.bg, BackgroundTransparency = 0.15, BorderSizePixel = 0,
-})
-corner(panel, 10)
-new("UIStroke", {Color = C.accent, Transparency = 0.5, Thickness = 1}, panel)
-new("UIPadding", {PaddingTop = UDim.new(0, 8), PaddingLeft = UDim.new(0, 10),
-    PaddingRight = UDim.new(0, 10)}, panel)
-makeDraggable(panel)
-
-new("TextLabel", {
-    Parent = panel, Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1,
-    Font = Enum.Font.GothamBold, Text = "SleepScript", TextSize = 11,
-    TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Left,
-})
-local fpsLbl = new("TextLabel", {
-    Parent = panel, Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 16),
-    BackgroundTransparency = 1, Font = Enum.Font.Code, Text = "FPS  0",
-    TextSize = 15, TextColor3 = C.accent2, TextXAlignment = Enum.TextXAlignment.Left,
-})
-local pingLbl = new("TextLabel", {
-    Parent = panel, Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 36),
-    BackgroundTransparency = 1, Font = Enum.Font.Code, Text = "PING  0 ms",
-    TextSize = 15, TextColor3 = C.accent, TextXAlignment = Enum.TextXAlignment.Left,
-})
-local graph = new("Frame", {
-    Parent = panel, Size = UDim2.new(1, 0, 0, 8), Position = UDim2.new(0, 0, 1, -10),
-    BackgroundColor3 = C.off, BorderSizePixel = 0, ClipsDescendants = true,
-})
-corner(graph, 4)
-
-local frames, lastClock, hist = 0, os.clock(), {}
-RunService.RenderStepped:Connect(function()
-    frames += 1
-    if os.clock() - lastClock >= 0.5 then
-        local fps = math.floor(frames / (os.clock() - lastClock) + 0.5)
-        frames, lastClock = 0, os.clock()
-        if ov.Enabled then
-            fpsLbl.Text = "FPS  " .. fps
-            fpsLbl.TextColor3 = fps >= 60 and C.accent2 or (fps >= 30 and C.warn or C.bad)
-            local ping = NetworkStats and math.floor(NetworkStats.Value) or 0
-            pingLbl.Text = "PING  " .. ping .. " ms"
-            pingLbl.TextColor3 = ping < 80 and C.accent2 or (ping < 150 and C.warn or C.bad)
-
-            table.insert(hist, fps)
-            if #hist > 24 then table.remove(hist, 1) end
-            for _, v in ipairs(graph:GetChildren()) do
-                if v:IsA("Frame") then v:Destroy() end
-            end
-            if SS.OverlayGraph then
-                for i, v in ipairs(hist) do
-                    new("Frame", {
-                        Parent = graph,
-                        Size = UDim2.new(1 / 24, -1, math.clamp(v / 240, 0.05, 1), 0),
-                        Position = UDim2.new((i - 1) / 24, 0, 1, 0),
-                        AnchorPoint = Vector2.new(0, 1),
-                        BackgroundColor3 = C.accent2, BorderSizePixel = 0,
-                    })
-                end
-            end
-        end
-    end
-end)
-
---=============================================================
---  ИНИЦИАЛИЗАЦИЯ
---=============================================================
-task.spawn(function()
-    if SS.Bypass then ApplyBypass(true) end
-
-    -- Guard визуала — ставим сразу, baseline снимается при первом Set
-    if SS.GuardVisual then
-        Guard.enabled = true
-        Guard.Hook()
-    end
-
-    if SS.RemoteParry then
-        task.wait(1)
-        pcall(Remote.Start)
-    end
-
-    if SS.InstantVisual then
-        -- применяем до слепка BAC
-        task.wait(0.3)
-    elseif SS.Stealth then
-        task.wait(SS.StealthDelay)
-    end
-
-    if cam() then Guard.Set(cam(), "FieldOfView", SS.FOV) end
-    if SS.CustomSky then ApplySky(SS.SkyId) end
-    if SS.FPSBoost then ApplyFPSBoost(true) end
-    if SS.NoEffects then ApplyEffects(true) end
-    if SS.NoAccessories then ApplyAccessories(true) end
-end)
-
--- держим FOV, если игра его сбрасывает
-task.spawn(function()
-    while task.wait(0.5) do
-        if SS.KeepFOV and cam() then
-            Guard.ours = true
-            local cur = cam().FieldOfView
-            Guard.ours = false
-            if math.abs(cur - SS.FOV) > 0.01 then
-                Guard.Set(cam(), "FieldOfView", SS.FOV)
-            end
-        end
-    end
-end)
-
-task.spawn(function()
-    while task.wait(1.5) do
-        if SS.SkinLock and (SS._curMesh or SS._curTex) then
-            pcall(ApplySkin, SS._curMesh, SS._curTex)
-        end
-    end
-end)
-
-print("[SleepScript] Загружено. Z — меню, RightShift — AutoParry")
