@@ -34,14 +34,38 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Player = Players.LocalPlayer
 
--- ==================== BAC BYPASS ====================
-local BAC_NAMES = { "Security", "BAC", "AntiCheat", "Anti_Cheat", "Anti-Cheat", "Anticheat" }
+-- ==================== ПОИСК BAC ====================
+local function IsBACName(name)
+    name = string.lower(tostring(name))
+    return string.find(name, "security", 1, true)
+        or string.find(name, "anticheat", 1, true)
+        or string.find(name, "anti_cheat", 1, true)
+        or string.find(name, "anti-cheat", 1, true)
+        or string.find(name, "checker", 1, true)
+        or name == "bac"
+        or name == "ac"
+end
+
+local BAC_NAMES = { "Security", "BAC", "AntiCheat", "Anti_Cheat", "Anti-Cheat", "Anticheat", "AC" }
 local DEVICE_NAMES = { "DeviceChecker", "Checker", "AntiCheat", "ClientChecker" }
 
 local function KillBAC()
+    local found = {}
+
     for _, name in ipairs(BAC_NAMES) do
         local o = ReplicatedStorage:FindFirstChild(name)
-        if o then pcall(function() o:Destroy() end) end
+        if o then
+            table.insert(found, "RS." .. name)
+            pcall(function() o:Destroy() end)
+        end
+    end
+
+    -- добиваем по имени, если переименовали
+    for _, o in ipairs(ReplicatedStorage:GetChildren()) do
+        if IsBACName(o.Name) then
+            table.insert(found, "RS." .. o.Name)
+            pcall(function() o:Destroy() end)
+        end
     end
 
     local ps = Player:FindFirstChild("PlayerScripts")
@@ -49,42 +73,57 @@ local function KillBAC()
     if client then
         for _, name in ipairs(DEVICE_NAMES) do
             local d = client:FindFirstChild(name)
-            if d then pcall(function() d:Destroy() end) end
+            if d then
+                table.insert(found, "Client." .. name)
+                pcall(function() d:Destroy() end)
+            end
         end
     end
+
+    return found
 end
 
-if SETTINGS.AntiCheat then
-    KillBAC()
-    task.spawn(function()
-        while task.wait(2) do
-            if SETTINGS.AntiCheat then KillBAC() end
-        end
-    end)
-end
+-- ==================== ГЛАВНЫЙ ХУК ====================
+-- Всё висит на __namecall: и гашение кика, и блокировка отчётов BAC на сервер
+pcall(function()
+    local mt = getrawmetatable(game)
+    local oldNamecall = mt.__namecall
+    setreadonly(mt, false)
 
--- ==================== ANTIKICK ====================
--- Kick идёт через __namecall, поэтому хукаем метатаблицу game, а не сам метод
-if SETTINGS.AntiKick then
-    pcall(function()
-        local mt = getrawmetatable(game)
-        local oldNamecall = mt.__namecall
-        setreadonly(mt, false)
+    local wrap = newcclosure or function(f) return f end
 
-        local wrap = newcclosure or function(f) return f end
+    mt.__namecall = wrap(function(self, ...)
+        local method = getnamecallmethod()
 
-        mt.__namecall = wrap(function(self, ...)
-            if getnamecallmethod() == "Kick" then
+        if method == "Kick" then
+            if SETTINGS.AntiKick then
                 local msg = string.lower(tostring((...)))
-                if string.find(msg, "bac") or string.find(msg, "exploit") then
+                if string.find(msg, "bac", 1, true) or string.find(msg, "exploit", 1, true) then
                     return
                 end
             end
-            return oldNamecall(self, ...)
-        end)
+        elseif method == "FireServer" then
+            if SETTINGS.AntiCheat then
+                local p = self.Parent
+                local depth = 0
+                while p and depth < 3 do
+                    if IsBACName(p.Name) then
+                        return
+                    end
+                    p = p.Parent
+                    depth = depth + 1
+                end
+            end
+        end
 
-        setreadonly(mt, true)
+        return oldNamecall(self, ...)
     end)
+
+    setreadonly(mt, true)
+end)
+
+if SETTINGS.AntiCheat then
+    print("[Sleepscript] BAC killed:", table.concat(KillBAC(), ", "))
 end
 
 -- ==================== ТЕМА ====================
@@ -409,7 +448,7 @@ end)
 Section("Защита")
 Toggle("AntiCheat (kill BAC)", SETTINGS.AntiCheat, function(v)
     SETTINGS.AntiCheat = v
-    if v then KillBAC() end
+    if v then print("[Sleepscript] BAC killed:", table.concat(KillBAC(), ", ")) end
 end)
 Toggle("AntiKick", SETTINGS.AntiKick, function(v) SETTINGS.AntiKick = v end)
 
@@ -470,7 +509,6 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
--- круг создаём, но в дерево пускаем только когда он реально нужен
 local r = Instance.new("Part")
 r.Name = "Circle"
 r.Anchored = true
