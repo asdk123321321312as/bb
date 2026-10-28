@@ -1,7 +1,7 @@
 --[[
     ╔══════════════════════════════════════════╗
-    ║        S L E E P S C R I P T  v3 (BAC-safe) ║
-    ║        Blade Ball • AutoParry               ║
+    ║      S L E E P S C R I P T  v4 (GHOST)      ║
+    ║      Blade Ball • AntiParry + Anti-BAC      ║
     ║   Меню: [ Z ]   •   AutoParry вкл/выкл: [L] ║
     ╚══════════════════════════════════════════╝
 --]]
@@ -12,28 +12,89 @@ local Stats               = game:GetService("Stats")
 local UserInputService    = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local TweenService        = game:GetService("TweenService")
+local StarterGui          = game:GetService("StarterGui")
 local Player              = Players.LocalPlayer
 
 -- ===================== Config =====================
 getgenv().Sleep = {
     AutoParry       = true,
+
+    -- ===== STEALTH / ANTI-BAC =====
+    AntiBAC         = true,    -- глушить античит (ReplicatedStorage.Security + DeviceChecker)
+    AutoRekill      = true,    -- добивать, если античит вернётся
+    GhostVisual     = false,   -- вообще не создавать крутилку (нулевой след)
+
+    -- ===== ТАЙМИНГИ =====
+    ExecutorInput   = true,
+    Jitter          = 0.02,
+    Cooldown        = 0.03,
+    ClickLimit      = 10,
+    LegitMode       = false,
+    LegitFactor     = 0.45,
+
     PingBased       = true,
     PingBasedOffset = 1.95,
     DistanceToParry = 0.65,
     EmergencyRadius = 10,
     ClashDistance   = 22,
 
-    -- ===== АНТИ-КИК =====
-    ExecutorInput   = true,    -- клик через mouse1click исполнителя (меньше палится)
-    Jitter          = 0.02,    -- случайный разброс задержки
-    Cooldown        = 0.03,    -- мин. пауза между кликами
-    ClickLimit      = 10,      -- макс кликов в секунду
-    LegitMode       = false,   -- клик по дистанции пропорц. скорости (как человек)
-    LegitFactor     = 0.45,
-
     Visuals         = true,
 }
 local CFG = getgenv().Sleep
+
+-- ===================== ANTI-BAC (глушим античит) =====================
+local function notify(t, txt)
+    pcall(function() StarterGui:SetCore("SendNotification", {Title = t, Text = txt, Duration = 3}) end)
+end
+
+local BAC_KILLED = {}
+local function KillBAC()
+    local killed = 0
+    local RS = game:GetService("ReplicatedStorage")
+
+    -- 1) модуль безопасности в ReplicatedStorage
+    local sec = RS:FindFirstChild("Security")
+    if sec then sec:Destroy(); killed = killed + 1; BAC_KILLED.Security = true end
+
+    -- 2) клиентские скрипты-проверяльщики
+    local ps = Player:FindFirstChild("PlayerScripts")
+    if ps then
+        for _, obj in ipairs(ps:GetDescendants()) do
+            if obj:IsA("LocalScript") or obj:IsA("Script") or obj:IsA("ModuleScript") then
+                local n = obj.Name:lower()
+                if n:find("security") or n:find("anticheat") or n:find("anti-cheat")
+                or n:find("devicechecker") or n == "bac" or n:find("anticheater") then
+                    obj:Destroy(); killed = killed + 1
+                end
+            end
+        end
+    end
+
+    -- 3) на всякий — ReplicatedFirst
+    local rf = game:GetService("ReplicatedFirst")
+    local rfsec = rf:FindFirstChild("Security")
+    if rfsec then rfsec:Destroy(); killed = killed + 1 end
+
+    return killed
+end
+
+if CFG.AntiBAC then
+    task.defer(function()
+        task.wait(1)
+        local n = KillBAC()
+        notify("Sleepscript", n > 0 and ("Anti-BAC: отключено ("..n..")") or "Anti-BAC: модули не найдены")
+    end)
+end
+
+if CFG.AutoRekill then
+    task.spawn(function()
+        while task.wait(3) do
+            if CFG.AntiBAC then
+                if RS_SAFE and RS_SAFE.Parent then KillBAC() end
+            end
+        end
+    end)
+end
 
 -- ===================== Theme =====================
 local Theme = {
@@ -50,8 +111,8 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = Player:WaitForChild("PlayerGui")
 
 local main = Instance.new("Frame")
-main.Size = UDim2.fromOffset(300, 500)
-main.Position = UDim2.new(0.5, -150, 0.5, -250)
+main.Size = UDim2.fromOffset(300, 540)
+main.Position = UDim2.new(0.5, -150, 0.5, -270)
 main.BackgroundColor3 = Theme.Bg
 main.BackgroundTransparency = 0.12
 main.BorderSizePixel = 0; main.Active = true; main.Parent = gui
@@ -78,7 +139,7 @@ title.TextColor3 = Theme.Text; title.BackgroundTransparency = 1
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Position = UDim2.new(0, 16, 0, 8); title.Size = UDim2.new(0.7, 0, 0, 22)
 local subtitle = Instance.new("TextLabel", header)
-subtitle.Text = "Blade Ball • BAC-safe v3"; subtitle.Font = Enum.Font.Gotham
+subtitle.Text = "Blade Ball • GHOST v4"; subtitle.Font = Enum.Font.Gotham
 subtitle.TextSize = 11; subtitle.TextColor3 = Theme.Sub; subtitle.BackgroundTransparency = 1
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
 subtitle.Position = UDim2.new(0, 16, 0, 27); subtitle.Size = UDim2.new(0.7, 0, 0, 14)
@@ -192,16 +253,23 @@ local function makeHeader(text)
 end
 
 -- ===================== Build =====================
+makeHeader("STEALTH / ANTI-BAC")
+makeToggle("Anti-BAC (глушить)", "AntiBAC")
+makeToggle("Auto Re-kill", "AutoRekill")
+makeToggle("Ghost Visual (без парта)", "GhostVisual")
+
 makeHeader("ГЛАВНОЕ")
 makeToggle("AutoParry", "AutoParry")
 makeToggle("Visuals (радиус)", "Visuals")
-makeHeader("АНТИ-КИК BAC")
-makeToggle("Executor Input (mouse1click)", "ExecutorInput")
-makeToggle("Legit Mode (как человек)", "LegitMode")
+
+makeHeader("ТАЙМИНГИ")
+makeToggle("Executor Input", "ExecutorInput")
+makeToggle("Legit Mode", "LegitMode")
 makeSlider("Jitter", "Jitter", 0, 0.15, 0.005)
 makeSlider("Cooldown", "Cooldown", 0.01, 0.2, 0.01)
 makeSlider("Click Limit /сек", "ClickLimit", 4, 30, 1)
-makeHeader("ПАРАМЕТРЫ ПАРИ")
+
+makeHeader("ПАРИ")
 makeToggle("Ping Based", "PingBased")
 makeSlider("Ping Based Offset", "PingBasedOffset", 0, 5, 0.05)
 makeSlider("Distance to Parry", "DistanceToParry", 0.1, 5, 0.05)
@@ -262,14 +330,18 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
-local r = Instance.new("Part")
-r.Name = "SleepCircle"; r.Parent = workspace
-r.Anchored, r.CanCollide = true, false
-r.Transparency = 0.3; r.Material = Enum.Material.Neon
-r.Color = Color3.fromRGB(138,100,255)
-local m = Instance.new("SpecialMesh", r); m.MeshId = "rbxassetid://3270017"
+-- Крутилка: в Ghost-режиме вообще не создаётся
+local r, m
+if not CFG.GhostVisual then
+    r = Instance.new("Part")
+    r.Name = "SleepCircle"; r.Parent = workspace
+    r.Anchored, r.CanCollide = true, false
+    r.CanQuery, r.CanTouch, r.CastShadow, r.Massless = false, false, false, true
+    r.Transparency = 0.3; r.Material = Enum.Material.Neon
+    r.Color = Color3.fromRGB(138,100,255)
+    m = Instance.new("SpecialMesh", r); m.MeshId = "rbxassetid://3270017"
+end
 
--- Клик: приоритет — функция исполнителя (меньше палится BAC)
 local function PressParry()
     if CFG.ExecutorInput then
         local ok = pcall(function()
@@ -317,9 +389,7 @@ end
 local function SendClick(isClashing, ball)
     if not CFG.AutoParry or IsParrying then return end
     local now = tick()
-    -- кулдаун + случайное дрожание (человечность)
-    local cd = (isClashing and CFG.Cooldown or CFG.Cooldown)
-             + (math.random() - 0.5) * 2 * CFG.Jitter
+    local cd = CFG.Cooldown + (math.random() - 0.5) * 2 * CFG.Jitter
     if not isClashing and LastBallHit == ball and (now - LastClick) < 0.5 then return end
     if (now - LastClick) < cd then return end
     if not rateOK() then return end
@@ -357,16 +427,17 @@ RunService.PostSimulation:Connect(function()
     local IsClashing = Targeted and Distance <= CFG.ClashDistance
 
     frameCounter = frameCounter + 1
-    if CFG.Visuals and frameCounter % 2 == 0 then
+    if r and CFG.Visuals and frameCounter % 2 == 0 then
         r.Transparency = 0.3
         UpdateVisuals(Root, Distance, IsClashing and "clash" or (Targeted and "target" or "neutral"))
-    elseif not CFG.Visuals then r.Transparency = 1 end
+    elseif r and not CFG.Visuals then
+        r.Transparency = 1
+    end
 
     if IsClashing then
         SendClick(true, Ball)
     elseif Targeted and dot > 0 then
         if CFG.LegitMode then
-            -- клик по дистанции, пропорциональной скорости — как реагирует человек
             local legitDist = math.clamp(Speed * CFG.LegitFactor, 6, 120)
             if Distance <= legitDist or Distance <= CFG.EmergencyRadius then
                 SendClick(false, Ball)
