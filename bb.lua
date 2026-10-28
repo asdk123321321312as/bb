@@ -73,8 +73,8 @@ local Gui = new("ScreenGui", {
 
 local Main = new("Frame", {
     Name = "Main",
-    Size = UDim2.fromOffset(310, 440),
-    Position = UDim2.new(0.5, -155, 0.5, -220),
+    Size = UDim2.fromOffset(310, 120),
+    Position = UDim2.new(0.5, -155, 0.5, -270),
     BackgroundColor3 = THEME.BG,
     BorderSizePixel = 0,
 }, Gui)
@@ -152,33 +152,21 @@ local Close = new("TextButton", {
 }, Header)
 corner(Close, 6)
 
-Close.MouseEnter:Connect(function() Close.BackgroundColor3 = Color3.fromRGB(60, 60, 72) end)
-Close.MouseLeave:Connect(function() Close.BackgroundColor3 = THEME.TRACK end)
-Close.MouseButton1Click:Connect(function()
-    Gui:Destroy()
-    if getgenv().Sleepscript then getgenv().Sleepscript = nil end
-end)
-
--- ---------- Контент ----------
-local Content = new("ScrollingFrame", {
-    Size = UDim2.new(1, 0, 1, -50),
+-- ---------- Контент (обычный Frame, без скролла) ----------
+local Content = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 0),
     Position = UDim2.new(0, 0, 0, 50),
     BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    ScrollBarThickness = 2,
-    ScrollBarImageColor3 = THEME.ACCENT,
-    CanvasSize = UDim2.new(0, 0, 0, 0),
-    ScrollingDirection = Enum.ScrollingDirection.Y,
     ZIndex = 1,
 }, Main)
 
-local CURSOR = 8
+local CURSOR = 6
 
 local function place(obj, height)
     obj.Size = UDim2.new(1, -24, 0, height)
     obj.Position = UDim2.new(0, 12, 0, CURSOR)
     obj.Parent = Content
-    CURSOR = CURSOR + height + 6
+    CURSOR = CURSOR + height + 5
     return obj
 end
 
@@ -191,14 +179,14 @@ local function Section(text)
         Font = Enum.Font.GothamBold,
         TextSize = 10,
         TextXAlignment = Enum.TextXAlignment.Left,
-    }), 22)
+    }), 18)
 end
 
 local function Toggle(text, default, callback)
     local Row = new("Frame", { BackgroundTransparency = 1 })
 
     new("TextLabel", {
-        Size = UDim2.new(1, -60, 1, 0),
+        Size = UDim2.new(1, -50, 1, 0),
         BackgroundTransparency = 1,
         Text = text,
         TextColor3 = THEME.TEXT,
@@ -242,7 +230,7 @@ local function Toggle(text, default, callback)
     end
 
     Btn.MouseButton1Click:Connect(function() set(not state) end)
-    place(Row, 30)
+    place(Row, 26)
     return set
 end
 
@@ -250,7 +238,7 @@ local function Slider(text, min, max, default, decimals, callback)
     local Row = new("Frame", { BackgroundTransparency = 1 })
 
     new("TextLabel", {
-        Size = UDim2.new(0.6, 0, 0, 16),
+        Size = UDim2.new(0.6, 0, 0, 14),
         BackgroundTransparency = 1,
         Text = text,
         TextColor3 = THEME.TEXT,
@@ -260,7 +248,7 @@ local function Slider(text, min, max, default, decimals, callback)
     }, Row)
 
     local ValueLbl = new("TextLabel", {
-        Size = UDim2.new(0.4, 0, 0, 16),
+        Size = UDim2.new(0.4, 0, 0, 14),
         Position = UDim2.new(0.6, 0, 0, 0),
         BackgroundTransparency = 1,
         Text = tostring(default),
@@ -272,7 +260,7 @@ local function Slider(text, min, max, default, decimals, callback)
 
     local Bar = new("Frame", {
         Size = UDim2.new(1, 0, 0, 5),
-        Position = UDim2.new(0, 0, 0, 26),
+        Position = UDim2.new(0, 0, 0, 22),
         BackgroundColor3 = THEME.TRACK,
         BorderSizePixel = 0,
     }, Row)
@@ -286,8 +274,8 @@ local function Slider(text, min, max, default, decimals, callback)
     corner(Fill, 3)
 
     local Hit = new("TextButton", {
-        Size = UDim2.new(1, 0, 0, 18),
-        Position = UDim2.new(0, 0, 0, 20),
+        Size = UDim2.new(1, 0, 0, 16),
+        Position = UDim2.new(0, 0, 0, 17),
         BackgroundTransparency = 1,
         Text = "",
     }, Row)
@@ -330,7 +318,7 @@ local function Slider(text, min, max, default, decimals, callback)
     end)
 
     apply(default, false)
-    place(Row, 40)
+    place(Row, 34)
     return function(v) apply(v, false) end
 end
 
@@ -353,7 +341,11 @@ Section("Визуал")
 Toggle("Visuals", SETTINGS.Visuals, function(v) SETTINGS.Visuals = v end)
 Toggle("ShowRadius", SETTINGS.ShowRadius, function(v) SETTINGS.ShowRadius = v end)
 
-Content.CanvasSize = UDim2.new(0, 0, 0, CURSOR + 10)
+-- подгоняем окно под содержимое
+local FINAL_H = 50 + CURSOR + 10
+Content.Size = UDim2.new(1, 0, 0, CURSOR + 6)
+Main.Size = UDim2.fromOffset(310, FINAL_H)
+Main.Position = UDim2.new(0.5, -155, 0.5, -math.floor(FINAL_H / 2))
 
 -- ==================== ПЕРЕТАСКИВАНИЕ ОКНА ====================
 local dragging, dragStart, startPos
@@ -407,15 +399,20 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
+-- визуальный круг живёт на камере, чтобы не мусорить в workspace
 local r = Instance.new("Part")
-r.Name = "SleepscriptCircle"
+r.Name = "Circle"
 r.Anchored = true
 r.CanCollide = false
+r.CanQuery = false
+r.CanTouch = false
 r.CastShadow = false
+r.Locked = true
+r.Massless = true
 r.Transparency = 1
 r.Material = Enum.Material.Neon
 r.Size = Vector3.new(1, 1, 1)
-r.Parent = workspace
+r.Parent = workspace.CurrentCamera or workspace
 
 local m = Instance.new("SpecialMesh", r)
 m.MeshId = "rbxassetid://3270017"
