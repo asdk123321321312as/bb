@@ -1,7 +1,7 @@
 --[[
     ╔══════════════════════════════════════════╗
-    ║      S L E E P S C R I P T  v4 (GHOST)      ║
-    ║      Blade Ball • AntiParry + Anti-BAC      ║
+    ║    S L E E P S C R I P T  v5 (GHOST++)      ║
+    ║    Blade Ball • AntiParry + Aggressive Anti-BAC
     ║   Меню: [ Z ]   •   AutoParry вкл/выкл: [L] ║
     ╚══════════════════════════════════════════╝
 --]]
@@ -13,6 +13,7 @@ local UserInputService    = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local TweenService        = game:GetService("TweenService")
 local StarterGui          = game:GetService("StarterGui")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local Player              = Players.LocalPlayer
 
 -- ===================== Config =====================
@@ -20,9 +21,10 @@ getgenv().Sleep = {
     AutoParry       = true,
 
     -- ===== STEALTH / ANTI-BAC =====
-    AntiBAC         = true,    -- глушить античит (ReplicatedStorage.Security + DeviceChecker)
-    AutoRekill      = true,    -- добивать, если античит вернётся
-    GhostVisual     = false,   -- вообще не создавать крутилку (нулевой след)
+    AntiBAC         = true,
+    AutoRekill      = true,
+    RekillInterval  = 0.25,    -- как часто добивать (сек)
+    GhostVisual     = false,
 
     -- ===== ТАЙМИНГИ =====
     ExecutorInput   = true,
@@ -42,59 +44,99 @@ getgenv().Sleep = {
 }
 local CFG = getgenv().Sleep
 
--- ===================== ANTI-BAC (глушим античит) =====================
+-- ===================== ANTI-BAC =====================
 local function notify(t, txt)
     pcall(function() StarterGui:SetCore("SendNotification", {Title = t, Text = txt, Duration = 3}) end)
 end
 
-local BAC_KILLED = {}
-local function KillBAC()
-    local killed = 0
-    local RS = game:GetService("ReplicatedStorage")
+local function isTarget(name)
+    local n = name:lower()
+    return n:find("security") or n:find("anticheat") or n:find("anti-cheat")
+        or n:find("anti_cheat") or n:find("devicechecker") or n == "bac"
+        or n:find("clientcheck") or n:find("anticheater") or n:find("sentry")
+end
 
-    -- 1) модуль безопасности в ReplicatedStorage
-    local sec = RS:FindFirstChild("Security")
-    if sec then sec:Destroy(); killed = killed + 1; BAC_KILLED.Security = true end
-
+local KillBAC
+KillBAC = function()
+    local count = 0
+    -- 1) ReplicatedStorage
+    for _, ch in ipairs(ReplicatedStorage:GetChildren()) do
+        if isTarget(ch.Name) then
+            pcall(function()
+                if ch:IsA("Folder") or ch:IsA("Model") then
+                    for _, sub in ipairs(ch:GetChildren()) do sub:Destroy() end
+                end
+                ch:Destroy()
+            end)
+            count = count + 1
+        end
+    end
     -- 2) клиентские скрипты-проверяльщики
     local ps = Player:FindFirstChild("PlayerScripts")
     if ps then
         for _, obj in ipairs(ps:GetDescendants()) do
-            if obj:IsA("LocalScript") or obj:IsA("Script") or obj:IsA("ModuleScript") then
-                local n = obj.Name:lower()
-                if n:find("security") or n:find("anticheat") or n:find("anti-cheat")
-                or n:find("devicechecker") or n == "bac" or n:find("anticheater") then
-                    obj:Destroy(); killed = killed + 1
-                end
+            if isTarget(obj.Name)
+            and (obj:IsA("LocalScript") or obj:IsA("Script") or obj:IsA("ModuleScript")) then
+                pcall(function() obj:Destroy() end)
+                count = count + 1
             end
         end
     end
+    return count
+end
 
-    -- 3) на всякий — ReplicatedFirst
-    local rf = game:GetService("ReplicatedFirst")
-    local rfsec = rf:FindFirstChild("Security")
-    if rfsec then rfsec:Destroy(); killed = killed + 1 end
-
-    return killed
+local function Scan()
+    print("==== Sleepscript Anti-BAC scan ====")
+    for _, ch in ipairs(ReplicatedStorage:GetChildren()) do
+        if isTarget(ch.Name) then print("[RS]", ch:GetFullName(), ch.ClassName) end
+    end
+    local ps = Player:FindFirstChild("PlayerScripts")
+    if ps then
+        for _, o in ipairs(ps:GetDescendants()) do
+            if o:IsA("LocalScript") and isTarget(o.Name) then
+                print("[PS]", o:GetFullName())
+            end
+        end
+    end
+    print("==== end scan ====")
 end
 
 if CFG.AntiBAC then
     task.defer(function()
-        task.wait(1)
+        task.wait(0.5)
         local n = KillBAC()
-        notify("Sleepscript", n > 0 and ("Anti-BAC: отключено ("..n..")") or "Anti-BAC: модули не найдены")
+        notify("Sleepscript", n > 0 and ("Anti-BAC: снято x"..n) or "Anti-BAC: цели не найдены (жми Debug Scan)")
     end)
 end
 
 if CFG.AutoRekill then
     task.spawn(function()
-        while task.wait(3) do
-            if CFG.AntiBAC then
-                if RS_SAFE and RS_SAFE.Parent then KillBAC() end
-            end
+        while task.wait(CFG.RekillInterval) do
+            if CFG.AntiBAC then KillBAC() end
         end
     end)
+    -- мгновенная реакция на возврат античита
+    ReplicatedStorage.ChildAdded:Connect(function(c)
+        if CFG.AntiBAC and isTarget(c.Name) then
+            task.wait(0.05)
+            pcall(function() if c and c.Parent then c:Destroy() end end)
+        end
+    end)
+    local ps = Player:WaitForChild("PlayerScripts", 10)
+    if ps then
+        ps.DescendantAdded:Connect(function(o)
+            if CFG.AntiBAC and isTarget(o.Name)
+            and (o:IsA("LocalScript") or o:IsA("Script") or o:IsA("ModuleScript")) then
+                task.wait(0.05)
+                pcall(function() if o and o.Parent then o:Destroy() end end)
+            end
+        end)
+    end
 end
+
+Player.CharacterAdded:Connect(function()
+    if CFG.AntiBAC then task.wait(0.2); KillBAC() end
+end)
 
 -- ===================== Theme =====================
 local Theme = {
@@ -111,8 +153,8 @@ gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = Player:WaitForChild("PlayerGui")
 
 local main = Instance.new("Frame")
-main.Size = UDim2.fromOffset(300, 540)
-main.Position = UDim2.new(0.5, -150, 0.5, -270)
+main.Size = UDim2.fromOffset(300, 560)
+main.Position = UDim2.new(0.5, -150, 0.5, -280)
 main.BackgroundColor3 = Theme.Bg
 main.BackgroundTransparency = 0.12
 main.BorderSizePixel = 0; main.Active = true; main.Parent = gui
@@ -139,7 +181,7 @@ title.TextColor3 = Theme.Text; title.BackgroundTransparency = 1
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Position = UDim2.new(0, 16, 0, 8); title.Size = UDim2.new(0.7, 0, 0, 22)
 local subtitle = Instance.new("TextLabel", header)
-subtitle.Text = "Blade Ball • GHOST v4"; subtitle.Font = Enum.Font.Gotham
+subtitle.Text = "Blade Ball • GHOST++ v5"; subtitle.Font = Enum.Font.Gotham
 subtitle.TextSize = 11; subtitle.TextColor3 = Theme.Sub; subtitle.BackgroundTransparency = 1
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
 subtitle.Position = UDim2.new(0, 16, 0, 27); subtitle.Size = UDim2.new(0.7, 0, 0, 14)
@@ -188,6 +230,23 @@ local function makeToggle(label, key)
             {BackgroundColor3 = CFG[key] and Theme.Accent or Theme.Off}):Play()
         TweenService:Create(knob, TweenInfo.new(0.18),
             {Position = CFG[key] and UDim2.new(1,-20,0.5,-9) or UDim2.new(0,2,0.5,-9)}):Play()
+    end)
+end
+
+local function makeButton(label, fn)
+    local btn = Instance.new("TextButton", body)
+    btn.Size = UDim2.new(1, 0, 0, 30); btn.LayoutOrder = 100
+    btn.BackgroundColor3 = Theme.Off; btn.BackgroundTransparency = 0.35
+    btn.BorderSizePixel = 0; btn.AutoButtonColor = false
+    btn.Text = label; btn.Font = Enum.Font.GothamMedium; btn.TextSize = 12
+    btn.TextColor3 = Theme.Text
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    btn.MouseButton1Click:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.12), {BackgroundTransparency = 0.1}):Play()
+        task.delay(0.12, function()
+            TweenService:Create(btn, TweenInfo.new(0.12), {BackgroundTransparency = 0.35}):Play()
+        end)
+        fn()
     end)
 end
 
@@ -256,7 +315,9 @@ end
 makeHeader("STEALTH / ANTI-BAC")
 makeToggle("Anti-BAC (глушить)", "AntiBAC")
 makeToggle("Auto Re-kill", "AutoRekill")
+makeSlider("Re-kill Interval", "RekillInterval", 0.05, 2, 0.05)
 makeToggle("Ghost Visual (без парта)", "GhostVisual")
+makeButton("Debug Scan (в консоль)", function() Scan(); notify("Sleepscript", "Scan -> см. консоль (F9)") end)
 
 makeHeader("ГЛАВНОЕ")
 makeToggle("AutoParry", "AutoParry")
@@ -321,7 +382,7 @@ UserInputService.InputBegan:Connect(function(i, gpe)
     elseif i.KeyCode == Enum.KeyCode.L then CFG.AutoParry = not CFG.AutoParry end
 end)
 
--- ===================== Логика =====================
+-- ===================== Логика пари =====================
 local LastClick, LastBallHit, IsParrying = 0, nil, false
 local frameCounter = 0
 local clickTimes = {}
@@ -330,7 +391,6 @@ local NetworkStats = Stats:FindFirstChild("Network")
     and Stats.Network:FindFirstChild("ServerStatsItem")
     and Stats.Network.ServerStatsItem:FindFirstChild("Data Ping")
 
--- Крутилка: в Ghost-режиме вообще не создаётся
 local r, m
 if not CFG.GhostVisual then
     r = Instance.new("Part")
